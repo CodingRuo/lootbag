@@ -18,63 +18,9 @@ pub struct ZipEstimate {
 #[derive(Default)]
 pub struct ImportControl {
     cancelled: AtomicBool,
-    cleanup_failed: AtomicBool,
-    #[cfg(target_os = "macos")]
-    protected_sources: std::sync::Mutex<Vec<(u64, u64)>>,
 }
 
 impl ImportControl {
-    #[cfg(target_os = "macos")]
-    pub(crate) fn protect_sources(
-        &self,
-        identities: impl IntoIterator<Item = (u64, u64)>,
-    ) -> Result<()> {
-        let mut protected = self
-            .protected_sources
-            .lock()
-            .map_err(|_| "Quellprüfung nicht verfügbar")?;
-        for identity in identities {
-            if !protected.contains(&identity) {
-                protected.push(identity);
-            }
-        }
-        Ok(())
-    }
-    #[cfg(target_os = "macos")]
-    pub(crate) fn check_source(&self, file: &fs::File) -> Result<()> {
-        if self
-            .protected_sources
-            .lock()
-            .map_err(|_| "Quellprüfung nicht verfügbar")?
-            .is_empty()
-        {
-            return Ok(());
-        }
-        self.check_source_metadata(&file.metadata().map_err(|e| e.to_string())?)
-    }
-    #[cfg(target_os = "macos")]
-    fn check_source_metadata(&self, metadata: &fs::Metadata) -> Result<()> {
-        use std::os::unix::fs::MetadataExt;
-        if self
-            .protected_sources
-            .lock()
-            .map_err(|_| "Quellprüfung nicht verfügbar")?
-            .contains(&(metadata.dev(), metadata.ino()))
-        {
-            return Err("Eine Importdatei ist mit dem Bibliothekskatalog oder einer SQLite-Begleitdatei verknüpft; bitte eine unabhängige Quelle verwenden".into());
-        }
-        Ok(())
-    }
-    pub(crate) fn mark_cleanup_failed(&self) {
-        self.cleanup_failed.store(true, Ordering::Relaxed);
-    }
-    pub(crate) fn cleanup_failed(&self) -> bool {
-        self.cleanup_failed.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn cancellation_flag(&self) -> &AtomicBool {
-        &self.cancelled
-    }
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
     }
@@ -232,19 +178,16 @@ impl Library {
                     &mut run,
                 )
             })();
-            if result.is_err() {
-                if !self.remove_failed_import_controlled(
+            if result.is_err()
+                && !self.remove_failed_import_controlled(
                     &staging,
                     &relative_path,
                     owned_stage.as_ref(),
-                ) {
-                    control.mark_cleanup_failed();
-                    result = result.map_err(|e| {
-                        format!(
-                            "{e}; der veränderte Zwischenordner wurde nicht vollständig entfernt"
-                        )
-                    });
-                }
+                )
+            {
+                result = result.map_err(|e| {
+                    format!("{e}; der veränderte Zwischenordner wurde nicht vollständig entfernt")
+                });
             }
             result
         })();
@@ -344,19 +287,16 @@ impl Library {
                     &mut run,
                 )
             })();
-            if result.is_err() {
-                if !self.remove_failed_import_controlled(
+            if result.is_err()
+                && !self.remove_failed_import_controlled(
                     &staging,
                     &relative_path,
                     owned_stage.as_ref(),
-                ) {
-                    control.mark_cleanup_failed();
-                    result = result.map_err(|e| {
-                        format!(
-                            "{e}; der veränderte Zwischenordner wurde nicht vollständig entfernt"
-                        )
-                    });
-                }
+                )
+            {
+                result = result.map_err(|e| {
+                    format!("{e}; der veränderte Zwischenordner wurde nicht vollständig entfernt")
+                });
             }
             result
         })();
@@ -617,8 +557,6 @@ pub(super) fn folder_size(source: &Path, run: &ImportRun<'_>) -> Result<(u64, u6
                 .checked_add(child_entries)
                 .ok_or("Paket enthält zu viele Einträge")?;
         } else if metadata.is_file() {
-            #[cfg(target_os = "macos")]
-            run.control.check_source_metadata(&metadata)?;
             bytes = bytes
                 .checked_add(metadata.len())
                 .ok_or("Paket ist zu groß")?;
@@ -656,8 +594,6 @@ fn copy_folder(
         } else if metadata.is_file() {
             let mut input = fs::File::open(entry.path())
                 .map_err(|e| format!("Quelldatei nicht lesbar: {e}"))?;
-            #[cfg(target_os = "macos")]
-            run.control.check_source(&input)?;
             copy_checked(&mut input, &target, metadata.len(), run)?;
             record_asset(path, metadata.len(), files)?;
             run.progress.completed_entries += 1;

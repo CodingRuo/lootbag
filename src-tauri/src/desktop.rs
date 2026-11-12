@@ -1,20 +1,12 @@
 use crate::library::{
-    authorize_import_evidence, consume_import_evidence, prepare_duplicate_files,
-    prepare_import_evidence, read_storage_report, run_duplicate_files, AssetPackage, AudioCriteria,
-    AudioMetadata, AudioStatus, AudioWaveform, BulkAction, BulkResult, BulkSelection,
-    CatalogFilters, CatalogPage, CatalogQuery, DuplicateProgress, DuplicateReport,
-    EmbeddedAudioTags, Evidence, ExportOutcome, ImageGroup, ImageWorkflow, ImportControl,
-    ImportProgress, Library, ModelResources, PreparationProgress, PreparedDuplicateCheck,
-    PreparedPackage, ProjectFolder, Result, StorageProgress, StorageReport, TrashEntry,
-    ZipEstimate,
-};
-use crate::library::{
     prepare_external_trash_removal, remove_external_trash, PreparedTrashRemoval, TrashRemovalEntry,
     TrashRemovalPlan,
 };
 use crate::library::{
-    prepare_recovery, run_recovery, PreparedRecovery, RecoveryFault, RecoveryKind, RecoveryOutcome,
-    RecoveryPreparation, RecoveryProgress, RecoveryRequest,
+    AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform, BulkAction, BulkResult,
+    BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, EmbeddedAudioTags, ExportOutcome,
+    ImageGroup, ImageWorkflow, ImportControl, ImportProgress, Library, ModelResources,
+    ProjectFolder, Result, TrashEntry, ZipEstimate,
 };
 use std::{
     path::{Path, PathBuf},
@@ -35,9 +27,6 @@ struct Session {
     root: Mutex<Option<PathBuf>>,
     root_generation: AtomicU64,
     trash_removal: Mutex<Option<ReadyTrashRemoval>>,
-    recovery: Mutex<Option<RecoveryJob>>,
-    prepared_import: Mutex<Option<PreparedImportJob>>,
-    preimport_gate: Mutex<()>,
     import_gate: Mutex<()>,
     import_control: Mutex<Option<Arc<ImportControl>>>,
     model_preview: Mutex<PreviewState>,
@@ -46,10 +35,6 @@ struct Session {
     audio_tags: Mutex<Option<(String, Arc<AtomicBool>)>>,
     audio_tags_gate: Mutex<()>,
     sprite_export: Mutex<Option<(String, Arc<AtomicBool>)>>,
-    storage_report: Mutex<Option<(String, Arc<AtomicBool>)>>,
-    storage_gate: Mutex<()>,
-    duplicates: Mutex<Option<DuplicateJob>>,
-    duplicate_gate: Mutex<()>,
     audio_analysis: Mutex<Option<AudioAnalysisJob>>,
 }
 
@@ -57,56 +42,6 @@ struct ReadyTrashRemoval {
     root: PathBuf,
     generation: u64,
     plan: TrashRemovalPlan,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ImportPhase {
-    Preparing,
-    Ready,
-    Estimating,
-    Importing,
-}
-struct PreparedImportJob {
-    request_id: String,
-    root: PathBuf,
-    generation: u64,
-    control: Arc<ImportControl>,
-    plan: Option<PreparedPackage>,
-    phase: ImportPhase,
-    authorized: bool,
-}
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PreparedImport {
-    request_id: String,
-    source: ImportSource,
-    binding: &'static str,
-    zip_estimate: Option<ZipEstimate>,
-    evidence: Evidence,
-}
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AuthorizedImport {
-    request_id: String,
-    zip_estimate: Option<ZipEstimate>,
-}
-#[derive(serde::Serialize)]
-#[serde(tag = "status", rename_all = "lowercase")]
-enum PreparedImportOutcome {
-    Imported { package: AssetPackage },
-    Cancelled,
-}
-struct DuplicateJob {
-    request_id: String,
-    root: PathBuf,
-    cancelled: Arc<AtomicBool>,
-    prepared: Option<PreparedDuplicateCheck>,
-}
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PreparedDuplicates {
-    request_id: String,
-    total: usize,
 }
 
 struct AudioAnalysisJob {
@@ -198,10 +133,6 @@ impl Session {
         {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
-        self.cancel_storage(None)?;
-        self.cancel_duplicates(None)?;
-        self.cancel_prepared_import(None)?;
-        self.cancel_recovery(None)?;
         remove_external_trash(&ready.root, ready.plan)
     }
 
@@ -212,417 +143,6 @@ impl Session {
             .map_err(|_| "Papierkorb-Vorbereitung ist nicht verfügbar")?;
         if ready.as_ref().is_some_and(|r| r.plan.reply.token == token) {
             ready.take();
-        }
-        Ok(())
-    }
-
-    fn begin_preimport(
-        &self,
-        root: &Path,
-        request_id: &str,
-    ) -> Result<(PathBuf, u64, Arc<ImportControl>)> {
-        if request_id.is_empty()
-            || request_id.len() > 128
-            || root.as_os_str().as_encoded_bytes().len() > 4096
-        {
-            return Err("Ungültige Importvorbereitung-Anfrage".into());
-        }
-        let _gate = self
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        if current.as_deref() != Some(root) {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        let mut jobs = self
-            .prepared_import
-            .lock()
-            .map_err(|_| "Importvorbereitung ist nicht verfügbar")?;
-        if jobs.as_ref().is_some_and(|j| j.request_id == request_id) {
-            return Err("Diese Import-Anfrage ist bereits registriert".into());
-        }
-        let control = Arc::new(ImportControl::default());
-        let generation = self.root_generation.load(Ordering::Relaxed);
-        if let Some(old) = jobs.replace(PreparedImportJob {
-            request_id: request_id.into(),
-            root: root.into(),
-            generation,
-            control: control.clone(),
-            plan: None,
-            phase: ImportPhase::Preparing,
-            authorized: false,
-        }) {
-            old.control.cancel();
-        }
-        Ok((root.into(), generation, control))
-    }
-    fn attach_preimport(
-        &self,
-        root: &Path,
-        generation: u64,
-        request_id: &str,
-        control: &Arc<ImportControl>,
-        plan: PreparedPackage,
-        authorized: bool,
-    ) -> Result<PreparedImport> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        let mut jobs = self
-            .prepared_import
-            .lock()
-            .map_err(|_| "Importvorbereitung ist nicht verfügbar")?;
-        let job = jobs
-            .as_mut()
-            .filter(|j| {
-                j.request_id == request_id
-                    && Arc::ptr_eq(&j.control, control)
-                    && j.generation == generation
-            })
-            .ok_or("Import-Anfrage wurde ersetzt")?;
-        if current.as_deref() != Some(root)
-            || self.root_generation.load(Ordering::Relaxed) != generation
-            || control.cancellation_flag().load(Ordering::Relaxed)
-            || !matches!(job.phase, ImportPhase::Preparing | ImportPhase::Estimating)
-        {
-            return Err("Importvorbereitung ist nicht mehr aktuell".into());
-        }
-        let reply = PreparedImport {
-            request_id: request_id.into(),
-            source: ImportSource {
-                path: plan
-                    .source
-                    .to_str()
-                    .ok_or("Importpfad ist kein UTF-8")?
-                    .into(),
-                is_zip: plan.zip,
-            },
-            binding: if plan.verified() {
-                "verified"
-            } else {
-                "unverified"
-            },
-            zip_estimate: None,
-            evidence: plan.evidence.clone(),
-        };
-        job.plan = Some(plan);
-        job.authorized = authorized;
-        job.phase = ImportPhase::Ready;
-        Ok(reply)
-    }
-    fn take_preimport(
-        &self,
-        request_id: &str,
-        estimate: bool,
-    ) -> Result<(PathBuf, u64, Arc<ImportControl>, PreparedPackage, bool)> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        let mut jobs = self
-            .prepared_import
-            .lock()
-            .map_err(|_| "Importvorbereitung ist nicht verfügbar")?;
-        let job = jobs
-            .as_mut()
-            .filter(|j| {
-                j.request_id == request_id
-                    && j.phase == ImportPhase::Ready
-                    && current.as_deref() == Some(j.root.as_path())
-                    && self.root_generation.load(Ordering::Relaxed) == j.generation
-                    && !j.control.cancellation_flag().load(Ordering::Relaxed)
-            })
-            .ok_or("Bitte den Import erneut vorbereiten")?;
-        if estimate && job.plan.as_ref().is_some_and(|p| p.verified()) {
-            return Err("Der Ordnerplan ist bereits geprüft".into());
-        }
-        if !estimate && !job.authorized && job.plan.as_ref().is_some_and(|p| !p.verified()) {
-            return Err("Bitte den gesamten ungeprüften Import ausdrücklich bestätigen".into());
-        }
-        let plan = job
-            .plan
-            .take()
-            .ok_or("Importplan wurde bereits verbraucht")?;
-        job.phase = if estimate {
-            ImportPhase::Estimating
-        } else {
-            ImportPhase::Importing
-        };
-        Ok((
-            job.root.clone(),
-            job.generation,
-            job.control.clone(),
-            plan,
-            job.authorized,
-        ))
-    }
-    fn with_preimport_root(
-        &self,
-        root: &Path,
-        generation: u64,
-        request_id: &str,
-        control: &Arc<ImportControl>,
-        operation: &mut dyn FnMut() -> Result<AssetPackage>,
-    ) -> Result<AssetPackage> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        if current.as_deref() != Some(root)
-            || self.root_generation.load(Ordering::Relaxed) != generation
-            || control.cancellation_flag().load(Ordering::Relaxed)
-        {
-            return Err("Import ist nicht mehr aktuell".into());
-        }
-        if !self
-            .prepared_import
-            .lock()
-            .map_err(|_| "Importvorbereitung ist nicht verfügbar")?
-            .as_ref()
-            .is_some_and(|j| {
-                j.request_id == request_id
-                    && Arc::ptr_eq(&j.control, control)
-                    && j.phase == ImportPhase::Importing
-            })
-        {
-            return Err("Import-Anfrage wurde ersetzt".into());
-        }
-        operation()
-    }
-    fn finish_preimport(&self, request_id: &str, control: &Arc<ImportControl>) -> Result<()> {
-        let mut jobs = self
-            .prepared_import
-            .lock()
-            .map_err(|_| "Importvorbereitung ist nicht verfügbar")?;
-        if jobs
-            .as_ref()
-            .is_some_and(|j| j.request_id == request_id && Arc::ptr_eq(&j.control, control))
-        {
-            jobs.take();
-        }
-        Ok(())
-    }
-    fn cancel_prepared_import(&self, request_id: Option<&str>) -> Result<()> {
-        let mut jobs = self
-            .prepared_import
-            .lock()
-            .map_err(|_| "Importvorbereitung ist nicht verfügbar")?;
-        if let Some(job) = jobs
-            .as_mut()
-            .filter(|j| request_id.is_none_or(|id| j.request_id == id))
-        {
-            job.control.cancel();
-            job.plan.take();
-        }
-        Ok(())
-    }
-
-    // Register before background preparation, and retain a cancelled unfinished owner.
-    fn begin_duplicates(
-        &self,
-        root: &Path,
-        request_id: &str,
-    ) -> Result<(PathBuf, Arc<AtomicBool>)> {
-        if request_id.is_empty()
-            || request_id.len() > 128
-            || root.as_os_str().as_encoded_bytes().len() > 4096
-        {
-            return Err("Ungültige Duplikatprüfung-Anfrage".into());
-        }
-        let _gate = self
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        if current.as_deref() != Some(root) {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        let mut jobs = self
-            .duplicates
-            .lock()
-            .map_err(|_| "Duplikatprüfung ist nicht verfügbar")?;
-        if jobs.as_ref().is_some_and(|j| j.request_id == request_id) {
-            return Err("Diese Duplikatprüfung-Anfrage ist bereits registriert".into());
-        }
-        let flag = Arc::new(AtomicBool::new(false));
-        if let Some(old) = jobs.replace(DuplicateJob {
-            request_id: request_id.into(),
-            root: root.into(),
-            cancelled: flag.clone(),
-            prepared: None,
-        }) {
-            old.cancelled.store(true, Ordering::Relaxed);
-        }
-        Ok((root.into(), flag))
-    }
-    fn finish_duplicate_preparation(
-        &self,
-        root: &Path,
-        request_id: &str,
-        flag: &Arc<AtomicBool>,
-        prepared: PreparedDuplicateCheck,
-    ) -> Result<PreparedDuplicates> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        let mut jobs = self
-            .duplicates
-            .lock()
-            .map_err(|_| "Duplikatprüfung ist nicht verfügbar")?;
-        let job = jobs
-            .as_mut()
-            .filter(|j| j.request_id == request_id && Arc::ptr_eq(&j.cancelled, flag))
-            .ok_or("Duplikatprüfung-Anfrage wurde ersetzt")?;
-        if current.as_deref() != Some(root) || flag.load(Ordering::Relaxed) {
-            return Err("Duplikatprüfung abgebrochen".into());
-        }
-        let total = prepared.total();
-        job.prepared = Some(prepared);
-        Ok(PreparedDuplicates {
-            request_id: request_id.into(),
-            total,
-        })
-    }
-    // Consume the prepared snapshot before spawning the scanner; Start cannot run it twice.
-    fn take_duplicates(
-        &self,
-        request_id: &str,
-    ) -> Result<(PathBuf, Arc<AtomicBool>, PreparedDuplicateCheck)> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        let mut jobs = self
-            .duplicates
-            .lock()
-            .map_err(|_| "Duplikatprüfung ist nicht verfügbar")?;
-        let job = jobs
-            .as_mut()
-            .filter(|j| {
-                j.request_id == request_id
-                    && !j.cancelled.load(Ordering::Relaxed)
-                    && current.as_deref() == Some(j.root.as_path())
-            })
-            .ok_or("Bitte die Duplikatprüfung erneut vorbereiten")?;
-        let prepared = job
-            .prepared
-            .take()
-            .ok_or("Duplikatprüfung ist nicht vorbereitet oder läuft bereits")?;
-        Ok((job.root.clone(), job.cancelled.clone(), prepared))
-    }
-    fn finish_duplicates(
-        &self,
-        root: &Path,
-        request_id: &str,
-        flag: &Arc<AtomicBool>,
-    ) -> Result<bool> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        let mut jobs = self
-            .duplicates
-            .lock()
-            .map_err(|_| "Duplikatprüfung ist nicht verfügbar")?;
-        let matches = jobs
-            .as_ref()
-            .is_some_and(|j| j.request_id == request_id && Arc::ptr_eq(&j.cancelled, flag));
-        if matches {
-            jobs.take();
-        }
-        if !matches || current.as_deref() != Some(root) {
-            return Err("Duplikatprüfung ist nicht mehr aktuell".into());
-        }
-        Ok(flag.load(Ordering::Relaxed))
-    }
-    fn cancel_duplicates(&self, request_id: Option<&str>) -> Result<()> {
-        let mut jobs = self
-            .duplicates
-            .lock()
-            .map_err(|_| "Duplikatprüfung ist nicht verfügbar")?;
-        if let Some(job) = jobs
-            .as_mut()
-            .filter(|j| request_id.is_none_or(|id| j.request_id == id))
-        {
-            job.cancelled.store(true, Ordering::Relaxed);
-            job.prepared.take(); // ACK also releases any prepared snapshot held while awaiting Start.
-        }
-        Ok(())
-    }
-    fn begin_storage(&self, root: &Path, request_id: &str) -> Result<(PathBuf, Arc<AtomicBool>)> {
-        if request_id.is_empty()
-            || request_id.len() > 128
-            || root.as_os_str().as_encoded_bytes().len() > 4096
-        {
-            return Err("Ungültige Speicherbericht-Anfrage".into());
-        }
-        let _gate = self
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        if current.as_deref() != Some(root) {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let mut job = self
-            .storage_report
-            .lock()
-            .map_err(|_| "Speichermessung ist nicht verfügbar")?;
-        if job.as_ref().is_some_and(|(id, _)| id == request_id) {
-            return Err("Diese Speicherbericht-Anfrage läuft bereits".into());
-        }
-        if let Some((_, older)) = job.replace((request_id.into(), cancelled.clone())) {
-            older.store(true, Ordering::Relaxed);
-        }
-        Ok((root.to_owned(), cancelled))
-    }
-    fn finish_storage(
-        &self,
-        root: &Path,
-        request_id: &str,
-        cancelled: &Arc<AtomicBool>,
-    ) -> Result<bool> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        let mut job = self
-            .storage_report
-            .lock()
-            .map_err(|_| "Speichermessung ist nicht verfügbar")?;
-        let matches = job
-            .as_ref()
-            .is_some_and(|(id, flag)| id == request_id && Arc::ptr_eq(flag, cancelled));
-        if matches {
-            job.take();
-        }
-        if !matches || current.as_deref() != Some(root) {
-            return Err("Speicherbericht ist nicht mehr aktuell".into());
-        }
-        Ok(cancelled.load(Ordering::Relaxed))
-    }
-    fn cancel_storage(&self, request_id: Option<&str>) -> Result<()> {
-        let job = self
-            .storage_report
-            .lock()
-            .map_err(|_| "Speichermessung ist nicht verfügbar")?;
-        if let Some((id, flag)) = job.as_ref() {
-            if request_id.is_none_or(|requested| requested == id) {
-                flag.store(true, Ordering::Relaxed);
-            }
         }
         Ok(())
     }
@@ -763,9 +283,6 @@ impl Session {
                 .import_gate
                 .try_lock()
                 .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-            self.cancel_storage(None)?;
-            self.cancel_duplicates(None)?;
-            self.cancel_prepared_import(None)?;
             library.audio_analysis_busy_timeout()?;
             let mut summary = AudioAnalysisProgress {
                 request_id: request_id.into(),
@@ -934,7 +451,6 @@ impl Session {
     }
     fn set_root(&self, root: PathBuf) -> Result<()> {
         self.cancel_sprite_export(None)?;
-        self.cancel_storage(None)?;
         let mut current = self
             .root
             .lock()
@@ -943,9 +459,6 @@ impl Session {
             .model_preview
             .lock()
             .map_err(|_| "Vorschau ist nicht verfügbar")?;
-        self.cancel_duplicates(None)?;
-        self.cancel_prepared_import(None)?;
-        self.cancel_recovery(None)?;
         self.trash_removal
             .lock()
             .map_err(|_| "Papierkorb-Vorbereitung ist nicht verfügbar")?
@@ -1109,9 +622,6 @@ async fn create_library(app: AppHandle, root: Option<String>) -> Result<LibraryI
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         let library = match chosen {
             Some(root) => Library::create(&root)?,
             None => Library::create_default(&home)?,
@@ -1133,9 +643,6 @@ async fn open_library(app: AppHandle, root: String) -> Result<LibraryInfo> {
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         let library = Library::open(&root)?;
         let result = info(&library)?;
         state.set_root(library.root().to_owned())?;
@@ -1305,9 +812,6 @@ async fn managed_import(
             .import_gate
             .try_lock()
             .map_err(|_| "Es läuft bereits ein Import")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1356,9 +860,6 @@ async fn reference_folder(app: AppHandle, source: String) -> Result<AssetPackage
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1378,9 +879,6 @@ async fn relink_source(app: AppHandle, package_id: i64, source: String) -> Resul
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1418,7 +916,6 @@ async fn create_folder(
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1436,7 +933,6 @@ async fn add_to_folder(app: AppHandle, folder_id: i64, asset_id: i64) -> Result<
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1454,7 +950,6 @@ async fn remove_from_folder(app: AppHandle, folder_id: i64, asset_id: i64) -> Re
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1472,9 +967,6 @@ async fn trash_package(app: AppHandle, package_id: i64) -> Result<()> {
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         Library::open(&root)?.trash_package(package_id)
     })
     .await
@@ -1489,9 +981,6 @@ async fn trash_file(app: AppHandle, file_id: i64) -> Result<()> {
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         Library::open(&root)?.trash_file(file_id)
     })
     .await
@@ -1535,9 +1024,6 @@ async fn restore_trash(app: AppHandle, trash_id: i64) -> Result<()> {
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1560,7 +1046,6 @@ async fn annotate_asset(
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1582,9 +1067,6 @@ async fn bulk_assets(
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1602,7 +1084,6 @@ async fn annotate_package(app: AppHandle, package_id: i64, tags: Vec<String>) ->
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_prepared_import(None)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1885,9 +1366,6 @@ async fn analyze_audio(app: AppHandle, file_id: i64) -> Result<AudioMetadata> {
             .import_gate
             .try_lock()
             .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        state.cancel_storage(None)?;
-        state.cancel_duplicates(None)?;
-        state.cancel_prepared_import(None)?;
         let library = Library::open(&root)?;
         library.audio_analysis_busy_timeout()?;
         let flag = AtomicBool::new(false);
@@ -2012,229 +1490,16 @@ async fn export_asset(
         .await
 }
 
-#[tauri::command]
-async fn prepare_import_package(
-    app: AppHandle,
-    root: String,
-    request_id: String,
-    source: String,
-    on_progress: tauri::ipc::Channel<PreparationProgress>,
-) -> Result<PreparedImport> {
-    let source = PathBuf::from(source);
-    selected_path(&app, &source)?;
-    let (root, generation, control) = app
-        .state::<Session>()
-        .begin_preimport(Path::new(&root), &request_id)?;
-    background(move || {
-        let state = app.state::<Session>();
-        let result = (|| {
-            let _gate = state
-                .preimport_gate
-                .try_lock()
-                .map_err(|_| "Eine frühere Importprüfung läuft noch; bitte kurz abwarten")?;
-            let descriptor =
-                describe_import_source(source.to_str().ok_or("Importpfad ist kein UTF-8")?.into())?;
-            let plan = prepare_import_evidence(&root, &source, descriptor.is_zip, &control, |p| {
-                let _ = on_progress.send(p);
-            })?;
-            state.attach_preimport(&root, generation, &request_id, &control, plan, false)
-        })();
-        if result.is_err() {
-            let _ = state.finish_preimport(&request_id, &control);
-        }
-        result
-    })
-    .await
-}
-#[tauri::command]
-async fn authorize_prepared_import(app: AppHandle, request_id: String) -> Result<AuthorizedImport> {
-    let (root, generation, control, plan, _) =
-        app.state::<Session>().take_preimport(&request_id, true)?;
-    background(move || {
-        let state = app.state::<Session>();
-        let result = (|| {
-            let _gate = state
-                .preimport_gate
-                .try_lock()
-                .map_err(|_| "Bitte die laufende Importprüfung abwarten")?;
-            let zip_estimate = authorize_import_evidence(&plan, &root, &control)?;
-            state.attach_preimport(&root, generation, &request_id, &control, plan, true)?;
-            Ok(AuthorizedImport {
-                request_id: request_id.clone(),
-                zip_estimate,
-            })
-        })();
-        if result.is_err() {
-            let _ = state.finish_preimport(&request_id, &control);
-        }
-        result
-    })
-    .await
-}
-#[tauri::command]
-async fn import_prepared_package(
-    app: AppHandle,
-    request_id: String,
-    on_progress: tauri::ipc::Channel<ImportProgress>,
-) -> Result<PreparedImportOutcome> {
-    let (root, generation, control, plan, authorized) =
-        app.state::<Session>().take_preimport(&request_id, false)?;
-    background(move || {
-        let state = app.state::<Session>();
-        let result = (|| {
-            let _gate = state
-                .import_gate
-                .try_lock()
-                .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-            state.cancel_storage(None)?;
-            state.cancel_duplicates(None)?;
-            let mut progress = |p| {
-                let _ = on_progress.send(p);
-            };
-            let mut publisher = |operation: &mut dyn FnMut() -> Result<AssetPackage>| {
-                state.with_preimport_root(&root, generation, &request_id, &control, operation)
-            };
-            consume_import_evidence(
-                &root,
-                plan,
-                authorized,
-                &control,
-                &mut progress,
-                &mut publisher,
-            )
-        })();
-        state.finish_preimport(&request_id, &control)?;
-        match result {
-            Ok(package) => Ok(PreparedImportOutcome::Imported { package }),
-            Err(_)
-                if control.cancellation_flag().load(Ordering::Relaxed)
-                    && !control.cleanup_failed() =>
-            {
-                Ok(PreparedImportOutcome::Cancelled)
-            }
-            Err(e) => Err(e),
-        }
-    })
-    .await
-}
-#[tauri::command]
-fn cancel_prepared_import(app: AppHandle, request_id: String) -> Result<()> {
-    app.state::<Session>()
-        .cancel_prepared_import(Some(&request_id))
-}
-
-#[tauri::command]
-async fn prepare_duplicate_check(
-    app: AppHandle,
-    root: String,
-    request_id: String,
-    package_id: Option<i64>,
-) -> Result<PreparedDuplicates> {
-    let (root, flag) = app
-        .state::<Session>()
-        .begin_duplicates(Path::new(&root), &request_id)?;
-    background(move || {
-        let state = app.state::<Session>();
-        let result = prepare_duplicate_files(&root, package_id, &flag).and_then(|prepared| {
-            state.finish_duplicate_preparation(&root, &request_id, &flag, prepared)
-        });
-        if result.is_err() {
-            let _ = state.finish_duplicates(&root, &request_id, &flag);
-        }
-        result
-    })
-    .await
-}
-#[tauri::command]
-async fn run_duplicate_check(
-    app: AppHandle,
-    request_id: String,
-    progress: tauri::ipc::Channel<DuplicateProgress>,
-) -> Result<DuplicateReport> {
-    let (root, flag, prepared) = app.state::<Session>().take_duplicates(&request_id)?;
-    background(move || {
-        let state = app.state::<Session>();
-        // Separate scanner gate: the import gate is never held across file reads.
-        let result = match state.duplicate_gate.try_lock() {
-            Ok(_gate) => run_duplicate_files(prepared, &flag, |value| {
-                let _ = progress.send(value);
-            }),
-            Err(_) => Err("Eine frühere Duplikatprüfung läuft noch; bitte kurz abwarten".into()),
-        };
-        let stopped = state.finish_duplicates(&root, &request_id, &flag)?;
-        result.map(|mut report| {
-            if stopped {
-                report.cancelled = true;
-                report.complete = false;
-                report.groups.clear();
-            }
-            report
-        })
-    })
-    .await
-}
-#[tauri::command]
-fn cancel_duplicate_check(app: AppHandle, request_id: String) -> Result<()> {
-    app.state::<Session>().cancel_duplicates(Some(&request_id))
-}
-
-#[tauri::command]
-async fn storage_report(
-    app: AppHandle,
-    root: String,
-    request_id: String,
-    on_progress: tauri::ipc::Channel<StorageProgress>,
-) -> Result<StorageReport> {
-    let (root, cancelled) = app
-        .state::<Session>()
-        .begin_storage(Path::new(&root), &request_id)?;
-    background(move || {
-        let state = app.state::<Session>();
-        let result = match state.storage_gate.try_lock() {
-            Ok(_gate) => read_storage_report(&root, &cancelled, |progress| {
-                let _ = on_progress.send(progress);
-            }),
-            Err(_) => Err("Eine frühere Speichermessung läuft noch; bitte kurz abwarten".into()),
-        };
-        let stopped = state.finish_storage(&root, &request_id, &cancelled)?;
-        result.map(|mut report| {
-            if stopped {
-                report.cancelled = true;
-                report.complete = false;
-            }
-            report
-        })
-    })
-    .await
-}
-
-#[tauri::command]
-fn cancel_storage_report(app: AppHandle, request_id: String) -> Result<()> {
-    app.state::<Session>().cancel_storage(Some(&request_id))
-}
-
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Session::default())
         .invoke_handler(tauri::generate_handler![
             create_library,
-            prepare_library_recovery,
-            run_library_recovery,
-            cancel_library_recovery,
-            prepare_duplicate_check,
-            run_duplicate_check,
-            cancel_duplicate_check,
-            storage_report,
-            cancel_storage_report,
             open_library,
             get_library,
             select_import_source,
             dropped_import_sources,
-            prepare_import_package,
-            authorize_prepared_import,
-            import_prepared_package,
-            cancel_prepared_import,
             import_folder,
             import_zip,
             estimate_zip,
@@ -2284,192 +1549,6 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::{fs, time::SystemTime};
-
-    #[test]
-    fn duplicate_preparation_is_owned_before_work_and_stale_completion_cannot_attach_or_clear_newer(
-    ) {
-        let directory = std::env::temp_dir().join(format!(
-            "duplicate-session-{}",
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&directory).unwrap();
-        let source = directory.join("source");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("A.wav"), b"abc").unwrap();
-        fs::write(source.join("B.wav"), b"abc").unwrap();
-        let mut library = Library::create(&directory.join("Library")).unwrap();
-        library.import_folder(&source).unwrap();
-        let root = library.root().to_owned();
-        drop(library);
-        let image = fs::read(root.join("catalog.sqlite3")).unwrap();
-        let session = Session::default();
-        session.set_root(root.clone()).unwrap();
-        let (_, stopped) = session.begin_duplicates(&root, "prepare-stop").unwrap();
-        let prepared = prepare_duplicate_files(&root, None, &AtomicBool::new(false)).unwrap();
-        session.cancel_duplicates(Some("prepare-stop")).unwrap();
-        assert!(stopped.load(Ordering::Relaxed));
-        assert!(session.begin_duplicates(&root, "prepare-stop").is_err());
-        assert!(session
-            .finish_duplicate_preparation(&root, "prepare-stop", &stopped, prepared)
-            .is_err());
-        assert!(session
-            .finish_duplicates(&root, "prepare-stop", &stopped)
-            .unwrap());
-        let (_, old) = session.begin_duplicates(&root, "old").unwrap();
-        let prepared = prepare_duplicate_files(&root, None, &old).unwrap();
-        let (_, new) = session.begin_duplicates(&root, "new").unwrap();
-        assert!(old.load(Ordering::Relaxed));
-        assert!(session
-            .finish_duplicate_preparation(&root, "old", &old, prepared)
-            .is_err());
-        assert!(session.finish_duplicates(&root, "old", &old).is_err());
-        session.cancel_duplicates(Some("old")).unwrap();
-        assert!(!new.load(Ordering::Relaxed));
-        let prepared = prepare_duplicate_files(&root, None, &new).unwrap();
-        assert_eq!(
-            session
-                .finish_duplicate_preparation(&root, "new", &new, prepared)
-                .unwrap()
-                .total,
-            2
-        );
-        let (pinned, flag, prepared) = session.take_duplicates("new").unwrap();
-        assert!(session.take_duplicates("new").is_err());
-        session.set_root(directory.join("different")).unwrap();
-        assert!(flag.load(Ordering::Relaxed));
-        let report = run_duplicate_files(prepared, &flag, |_| {}).unwrap();
-        assert!(report.cancelled);
-        assert!(report.groups.is_empty());
-        assert!(session.finish_duplicates(&pinned, "new", &flag).is_err());
-        assert_eq!(fs::read(root.join("catalog.sqlite3")).unwrap(), image);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn duplicate_stop_is_independent_and_actual_audio_writer_cancels_inside_its_gate() {
-        let directory = std::env::temp_dir().join(format!(
-            "duplicate-audio-session-{}",
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let source = directory.join("source");
-        fs::create_dir_all(&source).unwrap();
-        fs::write(
-            source.join("A.mp3"),
-            include_bytes!("../tests/fixtures/audio/stereo44100.mp3"),
-        )
-        .unwrap();
-        let mut library = Library::create(&directory.join("Library")).unwrap();
-        library.import_folder(&source).unwrap();
-        let root = library.root().to_owned();
-        let session = Session::default();
-        session.set_root(root.clone()).unwrap();
-        assert!(session.begin_duplicates(&root, "").is_err());
-        assert!(session.begin_duplicates(&root, &"x".repeat(129)).is_err());
-        assert!(session
-            .begin_duplicates(Path::new("/owned/other"), "wrong")
-            .is_err());
-        {
-            let _gate = session.import_gate.lock().unwrap();
-            assert!(session.begin_duplicates(&root, "inside-mutation").is_err());
-        }
-        let (_, storage) = session.begin_storage(&root, "storage").unwrap();
-        let (_, audio) = session.begin_audio_analysis("audio").unwrap();
-        let (_, stopped) = session.begin_duplicates(&root, "stopped").unwrap();
-        let prepared = prepare_duplicate_files(&root, None, &stopped).unwrap();
-        session
-            .finish_duplicate_preparation(&root, "stopped", &stopped, prepared)
-            .unwrap();
-        session.cancel_duplicates(Some("stopped")).unwrap();
-        assert!(stopped.load(Ordering::Relaxed));
-        assert!(session.take_duplicates("stopped").is_err());
-        assert!(!storage.load(Ordering::Relaxed));
-        assert!(!audio.load(Ordering::Relaxed));
-        let (_, duplicates) = session.begin_duplicates(&root, "writer-cancelled").unwrap();
-        let ids = library
-            .prepare_audio_analysis(
-                CatalogQuery {
-                    kind: Some(crate::library::AssetKind::Sound),
-                    ..Default::default()
-                },
-                None,
-            )
-            .unwrap();
-        session
-            .finish_audio_preparation(&root, "audio", &audio, ids)
-            .unwrap();
-        let (pinned, flag, files) = session.take_audio_analysis("audio").unwrap();
-        let summary = session
-            .run_prepared_audio(&library, &pinned, "audio", &flag, files, |_| {
-                assert!(duplicates.load(Ordering::Relaxed));
-                assert!(storage.load(Ordering::Relaxed));
-                assert!(session.begin_duplicates(&root, "during-write").is_err());
-            })
-            .unwrap();
-        assert_eq!(summary.ready, 1);
-        assert!(session
-            .finish_duplicates(&root, "writer-cancelled", &duplicates)
-            .unwrap());
-        drop(library);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn storage_jobs_pin_root_and_token_and_never_clear_or_cancel_independent_newer_jobs() {
-        let session = Session::default();
-        let first = PathBuf::from("/owned/first");
-        session.set_root(first.clone()).unwrap();
-        assert!(session.begin_storage(&first, "").is_err());
-        assert!(session.begin_storage(&first, &"x".repeat(129)).is_err());
-        assert!(session
-            .begin_storage(Path::new("/owned/other"), "job")
-            .is_err());
-        {
-            let gate = session.import_gate.lock().unwrap();
-            assert!(session.begin_storage(&first, "during-mutation").is_err());
-            drop(gate);
-        }
-        let (_, older) = session.begin_storage(&first, "older-token").unwrap();
-        assert!(session.begin_storage(&first, "older-token").is_err());
-        assert!(!older.load(Ordering::Relaxed));
-        let (_, newer) = session.begin_storage(&first, "newer-token").unwrap();
-        assert!(older.load(Ordering::Relaxed));
-        assert!(session
-            .finish_storage(&first, "older-token", &older)
-            .is_err());
-        assert!(Arc::ptr_eq(
-            &session.storage_report.lock().unwrap().as_ref().unwrap().1,
-            &newer
-        ));
-        session.cancel_storage(Some("older-token")).unwrap();
-        assert!(!newer.load(Ordering::Relaxed));
-        let waveform = Arc::new(AtomicBool::new(false));
-        *session.audio_waveform.lock().unwrap() = Some(("independent".into(), waveform.clone()));
-        session.cancel_storage(Some("newer-token")).unwrap();
-        assert!(session.begin_storage(&first, "newer-token").is_err());
-        assert!(newer.load(Ordering::Relaxed));
-        assert!(!waveform.load(Ordering::Relaxed));
-        assert!(session
-            .finish_storage(&first, "newer-token", &newer)
-            .unwrap());
-        assert!(session.storage_report.lock().unwrap().is_none());
-        let (_, root_old) = session.begin_storage(&first, "root-old").unwrap();
-        let second = PathBuf::from("/owned/second");
-        session.set_root(second.clone()).unwrap();
-        assert!(root_old.load(Ordering::Relaxed));
-        let (_, latest) = session.begin_storage(&second, "root-new").unwrap();
-        assert!(session
-            .finish_storage(&first, "root-old", &root_old)
-            .is_err());
-        assert!(!session
-            .finish_storage(&second, "root-new", &latest)
-            .unwrap());
-    }
 
     #[test]
     fn explicit_audio_population_jobs_keep_frozen_scope_partial_progress_and_cancel_owners() {
@@ -2523,7 +1602,6 @@ mod tests {
             session.take_audio_analysis("latest-token").is_err(),
             "prepared job is consumed once"
         );
-        let (_, storage_flag) = session.begin_storage(&job_root, "active-storage").unwrap();
         let mut progress = Vec::new();
         let summary = session
             .run_prepared_audio(
@@ -2533,10 +1611,6 @@ mod tests {
                 &flag,
                 frozen,
                 |value| {
-                    assert!(
-                        storage_flag.load(Ordering::Relaxed),
-                        "population cancels the report inside its mutation gate before progress or writes"
-                    );
                     if value.processed == 1 {
                         session.cancel_audio_analysis(Some("latest-token")).unwrap();
                     }
@@ -2544,9 +1618,6 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(session
-            .finish_storage(&job_root, "active-storage", &storage_flag)
-            .unwrap());
         assert_eq!(summary.total, 45);
         assert_eq!(summary.processed, 1);
         assert_eq!(summary.ready, 1);
@@ -2935,373 +2006,4 @@ mod tests {
         drop(library);
         fs::remove_dir_all(root).unwrap();
     }
-}
-
-#[cfg(all(test, target_os = "macos"))]
-#[path = "preimport_session_tests.rs"]
-mod preimport_session_tests;
-
-#[cfg(all(test, target_os = "macos"))]
-#[path = "recovery_session_tests.rs"]
-mod recovery_session_tests;
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RecoveryPhase {
-    Preparing,
-    Ready,
-    Running,
-}
-struct RecoveryJob {
-    request_id: String,
-    root: Option<PathBuf>,
-    generation: u64,
-    control: Arc<ImportControl>,
-    plan: Option<PreparedRecovery>,
-    phase: RecoveryPhase,
-}
-impl Session {
-    fn begin_recovery(
-        &self,
-        root: Option<&Path>,
-        id: &str,
-    ) -> Result<(Option<PathBuf>, u64, Arc<ImportControl>)> {
-        if id.is_empty() || id.len() > 128 || root.is_some_and(|r| r.as_os_str().len() > 4096) {
-            return Err("Ungültige Wiederherstellungsanfrage".into());
-        }
-        let _gate = self
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        if current.as_deref() != root {
-            return Err("Aktive Bibliothek wurde geändert".into());
-        }
-        let mut jobs = self
-            .recovery
-            .lock()
-            .map_err(|_| "Wiederherstellung ist nicht verfügbar")?;
-        if jobs.as_ref().is_some_and(|j| j.request_id == id) {
-            return Err("Diese Anfrage ist bereits registriert".into());
-        }
-        let generation = self.root_generation.load(Ordering::Relaxed);
-        let control = Arc::new(ImportControl::default());
-        if let Some(old) = jobs.replace(RecoveryJob {
-            request_id: id.into(),
-            root: current.clone(),
-            generation,
-            control: control.clone(),
-            plan: None,
-            phase: RecoveryPhase::Preparing,
-        }) {
-            old.control.cancel()
-        }
-        Ok((current.clone(), generation, control))
-    }
-    fn attach_recovery(
-        &self,
-        root: Option<&Path>,
-        generation: u64,
-        id: &str,
-        control: &Arc<ImportControl>,
-        plan: PreparedRecovery,
-    ) -> Result<RecoveryPreparation> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        let mut jobs = self
-            .recovery
-            .lock()
-            .map_err(|_| "Wiederherstellung ist nicht verfügbar")?;
-        let job = jobs
-            .as_mut()
-            .filter(|j| {
-                j.request_id == id
-                    && Arc::ptr_eq(&j.control, control)
-                    && j.phase == RecoveryPhase::Preparing
-            })
-            .ok_or("Wiederherstellungsanfrage wurde ersetzt")?;
-        if current.as_deref() != root
-            || self.root_generation.load(Ordering::Relaxed) != generation
-            || control.cancellation_flag().load(Ordering::Relaxed)
-        {
-            return Err("Vorbereitung ist nicht mehr aktuell".into());
-        }
-        let reply = plan.reply(id);
-        job.plan = Some(plan);
-        job.phase = RecoveryPhase::Ready;
-        Ok(reply)
-    }
-    fn take_recovery(
-        &self,
-        id: &str,
-    ) -> Result<(Option<PathBuf>, u64, Arc<ImportControl>, PreparedRecovery)> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        let mut jobs = self
-            .recovery
-            .lock()
-            .map_err(|_| "Wiederherstellung ist nicht verfügbar")?;
-        let job = jobs
-            .as_mut()
-            .filter(|j| {
-                j.request_id == id
-                    && j.phase == RecoveryPhase::Ready
-                    && j.root.as_deref() == current.as_deref()
-                    && j.generation == self.root_generation.load(Ordering::Relaxed)
-                    && !j.control.cancellation_flag().load(Ordering::Relaxed)
-            })
-            .ok_or("Bitte den Vorgang erneut vorbereiten")?;
-        let plan = job.plan.take().ok_or("Plan wurde bereits verbraucht")?;
-        job.phase = RecoveryPhase::Running;
-        Ok((job.root.clone(), job.generation, job.control.clone(), plan))
-    }
-    fn with_recovery_root(
-        &self,
-        root: Option<&Path>,
-        generation: u64,
-        id: &str,
-        control: &Arc<ImportControl>,
-        operation: &mut dyn FnMut() -> Result<Option<String>>,
-    ) -> Result<Option<String>> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        if current.as_deref() != root
-            || self.root_generation.load(Ordering::Relaxed) != generation
-            || control.cancellation_flag().load(Ordering::Relaxed)
-        {
-            return Err("Vorgang ist nicht mehr aktuell".into());
-        }
-        if !self
-            .recovery
-            .lock()
-            .map_err(|_| "Wiederherstellung ist nicht verfügbar")?
-            .as_ref()
-            .is_some_and(|j| {
-                j.request_id == id
-                    && Arc::ptr_eq(&j.control, control)
-                    && j.phase == RecoveryPhase::Running
-            })
-        {
-            return Err("Wiederherstellungsanfrage wurde ersetzt".into());
-        }
-        operation()
-    }
-    fn finish_recovery(&self, id: &str, control: &Arc<ImportControl>) -> Result<()> {
-        let mut jobs = self
-            .recovery
-            .lock()
-            .map_err(|_| "Wiederherstellung ist nicht verfügbar")?;
-        if jobs
-            .as_ref()
-            .is_some_and(|j| j.request_id == id && Arc::ptr_eq(&j.control, control))
-        {
-            jobs.take();
-        }
-        Ok(())
-    }
-    fn cancel_recovery(&self, id: Option<&str>) -> Result<()> {
-        let mut jobs = self
-            .recovery
-            .lock()
-            .map_err(|_| "Wiederherstellung ist nicht verfügbar")?;
-        if let Some(j) = jobs
-            .as_mut()
-            .filter(|j| id.is_none_or(|id| j.request_id == id))
-        {
-            j.control.cancel();
-            j.plan.take();
-            if j.phase == RecoveryPhase::Ready {
-                jobs.take();
-            }
-        }
-        Ok(())
-    }
-}
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RecoveryAcknowledgement {
-    request_id: String,
-    acknowledged: bool,
-}
-#[tauri::command]
-async fn prepare_library_recovery(
-    app: AppHandle,
-    root: Option<String>,
-    request_id: String,
-    request: RecoveryRequest,
-    on_progress: tauri::ipc::Channel<RecoveryProgress>,
-) -> Result<RecoveryPreparation> {
-    match &request {
-        RecoveryRequest::Backup { destination_parent } => {
-            selected_path(&app, Path::new(destination_parent))?
-        }
-        RecoveryRequest::Restore {
-            artifact_root,
-            destination_parent,
-        } => {
-            selected_path(&app, Path::new(artifact_root))?;
-            selected_path(&app, Path::new(destination_parent))?;
-        }
-    }
-    let kind = request.kind();
-    let expected = root.as_deref().map(Path::new);
-    let (root, generation, control) = app
-        .state::<Session>()
-        .begin_recovery(expected, &request_id)?;
-    background(move || {
-        let state = app.state::<Session>();
-        let prepared = (|| {
-            let _gate = state.import_gate.try_lock().map_err(|_| RecoveryFault {
-                reason: "busy",
-                message: "Bitte den laufenden Dateivorgang abwarten".into(),
-                cancelled: false,
-            })?;
-            state.cancel_storage(None).map_err(|e| RecoveryFault {
-                reason: "busy",
-                message: e,
-                cancelled: false,
-            })?;
-            state.cancel_duplicates(None).map_err(|e| RecoveryFault {
-                reason: "busy",
-                message: e,
-                cancelled: false,
-            })?;
-            prepare_recovery(root.as_deref(), request, &control, &request_id, |p| {
-                let _ = on_progress.send(p);
-            })
-        })();
-        match prepared {
-            Ok(plan) => match state.attach_recovery(
-                root.as_deref(),
-                generation,
-                &request_id,
-                &control,
-                plan,
-            ) {
-                Ok(reply) => Ok(reply),
-                Err(e) => {
-                    state.finish_recovery(&request_id, &control)?;
-                    Ok(RecoveryFault {
-                        reason: "stale",
-                        message: e,
-                        cancelled: false,
-                    }
-                    .preparation(&request_id, kind, &control))
-                }
-            },
-            Err(e) => {
-                state.finish_recovery(&request_id, &control)?;
-                Ok(e.preparation(&request_id, kind, &control))
-            }
-        }
-    })
-    .await
-}
-#[tauri::command]
-async fn run_library_recovery(
-    app: AppHandle,
-    request_id: String,
-    on_progress: tauri::ipc::Channel<RecoveryProgress>,
-) -> Result<RecoveryOutcome> {
-    let (root, generation, control, plan) = app.state::<Session>().take_recovery(&request_id)?;
-    background(move || {
-        let state = app.state::<Session>();
-        let destination = plan.destination.clone();
-        let kind = plan.kind;
-        let result = (|| -> Result<RecoveryOutcome> {
-            Ok(match state.import_gate.try_lock() {
-                Ok(_gate) => {
-                    state.cancel_storage(None)?;
-                    state.cancel_duplicates(None)?;
-                    let mut publisher = |op: &mut dyn FnMut() -> Result<Option<String>>| {
-                        state.with_recovery_root(
-                            root.as_deref(),
-                            generation,
-                            &request_id,
-                            &control,
-                            op,
-                        )
-                    };
-                    run_recovery(
-                        plan,
-                        &control,
-                        &request_id,
-                        |p| {
-                            let _ = on_progress.send(p);
-                        },
-                        &mut publisher,
-                    )
-                }
-                Err(_) => RecoveryOutcome::Failed {
-                    request_id: request_id.clone(),
-                    kind,
-                    reason: "busy",
-                    message: "Bitte den laufenden Dateivorgang abwarten und neu vorbereiten".into(),
-                    cleanup: "notNeeded",
-                    residue_path: None,
-                },
-            })
-        })();
-        let mut result = result.unwrap_or_else(|e| RecoveryOutcome::Failed {
-            request_id: request_id.clone(),
-            kind,
-            reason: "busy",
-            message: e,
-            cleanup: "notNeeded",
-            residue_path: None,
-        });
-        if let Err(e) = state.finish_recovery(&request_id, &control) {
-            if let RecoveryOutcome::Published {
-                warning,
-                durability,
-                ..
-            } = &mut result
-            {
-                *warning = Some(format!(
-                    "{} Anfragefreigabe nach Veröffentlichung fehlgeschlagen: {e}",
-                    warning.take().unwrap_or_default()
-                ));
-                *durability = "uncertain";
-            }
-        }
-        if kind == RecoveryKind::Restore {
-            if let RecoveryOutcome::Published {
-                destination_path,
-                warning,
-                durability,
-                ..
-            } = &mut result
-            {
-                if Path::new(destination_path) == destination {
-                    if let Err(e) = app
-                        .asset_protocol_scope()
-                        .allow_directory(&destination, true)
-                    {
-                        *warning = Some(format!(
-                            "{} Freigabe für späteres Öffnen fehlgeschlagen: {e}",
-                            warning.take().unwrap_or_default()
-                        ));
-                        *durability = "uncertain";
-                    }
-                }
-            }
-        }
-        Ok(result)
-    })
-    .await
-}
-#[tauri::command]
-fn cancel_library_recovery(app: AppHandle, request_id: String) -> Result<RecoveryAcknowledgement> {
-    app.state::<Session>().cancel_recovery(Some(&request_id))?;
-    Ok(RecoveryAcknowledgement {
-        request_id,
-        acknowledged: true,
-    })
 }

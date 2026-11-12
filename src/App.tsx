@@ -13,10 +13,6 @@ import ImageGroupPreview from "./ImageGroupPreview";
 import { assetKey, type ImageGroupSummary, type ImageWorkflow } from "./imageWorkflows";
 import VariantEditor from "./VariantEditor";
 import { TrashActions, TrashDialog, type TrashEntry } from "./Trash";
-import { StorageDialog } from "./StorageDialog";
-import { RecoveryDialog, type RecoveryKind } from "./RecoveryDialog";
-import { DuplicateDialog } from "./DuplicateDialog";
-import { ImportReviewDialog, type PreparedImport, type PreparationProgress } from "./ImportReviewDialog";
 import { FolderDialog, FolderMembershipEditor, folderPath, type ProjectFolder } from "./ProjectFolders";
 import { nextInspectorTab, type InspectorTab } from "./inspectorTabs";
 import { catalogSelection, nextCatalogIndex, type CatalogSelection, type SelectionMode } from "./catalogSelection";
@@ -119,8 +115,7 @@ type ImportProgress = {
   totalEntries: number;
   currentPath: string | null;
 };
-type ImportRequest = { id: string; phase: "prepare" | "review" | "authorize" | "confirm" | "copy" | "settling"; choice: ((proceed: boolean) => void) | null; deciding: boolean; cancellation: Promise<void> | null; acknowledged: boolean };
-type ImportOwner = { root: string; generation: number; request: ImportRequest | null; stopped: boolean; imported: number; skipped: number; cancellationError: string | null };
+type ImportOwner = { root: string; generation: number; stopped: boolean; imported: number; skipped: number; cancellationError: string | null };
 type PreparedTrashRemoval = { token: string; packageName: string; sourcePath: string; externalRoot: string; deletedAt: number; assetCount: number; fileCount: number };
 type TrashRemovalOwner = { root: string; scope: number; generation: number; token: string | null; running: boolean };
 type Notice = { tone: "error" | "success"; message: string };
@@ -213,20 +208,12 @@ export default function App() {
         },
   );
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
-  const [preparationProgress, setPreparationProgress] = useState<PreparationProgress | null>(null);
   const [importActive, setImportActive] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [importReview, setImportReview] = useState<{ prepared: PreparedImport; remaining: number } | null>(null);
-  const [importReviewError, setImportReviewError] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [packageId, setPackageId] = useState<number | null>(null);
   const [folderId, setFolderId] = useState<number | null>(null);
   const [showFolderDialog, setShowFolderDialog] = useState(false);
-  const [showStorage, setShowStorage] = useState(false);
-  const [recoveryScope, setRecoveryScope] = useState<{ id: string; generation: number; root: string | null; kind: RecoveryKind } | null>(null);
-  const recoveryOwner = useRef<typeof recoveryScope>(null);
-  const pendingRecoveryOpen = useRef<{ path: string; generation: number; root: string | null } | null>(null);
-  const [showDuplicates, setShowDuplicates] = useState(false);
   const [originalFolder, setOriginalFolder] = useState<string | null>(null);
   const [format, setFormat] = useState<string | null>(null);
   const [kind, setKind] = useState<AssetKind | null>(null);
@@ -324,7 +311,6 @@ export default function App() {
       mounted.current = false;
       const removal = trashRemovalOwner.current; trashRemovalOwner.current = null;
       if (removal) void discardTrashRemoval(removal).catch(() => {});
-      recoveryOwner.current = null; pendingRecoveryOpen.current = null;
       const owner = importOwner.current; importOwner.current = null;
       if (owner) abandonImport(owner);
     };
@@ -562,21 +548,17 @@ export default function App() {
     trashGeneration.current++;
     const removal = trashRemovalOwner.current; trashRemovalOwner.current = null;
     if (removal) void discardTrashRemoval(removal).catch(() => {});
-    recoveryOwner.current = null; pendingRecoveryOpen.current = null; setRecoveryScope(null);
     const owner = importOwner.current; importOwner.current = null;
     if (owner) abandonImport(owner);
     currentLibraryRoot.current = info.root;
     operationGeneration.current++; operationRunning.current = false; setBusy(null);
-    setImportProgress(null); setPreparationProgress(null); setImportActive(false); setCancelling(false);
-    setImportReview(null); setImportReviewError(null);
+    setImportProgress(null); setImportActive(false); setCancelling(false);
     setSelected(null);
     setSelection({ keys: [], anchor: null });
     setSelectedFileId(null);
     setModelSelection(null);
     setShowTrash(false);
     setShowFolderDialog(false);
-    setShowStorage(false);
-    setShowDuplicates(false);
     setFolderId(null);
     focusAssetId.current = null;
     focusFileId.current = null;
@@ -604,10 +586,9 @@ export default function App() {
     });
   }
 
-  function openLibrary() { openLibraryAt(); }
-  function openLibraryAt(restoredRoot?: string) {
+  function openLibrary() {
     void act("Bibliothek wird geöffnet …", async (isCurrent) => {
-      const root = restoredRoot ?? await open({
+      const root = await open({
         directory: true,
         multiple: false,
         title: "Bestehende Bibliothek öffnen",
@@ -618,24 +599,6 @@ export default function App() {
     });
   }
 
-  function openRecovery(kind: RecoveryKind) {
-    if (!mounted.current || actionsDisabled || operationRunning.current || (kind === "backup" && !library)) return;
-    const scope = { id: crypto.randomUUID(), generation: ++operationGeneration.current, root: library?.root ?? null, kind };
-    recoveryOwner.current = scope; setRecoveryScope(scope); operationRunning.current = true;
-    setBusy(kind === "backup" ? "Bibliothekssicherung …" : "Bibliothek wiederherstellen …");
-  }
-  function closeRecovery(scope: NonNullable<typeof recoveryScope>, restoredPath?: string) {
-    if (!mounted.current || recoveryOwner.current !== scope || operationGeneration.current !== scope.generation || (currentLibraryRoot.current ?? null) !== scope.root) return;
-    recoveryOwner.current = null; setRecoveryScope(null); operationRunning.current = false; setBusy(null);
-    if (restoredPath) pendingRecoveryOpen.current = { path: restoredPath, root: scope.root, generation: scope.generation };
-  }
-  useEffect(() => {
-    const pending = pendingRecoveryOpen.current;
-    if (!pending || recoveryScope || busy !== null) return;
-    pendingRecoveryOpen.current = null;
-    if (mounted.current && operationGeneration.current === pending.generation && (currentLibraryRoot.current ?? null) === pending.root && !operationRunning.current) openLibraryAt(pending.path);
-  }, [recoveryScope, busy]);
-
   function importPackage() {
     beginImports("Paket zum Importieren auswählen …", async () => {
       const selected = await invoke<ImportSource | null>("select_import_source");
@@ -643,39 +606,26 @@ export default function App() {
     });
   }
 
-  function ownsImport(owner: ImportOwner, request?: ImportRequest) {
+  function ownsImport(owner: ImportOwner) {
     return mounted.current && importOwner.current === owner && operationGeneration.current === owner.generation
-      && currentLibraryRoot.current === owner.root && (!request || owner.request === request);
-  }
-  function cancelPrepared(request: ImportRequest, again = false): Promise<void> {
-    if (request.cancellation) return request.cancellation;
-    if (request.acknowledged && !again) return Promise.resolve();
-    const pending = invoke<void>("cancel_prepared_import", { requestId: request.id });
-    request.cancellation = pending;
-    void pending.then(() => { request.acknowledged = true; }, () => {}).finally(() => {
-      if (request.cancellation === pending) request.cancellation = null;
-    });
-    return pending;
+      && currentLibraryRoot.current === owner.root;
   }
   function abandonImport(owner: ImportOwner) {
     owner.stopped = true;
-    const request = owner.request;
-    const resolve = request?.choice; if (request) request.choice = null;
-    resolve?.(false);
-    if (request) void cancelPrepared(request).catch(() => {});
+    void invoke<boolean>("cancel_import").catch(() => {});
   }
   function beginImports(label: string, sources: () => Promise<ImportSource[]>) {
     if (!library || actionsDisabled || operationRunning.current) return;
-    const owner: ImportOwner = { root: library.root, generation: ++operationGeneration.current, request: null, stopped: false, imported: 0, skipped: 0, cancellationError: null };
-    importOwner.current = owner; operationRunning.current = true; setBusy(label); setNotice(null); setImportActive(true); setCancelling(false); setImportReviewError(null);
+    const owner: ImportOwner = { root: library.root, generation: ++operationGeneration.current, stopped: false, imported: 0, skipped: 0, cancellationError: null };
+    importOwner.current = owner; operationRunning.current = true; setBusy(label); setNotice(null); setImportActive(true); setCancelling(false);
     void (async () => {
       try {
         const selected = await sources();
         if (!ownsImport(owner)) return;
         if (owner.stopped) { setNotice({ tone: "success", message: "Import abgebrochen. Es wurde kein Paket importiert." }); return; }
-        for (const [index, source] of selected.entries()) {
+        for (const source of selected) {
           if (!ownsImport(owner) || owner.stopped) break;
-          try { await importSource(owner, source, selected.length - index - 1); }
+          try { await importSource(owner, source); }
           catch (error: unknown) { throw new Error(`${source.path}: ${errorMessage(error)}`); }
         }
         if (ownsImport(owner) && owner.stopped) setNotice({ tone: owner.cancellationError ? "error" : "success", message: `Import abgebrochen. ${owner.imported} importierte Pakete bleiben erhalten.${owner.cancellationError ? ` Abbruchbestätigung fehlgeschlagen: ${owner.cancellationError}` : ""}` });
@@ -683,79 +633,45 @@ export default function App() {
       } catch (error: unknown) {
         if (ownsImport(owner)) setNotice({ tone: "error", message: `${errorMessage(error)}${owner.cancellationError ? ` Abbruchbestätigung fehlgeschlagen: ${owner.cancellationError}` : ""}${owner.imported ? ` ${owner.imported} vorherige Pakete bleiben importiert.` : ""} Verbleibende Quellen wurden nicht importiert.` });
       } finally {
-        if (ownsImport(owner)) { importOwner.current = null; operationRunning.current = false; setBusy(null); setImportActive(false); setImportProgress(null); setPreparationProgress(null); setCancelling(false); setImportReview(null); }
+        if (ownsImport(owner)) { importOwner.current = null; operationRunning.current = false; setBusy(null); setImportActive(false); setImportProgress(null); setCancelling(false); }
       }
     })();
   }
-  async function decideImport(proceed: boolean) {
-    const owner = importOwner.current, request = owner?.request;
-    if (!owner || !request || !ownsImport(owner, request) || owner.stopped || request.phase !== "review" || !request.choice || request.deciding) return;
-    const resolve = request.choice; request.deciding = true;
-    if (!proceed) {
-      setCancelling(true); setImportReviewError(null);
-      try { await cancelPrepared(request); }
-      catch (error: unknown) { if (ownsImport(owner, request) && !owner.stopped) { request.deciding = false; setImportReviewError(`Abbruch nicht bestätigt: ${errorMessage(error)}`); setCancelling(false); } return; }
-      if (!ownsImport(owner, request)) return;
+  async function importSource(owner: ImportOwner, source: ImportSource) {
+    if (source.isZip) {
+      setBusy("ZIP-Paket wird geprüft …");
+      const estimate = await invoke<ZipEstimate>("estimate_zip", { source: source.path });
+      if (!ownsImport(owner) || owner.stopped) return;
+      if (!estimate.hasSpace) throw new Error(`Nicht genug Speicherplatz: ${bytes(estimate.requiredBytes)} mit Reserve benötigt, ${bytes(estimate.availableBytes)} verfügbar.`);
+      setBusy("ZIP-Paket wartet auf die Speicherbestätigung …");
+      const proceed = await confirm(
+        `${number.format(estimate.entryCount)} ZIP-Einträge werden vollständig entpackt.\n\nInhalt: ${bytes(estimate.uncompressedBytes)}\nMit Speicherreserve: ${bytes(estimate.requiredBytes)}\nAm Bibliotheksort verfügbar: ${bytes(estimate.availableBytes)}\n\nDas Originalarchiv bleibt erhalten.`,
+        { title: "ZIP-Paket importieren?", okLabel: "Importieren", cancelLabel: "Abbrechen" },
+      );
+      if (!ownsImport(owner) || owner.stopped) return;
+      if (!proceed) { owner.skipped++; return; }
     }
-    request.choice = null;
-    setImportReview(null); setCancelling(false); resolve(proceed);
-  }
-  async function importSource(owner: ImportOwner, source: ImportSource, remaining: number) {
-    const request: ImportRequest = { id: crypto.randomUUID(), phase: "prepare", choice: null, deciding: false, cancellation: null, acknowledged: false };
-    owner.request = request; setBusy("Paketinhalt und Duplikate werden geprüft …"); setPreparationProgress(null);
-    const preparation = new Channel<PreparationProgress>();
-    preparation.onmessage = (value) => { if (ownsImport(owner, request) && !owner.stopped && request.phase === "prepare") setPreparationProgress(value); };
+    setBusy("Paket wird in die Bibliothek kopiert …");
+    const onProgress = new Channel<ImportProgress>();
+    onProgress.onmessage = (value) => {
+      // A cancel that arrived before the native import registered its control is re-sent once progress starts.
+      if (owner.stopped) void invoke<boolean>("cancel_import").catch(() => {});
+      else if (ownsImport(owner)) setImportProgress(value);
+    };
     try {
-      const prepared = await invoke<PreparedImport>("prepare_import_package", { root: owner.root, requestId: request.id, source: source.path, onProgress: preparation });
-      if (!ownsImport(owner, request) || owner.stopped) {
-        await request.cancellation?.catch(() => {});
-        await cancelPrepared(request, true); return;
-      }
-      setPreparationProgress(null);
-      if (prepared.requestId !== request.id) throw new Error("Importvorbereitung gehört nicht zu dieser Anfrage.");
-      if (prepared.binding !== "verified" || prepared.evidence.status !== "complete" || prepared.evidence.duplicateIncomingFiles > 0) {
-        request.phase = "review"; setBusy("Paket wartet auf deine Importentscheidung …"); setImportReviewError(null);
-        const proceed = await new Promise<boolean>((resolve) => { request.choice = resolve; setImportReview({ prepared, remaining }); });
-        if (!ownsImport(owner, request) || owner.stopped) return;
-        if (!proceed) { owner.skipped++; return; }
-      }
-      if (prepared.binding !== "verified") {
-        request.phase = "authorize"; setBusy("Ganzpaket-Import wird autorisiert …");
-        const authorization = await invoke<{ requestId: string; zipEstimate: ZipEstimate | null }>("authorize_prepared_import", { requestId: request.id });
-        if (!ownsImport(owner, request) || owner.stopped) return;
-        if (authorization.requestId !== request.id) throw new Error("Importautorisierung gehört nicht zu dieser Anfrage.");
-        if (prepared.source.isZip) {
-          const estimate = authorization.zipEstimate;
-          if (!estimate) throw new Error("Speicherabschätzung für dieses ZIP-Paket ist nicht verfügbar.");
-          if (!estimate.hasSpace) throw new Error(`Nicht genug Speicherplatz: ${bytes(estimate.requiredBytes)} mit Reserve benötigt, ${bytes(estimate.availableBytes)} verfügbar.`);
-          request.phase = "confirm"; setBusy("ZIP-Paket wartet auf die Speicherbestätigung …");
-          const proceed = await confirm(
-            `${number.format(estimate.entryCount)} ZIP-Einträge werden vollständig entpackt.\n\nInhalt: ${bytes(estimate.uncompressedBytes)}\nMit Speicherreserve: ${bytes(estimate.requiredBytes)}\nAm Bibliotheksort verfügbar: ${bytes(estimate.availableBytes)}\n\nDas Originalarchiv bleibt erhalten.`,
-            { title: "ZIP-Paket importieren?", okLabel: "Importieren", cancelLabel: "Abbrechen" },
-          );
-          if (!ownsImport(owner, request) || owner.stopped) return;
-          if (!proceed) { await cancelPrepared(request); owner.skipped++; return; }
-        }
-      }
-      request.phase = "copy"; setBusy("Paket wird in die Bibliothek kopiert …");
-      const onProgress = new Channel<ImportProgress>();
-      onProgress.onmessage = (value) => { if (ownsImport(owner, request) && request.phase === "copy") setImportProgress(value); };
-      const result = await invoke<{ status: "imported"; package: AssetPackage } | { status: "cancelled" }>("import_prepared_package", { requestId: request.id, onProgress });
-      if (!ownsImport(owner, request)) return;
-      if (result.status === "cancelled") { owner.stopped = true; return; }
+      const imported = await invoke<AssetPackage>(source.isZip ? "import_zip" : "import_folder", { source: source.path, onProgress });
+      if (!ownsImport(owner)) return;
       owner.imported++;
       const info = await invoke<LibraryInfo>("get_library");
-      if (!ownsImport(owner, request)) return;
+      if (!ownsImport(owner)) return;
       if (info.root !== owner.root) throw new Error("Die aktive Bibliothek wurde geändert.");
       setLibrary(info); setRevision((value) => value + 1);
-      setNotice({ tone: "success", message: `${result.package.name} importiert · ${number.format(result.package.assetCount)} ${result.package.assetCount === 1 ? "Asset" : "Assets"}.` });
+      setNotice({ tone: "success", message: `${imported.name} importiert · ${number.format(imported.assetCount)} ${imported.assetCount === 1 ? "Asset" : "Assets"}.` });
     } catch (error: unknown) {
-      await cancelPrepared(request).catch((cancelError: unknown) => { owner.cancellationError = errorMessage(cancelError); });
+      if (owner.stopped) return;
       throw error;
     } finally {
-      request.phase = "settling";
-      await request.cancellation?.catch((error: unknown) => { owner.cancellationError = errorMessage(error); });
-      if (ownsImport(owner, request)) { owner.request = null; setImportProgress(null); setCancelling(false); }
+      if (ownsImport(owner)) setImportProgress(null);
     }
   }
 
@@ -768,18 +684,15 @@ export default function App() {
   };
 
   async function cancelImport() {
-    const owner = importOwner.current, request = owner?.request;
-    if (!owner || !ownsImport(owner) || request?.cancellation) return;
-    owner.stopped = true;
-    const resolve = request?.choice; if (request) request.choice = null;
-    resolve?.(false); setImportReview(null);
-    setCancelling(true); setImportReviewError(null);
+    const owner = importOwner.current;
+    if (!owner || !ownsImport(owner) || owner.stopped) return;
+    owner.stopped = true; setCancelling(true);
     try {
-      if (request) await cancelPrepared(request);
+      await invoke<boolean>("cancel_import");
       owner.cancellationError = null;
     } catch (error: unknown) {
       owner.cancellationError = errorMessage(error);
-      if (ownsImport(owner)) { setCancelling(false); setImportReviewError(`Abbruch nicht bestätigt: ${errorMessage(error)}`); }
+      if (ownsImport(owner)) setCancelling(false);
     }
   }
 
@@ -1158,11 +1071,10 @@ export default function App() {
         </div>
       )}
 
-      {importActive && !importReview && !importProgress && (
+      {importActive && !importProgress && (
         <section className="import-progress" aria-label="Paketprüfung" aria-live="polite">
           <div className="import-progress-summary">
             <strong>{cancelling ? "Abbruch angefordert …" : busy}</strong>
-            <span>{preparationProgress ? `Untersucht: ${number.format(preparationProgress.examinedCandidates)} · ${preparationProgress.totalCandidates === null ? "Gesamtzahl nicht ermittelt" : `${number.format(preparationProgress.totalCandidates)} Kandidaten`} · ${bytes(preparationProgress.bytesRead)} gelesen` : "Noch keine vollständige Duplikataussage."}</span>
             <button className="button outlined" onClick={() => void cancelImport()} disabled={cancelling}>{cancelling ? "Abbruch angefordert …" : "Import abbrechen"}</button>
           </div>
         </section>
@@ -1180,7 +1092,6 @@ export default function App() {
           {importProgress.currentPath && <p title={importProgress.currentPath}>{importProgress.currentPath}</p>}
         </section>
       )}
-      {importActive && !importReview && importReviewError && <p className="inline-error import-operation-error" role="alert">{importReviewError}</p>}
 
       {!library ? (
         <main className="onboarding">
@@ -1267,7 +1178,6 @@ export default function App() {
                 Bibliothek öffnen
                 <Icon name="arrow" />
               </button>
-              <button className="text-button" disabled={actionsDisabled} onClick={() => openRecovery("restore")}>Bibliothek wiederherstellen</button>
             </div>
           </section>
         </main>
@@ -1351,9 +1261,6 @@ export default function App() {
                 <Icon name="library" />
                 <div>
                   <strong>Speicherort</strong>
-                  <button className="text-button storage-report-link" disabled={actionsDisabled} onClick={() => setShowStorage(true)}>Speicherübersicht</button>
-                  <button className="text-button storage-report-link" disabled={actionsDisabled} onClick={() => openRecovery("backup")}>Bibliothek sichern</button>
-                  <button className="text-button storage-report-link" disabled={actionsDisabled} onClick={() => openRecovery("restore")}>Bibliothek wiederherstellen</button>
                   <p title={library.root}>{library.root}</p>
                 </div>
               </div>
@@ -1384,7 +1291,6 @@ export default function App() {
               />
             </div>
             <div className="catalog-tools">
-              <button className="button outlined" disabled={actionsDisabled} onClick={() => setShowDuplicates(true)}>Datei-Duplikate prüfen</button>
               <label className="category-control">
                 <span className="visually-hidden">Kategorie</span>
                 <select aria-label="Nach Asset-Kategorie filtern" value={workflow ?? kind ?? ""} onChange={(event) => {
@@ -1899,10 +1805,6 @@ export default function App() {
           </aside>
         </div>
       )}
-      {library && showStorage && <StorageDialog key={library.root} root={library.root} formatBytes={bytes} onClose={() => setShowStorage(false)} />}
-      {recoveryScope && <RecoveryDialog key={recoveryScope.id} scopeId={recoveryScope.id} root={recoveryScope.root} kind={recoveryScope.kind} isCurrent={() => mounted.current && recoveryOwner.current === recoveryScope && operationGeneration.current === recoveryScope.generation && (currentLibraryRoot.current ?? null) === recoveryScope.root} formatBytes={bytes} onClose={() => closeRecovery(recoveryScope)} onOpenRestored={path => closeRecovery(recoveryScope, path)} />}
-      {library && showDuplicates && <DuplicateDialog key={library.root} root={library.root} selectedPackage={filteredPackage ? { id: filteredPackage.id, name: filteredPackage.name } : null} formatBytes={bytes} onClose={() => setShowDuplicates(false)} />}
-      {importReview && <ImportReviewDialog key={importReview.prepared.requestId} prepared={importReview.prepared} remaining={importReview.remaining} busy={cancelling} error={importReviewError} formatBytes={bytes} onProceed={() => void decideImport(true)} onCancel={() => void decideImport(false)} />}
       {library && showFolderDialog && (
         <FolderDialog folders={projectFolders} parentId={folderId} disabled={actionsDisabled} notice={notice}
           onCreate={createFolder} onClose={() => setShowFolderDialog(false)} />

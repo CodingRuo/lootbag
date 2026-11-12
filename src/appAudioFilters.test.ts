@@ -46,7 +46,6 @@ const hooks = registerHooks({
 });
 const { default: App } = await import(new URL("App.tsx", sourceRoot).href);
 const { default: AudioPreview } = await import(new URL("AudioPreview.tsx", sourceRoot).href);
-const { DuplicateDialog } = await import(new URL("DuplicateDialog.tsx", sourceRoot).href);
 
 const library = { root: "/owned/library", name: "Owned library", packages: [{ id: 1, name: "Fixture", relativePath: "fixture", assetCount: 41, sourceKind: "managed", available: true, externalRoot: null, tags: [] }], folders: [], assetCount: 41 };
 const matchingFile = { id: 11, originalFilename: "match.mp3", relativePath: "match.mp3", originalFolder: "", format: "MP3", kind: "sound", sizeBytes: 50, audio: { status: "ready", durationSeconds: 1, sampleRate: 44100, channels: 2, codec: "mp3", error: null }, available: true };
@@ -148,23 +147,6 @@ class Harness {
 }
 
 test.after(() => hooks.deregister());
-
-test("catalog action mounts the real duplicate dialog with library and selected package, without inheriting search filters", async () => {
-  const app = new Harness();
-  try {
-    await app.mount(); await app.change("Assets durchsuchen", "wind");
-    await app.click("Datei-Duplikate prüfen");
-    const dialog = app.find((node) => node.type === DuplicateDialog);
-    assert.equal(dialog.props.root, "/owned/library"); assert.equal(dialog.props.selectedPackage, null);
-    dialog.props.onClose(); await app.settle();
-    const packageButton = app.control("Fixture · 41 Assets");
-    packageButton.props.onClick(); await app.settle();
-    await app.click("Datei-Duplikate prüfen");
-    assert.deepEqual(app.find((node) => node.type === DuplicateDialog).props.selectedPackage, { id: 1, name: "Fixture" });
-    app.find((node) => node.type === "button" && app.text(node).trim() === "Bibliothek öffnen").props.onClick(); await app.settle();
-    assert.equal(app.elements(app.tree).some((node) => node.type === DuplicateDialog), false);
-  } finally { app.dispose(); }
-});
 
 test("saved audio criteria select Sounds, reset paging, and reach the desktop query", async () => {
   const app = new Harness();

@@ -1388,7 +1388,6 @@ p {
 .folder-memberships li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11px; color: #a7b4c4; }
 .folder-memberships li > button { flex: 0 0 auto; font-size: 10px; }
 
-
 /* The editor uses its height for the preview; onboarding retains the spacious header. */
 .editor-shell .topbar { height: 52px; flex-basis: 52px; padding: 0 16px; gap: 16px; }
 .editor-shell .brand { gap: 10px; }
@@ -1509,46 +1508,6 @@ p {
 .audio-filter-refresh { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .audio-filter-refresh .detail-hint { flex: 1; margin: 8px 0; }
 
-.storage-report-link { display: block; margin-top: 6px; font-size: 10px; }
-.storage-dialog { max-width: min(850px, calc(100vw - 32px)); overflow: auto; }
-.storage-report-actions { display: flex; gap: 8px; margin: 16px 0; }
-.storage-dialog .sound-table { width: 100%; }
-.storage-dialog h3 { margin-top: 20px; }
-.recovery-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
-.recovery-dialog progress { width: 100%; height: 8px; accent-color: var(--amber); }
-.recovery-dialog .source-path { overflow-wrap: anywhere; }
-.recovery-dialog details, .recovery-dialog > p, .recovery-result { font-size: 12px; line-height: 1.6; }
-.recovery-dialog details { margin-top: 16px; }
-.recovery-dialog summary { cursor: pointer; }
-.recovery-result { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 8px; }
-.storage-issues { padding-left: 20px; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
-
-.duplicate-dialog > label { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; }
-.duplicate-dialog select { max-width: 100%; min-width: 180px; }
-.duplicate-actions, .duplicate-groups { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
-.duplicate-groups { list-style: none; padding: 0; }
-.duplicate-groups button[aria-pressed="true"] { border-color: var(--amber); color: var(--amber); }
-.duplicate-dialog h3 { margin-top: 24px; }
-.duplicate-dialog h4 { margin: 18px 0 10px; }
-.duplicate-hash, .duplicate-issues { overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
-.duplicate-table-scroll { overflow-x: auto; }
-.duplicate-dialog .sound-table { width: 100%; }
-.duplicate-dialog .sound-table th:nth-child(2) { width: 40%; }
-.duplicate-dialog .sound-table td:nth-child(2) { white-space: normal; }
-.duplicate-dialog .sound-table td { vertical-align: top; }
-.duplicate-dialog .sound-table td p { margin: 6px 0 0; }
-.duplicate-issues { padding-left: 20px; }
-
-.import-review-dialog .source-path, .import-review-dialog li { overflow-wrap: anywhere; }
-.import-review-dialog .sound-table { width: 100%; table-layout: fixed; }
-.import-review-dialog .sound-table th:nth-child(2) { width: 50%; }
-.import-review-dialog .sound-table td { vertical-align: top; white-space: normal; }
-.import-review-dialog code { font-size: 10px; overflow-wrap: anywhere; }
-.import-review-dialog ul { font-size: 12px; line-height: 1.6; padding-left: 20px; }
-.import-review-dialog h3 { margin-top: 20px; }
-.import-review-scroll { overflow-x: auto; }
-.import-review-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
-.import-operation-error { padding: 0 24px; margin: 8px 0; }
 .import-progress-summary { flex-wrap: wrap; }
 
 .audio-analysis { flex: 0 0 auto; max-height: min(260px, 32dvh); overflow-y: auto; padding: 12px; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }

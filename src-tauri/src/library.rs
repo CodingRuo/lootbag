@@ -28,17 +28,11 @@ pub use audio::{AudioMetadata, AudioStatus, AudioWaveform, WaveformPeak};
 mod audio_filters;
 pub(crate) use audio_filters::AudioCriteria;
 #[cfg(any(feature = "desktop", test))]
-#[path = "duplicates.rs"]
-mod duplicates;
-#[cfg(feature = "desktop")]
-pub(crate) use duplicates::{
-    prepare_duplicate_check as prepare_duplicate_files, run_duplicate_check as run_duplicate_files,
-    DuplicateProgress, DuplicateReport, PreparedDuplicateCheck,
-};
-#[cfg(any(feature = "desktop", test))]
+// Without the desktop feature, tests only use the anchored import-stage helpers.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 #[path = "storage.rs"]
 mod storage;
-#[cfg(any(feature = "desktop", test))]
+#[cfg(feature = "desktop")]
 #[path = "trash_removal.rs"]
 mod trash_removal;
 use std::{
@@ -47,8 +41,6 @@ use std::{
     path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-#[cfg(feature = "desktop")]
-pub(crate) use storage::{read_storage_report, StorageProgress, StorageReport};
 #[cfg(feature = "desktop")]
 pub(crate) use trash_removal::{
     prepare as prepare_external_trash_removal, remove as remove_external_trash,
@@ -59,24 +51,8 @@ pub type Result<T> = std::result::Result<T, String>;
 
 #[path = "imports.rs"]
 mod imports;
-#[cfg(any(feature = "desktop", test))]
-#[path = "preimport.rs"]
-mod preimport;
 pub use imports::{ImportControl, ImportProgress, ZipEstimate};
 use imports::{ImportRun, ImportedFile};
-#[cfg(feature = "desktop")]
-pub(crate) use preimport::{
-    authorize as authorize_import_evidence, consume as consume_import_evidence,
-    prepare as prepare_import_evidence, Evidence, PreparationProgress, PreparedPackage,
-};
-#[cfg(any(feature = "desktop", test))]
-#[path = "recovery.rs"]
-mod recovery;
-#[cfg(feature = "desktop")]
-pub(crate) use recovery::{
-    prepare_recovery, run_recovery, PreparedRecovery, RecoveryFault, RecoveryKind, RecoveryOutcome,
-    RecoveryPreparation, RecoveryProgress, RecoveryRequest,
-};
 #[path = "bulk.rs"]
 mod bulk;
 pub use bulk::{BulkAction, BulkResult, BulkSelection};

@@ -758,34 +758,6 @@ pub(super) mod anchored {
             let _ = unsafe { unlinkat(stage.as_raw_fd(), filename.as_ptr(), 0) };
         }
     }
-    #[cfg(any(feature = "desktop", test))]
-    pub(in crate::library) fn remove_owned(
-        parent: &fs::File,
-        filename: &OsStr,
-        expected: (u64, u64),
-        directory: bool,
-    ) -> bool {
-        let Ok(stamp) = crate::library::storage::anchored::child_stamp(parent, filename) else {
-            return false;
-        };
-        if stamp.identity() != expected
-            || (directory && !stamp.is_dir())
-            || (!directory && !stamp.is_file())
-        {
-            return false;
-        }
-        let Ok(filename) = name(filename) else {
-            return false;
-        };
-        // SAFETY: single checked owned leaf; directory removal is empty-only, never recursive through a replacement.
-        (unsafe {
-            unlinkat(
-                parent.as_raw_fd(),
-                filename.as_ptr(),
-                if directory { 0x80 } else { 0 },
-            )
-        }) == 0
-    }
     pub(super) fn remove_directory(parent: &fs::File, filename: &str) {
         let Ok(filename) = name(OsStr::new(filename)) else {
             return;

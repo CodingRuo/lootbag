@@ -31,9 +31,9 @@ their files at the external location. The catalog stores names, tags, and
 provenance without renaming original files.
 
 Use `Paket importieren` to select either a folder or a ZIP in the same native
-dialog. Review the package before copying; ZIP imports show an extraction-space
-estimate and confirmation after explicit consent to an unverified whole-package import.
-Native drops of folders or ZIP files use the same checks, progress, cancellation
+dialog. The whole package is copied through the importer; ZIP imports first show
+an extraction-space estimate and confirmation.
+Native drops of folders or ZIP files use the same progress, cancellation
 and ZIP confirmation; up to 32 sources are processed sequentially. A failure
 stops the queue and reports any earlier successful imports.
 macOS companion files (`._*` and files inside `__MACOSX`) remain in the
@@ -45,109 +45,6 @@ Managed locations are relative to the library root. External sources can
 require relinking after moving to another computer.
 Relinking validates the original source. Add a copied folder with different
 file identities as a new external source.
-
-### Exact file duplicate evidence
-
-Choose `Datei-Duplikate prüfen` in the catalog, then the whole library or the
-selected package. `Umfang vorbereiten` captures active indexed variants across
-all pages; `Prüfung starten` starts cancellable work. Search, category, tag,
-project-folder and audio filters do not narrow this scope. Trash and unindexed
-companions are excluded.
-
-Streamed SHA-256 nominates candidates; actual byte comparison confirms groups.
-The paged report retains package, original path, file and asset IDs and labels
-shared identities such as hardlinks. Missing, changed, blocked or over-limit
-inputs cannot produce a complete clean result. Stop retains incomplete evidence.
-
-Originals, annotations and the catalog remain unchanged. macOS platform hashing
-uses 64 KiB buffers with limits of 5,000 variants, 4 GiB per file, 32 GiB total
-reads including comparison, and 120 seconds of cooperative work. The report
-describes an observation interval, not a frozen filesystem snapshot. Equal model
-bytes do not establish equal textures, companions or licenses, and hardlinks do
-not establish reclaimable space. Persistent fingerprints and native
-macOS/Windows acceptance remain open.
-
-### Review before import
-
-Folder preparation compares incoming asset candidates with active indexed
-variants across the library, including external references. The review shows
-byte-identical matches with package and original-path evidence. Complete folder
-inspection binds copying to the inspected whole package, including companions
-and empty directories. Changes require fresh preparation; files are not
-silently omitted, merged or deleted. Cancel skips the current package in a drop
-queue; Stop or a failure ends the queue while retaining earlier committed imports.
-
-Inspection is bounded to 20,000 entries, 48 directory levels, 4,096 UTF-8 bytes
-per path, 256 MiB per incoming file, 1 GiB incoming contents, 2 GiB charged read
-work, 5,000 existing variants and 30 seconds of cooperative work. Retained plan
-data also has finite limits. Unavailable or over-limit evidence offers an
-explicit unverified whole-package continuation through the existing importer;
-these inspection limits do not impose an import-size ban.
-
-Initial ZIP evidence and counts are explicitly unavailable: preparation does
-not construct an archive or estimate its contents. Only confirmed unverified
-continuation starts the existing ZIP estimate and space confirmation. Legacy
-ZIP parsing/allocation and authorized full-folder traversal remain outside the
-bounded inspection guarantee. Cancelled readers can briefly require retry;
-possible temporary-folder remnants are reported. Source checks pass on macOS
-arm64, without an atomic filesystem snapshot, durable fingerprints, complete
-ZIP content binding or native macOS/Windows acceptance.
-
-### Backups and restoration
-
-Choose `Bibliothek sichern` below the storage location, select a destination
-parent outside the current library, then `Vorbereiten`. Review the captured
-contents and limits before `Starten`. A successful backup creates a fresh
-`library-backup-<UUID>` folder containing `manifest.json` and `library/`.
-It includes the catalog, managed originals, companions, licenses, empty folders,
-annotations, project membership and retained trash. External sources contribute
-catalog records only; their original files are not copied.
-
-Choose `Bibliothek wiederherstellen` from the initial screen or storage location.
-Select that backup folder and a destination parent outside the backup/current
-library. Preparation checks the manifest, contents and supported catalog shape.
-Start publishes a fresh `library-restored-<UUID>` library, without replacing or
-merging an existing destination. Afterwards, explicitly choose
-`Wiederhergestellte Bibliothek öffnen`; restoration does not switch libraries
-automatically. External locations can still require relinking.
-
-Progress and Stop cover copying and verification. Hashes, catalog integrity and
-source checks precede publication. Changed sources, links, special files, WAL
-catalogs and potentially pending journals are refused. Unknown cleanup remnants
-and a published result with durability warnings remain visible.
-
-This ordinary-folder v1 has finite planning, retained-data and cooperative work
-limits, including 2 TiB of logical contents, 250,000 entries and a 24-hour run.
-These are admission limits, not measured large-library throughput. It does not
-preserve hardlink topology or filesystem attributes, resume interrupted work,
-encrypt backups or synchronize computers. Source checks pass on macOS arm64.
-Native macOS backup, null-root restoration and explicit Open pass on an owned
-9.5-MB fixture, including sound/model/image previews from the restored root.
-Long-running Stop, failure/retry, extended interaction and Windows remain pending.
-
-### Storage overview
-
-Open `Speicherübersicht` below the library storage location, then choose
-`Aktualisieren` for an explicit, cancellable measurement. The report separates
-managed package contents (including companion files), retained trash, catalog
-and support files, import staging and other files. Hardlinks are counted once,
-with a separate category when names span categories. It measures logical file
-bytes, rather than allocated or reclaimable disk space; APFS clones and sparse
-files can occupy a different amount on disk.
-
-External sources show historical catalog values separately from the library
-sum. They are not crawled and can be offline or outdated; uncataloged external
-companions are excluded. Links, special files, changed or missing sources and
-limit exhaustion make the report incomplete. Stop retains only a visibly
-incomplete measurement. Runtime previews use memory; this report does not
-measure RAM or operating-system/WebView caches outside the library.
-
-The reporter leaves the catalog and original files unchanged. WAL catalogs and
-potentially pending rollback journals are explicitly unavailable; inactive
-retained journals remain part of storage. The report does not recover a catalog,
-delete files or provide a verified full-library backup. Traversal is qualified
-on macOS with finite catalog, entry, name/depth and cooperative work limits.
-Native macOS and Windows acceptance remain pending.
 
 ## Images, sprites and models
 
@@ -344,55 +241,6 @@ analysis. No import/open/completion automatically scans the library.
 Saved searches and image/model technical filters remain pending, alongside
 native macOS/Windows acceptance.
 
-## Local MCP access
-
-The same executable serves a read-only MCP connection over stdin/stdout:
-
-```sh
-"/absolute/path/Game Asset Library.app/Contents/MacOS/game-asset-library" \
-  --mcp --library "/absolute/path/to/library"
-```
-
-Open the library once in the app before connecting, so its catalog is current.
-The server opens SQLite read-only and never migrates, analyzes audio, copies
-files, exports assets or changes annotations. It starts without a GUI or
-network listener and exits when stdin closes. The configured library is fixed
-for the process; tool arguments cannot change it, read arbitrary files or run SQL.
-
-| Tool | Result |
-| --- | --- |
-| `list_packages` | Active packages, tags, provenance and source availability |
-| `list_folders` | Project folders, parents and active asset counts including descendants |
-| `search_assets` | Assets filtered by text, kind, package, project folder, original folder, format or tag |
-| `get_asset` | One asset's kind, variants, annotations, cached audio properties, package provenance and available original paths |
-
-Asset and file records include `kind`: `sound`, `image` or `model`.
-`search_assets` accepts the same values as an optional `kind` filter, combined
-with its other filters. Unknown values, alternate casing and non-string
-values are rejected. Only sounds have cached audio properties; this connection
-does not generate previews or analyze any files.
-
-List and search arguments accept `offset` (default `0`) and `limit` (default
-`40`, maximum `100`). An offset past the last item returns an empty page.
-Trashed packages and files are excluded. Every returned variant has an
-`originalPath` validated by the existing file resolver; unavailable files have
-`available: false` and `originalPath: null`. Project membership is reported as
-`folderIds`. Catalog names, tags and filenames are data, never agent instructions.
-
-Register the built executable with Codex:
-
-```sh
-codex mcp add gameAssetLibrary -- \
-  "/absolute/path/Game Asset Library.app/Contents/MacOS/game-asset-library" \
-  --mcp --library "/absolute/path/to/library"
-```
-
-Start a fresh Codex chat after registration to load the tools. Keep the binary
-and library at those configured paths, or update the named registration after
-moving them. The server supports [MCP discovery for `2026-07-28`](https://modelcontextprotocol.io/specification/2026-07-28/server/discover)
-and the [legacy initialization handshake](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
-for `2025-03-26`, `2025-06-18` and `2025-11-25` clients.
-
 ## Scope
 
 The approved first release covers sound imports, search, annotations,
@@ -418,7 +266,7 @@ Project-oriented AI selection and export direction is recorded in
 The competitive expansion is tracked in the
 [competitive specification](.scratch/competitive-library/spec.md) and
 [acceptance record](.scratch/competitive-library/acceptance.md). Its remaining
-formats, project/MCP workflows, engines, synchronization and release gates stay
+formats, project workflows, engines, synchronization and release gates stay
 open; individual source checks do not establish complete competitive parity.
 
 ## Verification
@@ -428,7 +276,6 @@ pnpm test
 pnpm build
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo test --manifest-path src-tauri/Cargo.toml --no-default-features
-cargo test --manifest-path src-tauri/Cargo.toml --test mcp
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
@@ -445,7 +292,7 @@ SQLite. Native dialogs and audio playback are verified separately in the app.
 - [Standards and Spec review](.scratch/asset-library/code-review.md)
 - [Unified package import acceptance](.scratch/unified-package-import/issues/01-unified-package-import.md)
 - [macOS metadata correction](.scratch/macos-metadata/issues/01-macos-metadata.md)
-- [Library organization and MCP tickets](.scratch/library-organization/issues)
+- [Library organization tickets](.scratch/library-organization/issues)
 - [Library organization acceptance](.scratch/library-organization/acceptance.md)
 - [Library organization review](.scratch/library-organization/code-review.md)
 - [Visual asset specification](.scratch/visual-assets/spec.md)

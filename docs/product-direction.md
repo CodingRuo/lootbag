@@ -22,7 +22,6 @@ engine-specific handling follows the generic workflow.
 - Managed folder/ZIP imports and referenced external sources.
 - Sound discovery, annotations, format variants, playback and individual export.
 - Recoverable package/file trash and project folders holding asset references.
-- Local read-only MCP for external agents: packages, folders, search and details.
 
 Project folders are the first grouping mechanism. They currently reference
 whole assets. They are not yet full game projects with profiles, selected
@@ -57,9 +56,9 @@ part of a project or are exported. Surface missing categories and uncertainty;
 do not invent assets, license permissions or unsupported compatibility scores.
 Percentage scores require a defined and validated measurement.
 
-MCP remains useful for external agents. Embedded AI is a separate user-facing
-workflow. Future capabilities can reuse the same project and selection data,
-but no speculative MCP methods or AI provider integration are added now.
+Embedded AI is a separate user-facing workflow. Future capabilities can reuse
+the same project and selection data, but no speculative AI provider integration
+is added now.
 
 ## Later increments
 

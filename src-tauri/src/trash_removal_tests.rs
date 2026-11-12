@@ -495,47 +495,6 @@ fn trash_removal_never_accesses_external_source_files() {
 }
 
 #[test]
-fn trash_removal_releases_preparation_readers_and_refuses_busy_private_reader_leases() {
-    let f = Fixture::new();
-    let reply = f
-        .session
-        .prepare_trash_removal(&f.root, f.entry.clone())
-        .unwrap();
-    let flag = Arc::new(AtomicBool::new(false));
-    let reader = prepare_duplicate_files(&f.root, Some(f.other), &flag).unwrap();
-    assert!(f
-        .session
-        .remove_prepared_trash(&reply.token)
-        .unwrap_err()
-        .contains("Katalogprüfung"));
-    drop(reader);
-    let reply = f
-        .session
-        .prepare_trash_removal(&f.root, f.entry.clone())
-        .unwrap();
-    f.session.remove_prepared_trash(&reply.token).unwrap();
-}
-
-#[test]
-fn trash_removal_cancels_and_releases_existing_ready_private_readers() {
-    let f = Fixture::new();
-    let (_, flag) = f
-        .session
-        .begin_duplicates(&f.root, "owned-duplicates")
-        .unwrap();
-    let plan = prepare_duplicate_files(&f.root, Some(f.other), &flag).unwrap();
-    f.session
-        .finish_duplicate_preparation(&f.root, "owned-duplicates", &flag, plan)
-        .unwrap();
-    let reply = f
-        .session
-        .prepare_trash_removal(&f.root, f.entry.clone())
-        .unwrap();
-    f.session.remove_prepared_trash(&reply.token).unwrap();
-    assert!(flag.load(Ordering::Relaxed));
-}
-
-#[test]
 fn trash_removal_rejects_noncanonical_external_package_paths() {
     let f = Fixture::new();
     let c = f.catalog();
