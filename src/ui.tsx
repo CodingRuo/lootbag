@@ -3,6 +3,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import type { AudioMetadata } from "./AudioPreview";
 import type { ImageGroupSummary } from "./imageWorkflows";
 import type { ProjectFolder } from "./ProjectFolders";
+import type { FolderMember } from "./projectExport.ts";
 
 // Shared catalog types and tiny UI helpers used by App and its regions.
 export type AssetPackage = {
@@ -42,6 +43,7 @@ export type Asset = {
   files: AssetFile[];
   tags: string[];
   folderIds: number[];
+  folderMembers: FolderMember[];
   imageGroup?: ImageGroupSummary | null;
 };
 export type LibraryInfo = {

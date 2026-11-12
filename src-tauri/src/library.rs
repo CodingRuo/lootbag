@@ -45,7 +45,10 @@ pub use imports::{ImportControl, ImportProgress, ZipEstimate};
 use imports::{ImportRun, ImportedFile};
 #[path = "bulk.rs"]
 mod bulk;
+#[path = "project_export.rs"]
+mod project_export;
 pub use bulk::{BulkAction, BulkResult, BulkSelection};
+pub use project_export::ProjectExportPlan;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,8 +92,18 @@ pub struct Asset {
     pub files: Vec<AssetFile>,
     pub tags: Vec<String>,
     pub folder_ids: Vec<i64>,
+    pub folder_members: Vec<FolderMember>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_group: Option<ImageGroupSummary>,
+}
+
+/// Project folder membership; `file_id` is `None` when the chosen variant is unset or no longer active in this asset.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderMember {
+    pub folder_id: i64,
+    pub file_id: Option<i64>,
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -261,8 +274,8 @@ impl Library {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| format!("Katalogformat nicht lesbar: {e}"))?;
-        // Version 2 only marks that the one-time macOS metadata repair has run.
-        if !(1..=2).contains(&version) {
+        // Version 2 marks the one-time macOS metadata repair; 3 adds folder member variants and roles.
+        if !(1..=3).contains(&version) {
             return Err(format!("Nicht unterstütztes Katalogformat: {version}"));
         }
         connection
@@ -280,7 +293,7 @@ impl Library {
             .connection
             .pragma_update(None, "query_only", true)
             .map_err(|e| format!("Katalog nicht verfügbar: {e}"))?;
-        library.connection.prepare("SELECT a.id FROM active_assets a LEFT JOIN folders f ON 0 LEFT JOIN folder_assets fa ON 0 LIMIT 0")
+        library.connection.prepare("SELECT a.id FROM active_assets a LEFT JOIN folders f ON 0 LEFT JOIN folder_assets fa ON 0 WHERE fa.role IS NULL LIMIT 0")
             .map_err(|_| "Bitte die Bibliothek zuerst in der App öffnen, um den Katalog zu aktualisieren")?;
         Ok(library)
     }
@@ -342,6 +355,25 @@ impl Library {
                 .connection
                 .pragma_update(None, "user_version", 2)
                 .map_err(|e| format!("Katalogformat kann nicht gespeichert werden: {e}"))?;
+        }
+        if version < 3 {
+            // Checked by column, so a catalog whose version was lowered keeps its memberships.
+            let migrated: bool = library
+                .connection
+                .query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('folder_assets') WHERE name = 'role')", [], |row| row.get(0))
+                .map_err(|e| format!("Projektordner nicht lesbar: {e}"))?;
+            let columns = if migrated {
+                ""
+            } else {
+                "ALTER TABLE folder_assets ADD COLUMN file_id INTEGER REFERENCES asset_files(id) ON DELETE SET NULL;
+                ALTER TABLE folder_assets ADD COLUMN role TEXT;"
+            };
+            library
+                .connection
+                .execute_batch(&format!(
+                    "BEGIN; {columns} PRAGMA user_version = 3; COMMIT;"
+                ))
+                .map_err(|e| format!("Projektordner können nicht aktualisiert werden: {e}"))?;
         }
         // Cheap when every source is migrated; offline legacy sources retry on the next activation.
         library.migrate_external_identities()?;
@@ -803,6 +835,43 @@ impl Library {
                 params![folder_id, asset_id],
             )
             .map_err(|e| format!("Sound kann nicht aus dem Projektordner entfernt werden: {e}"))?;
+        Ok(())
+    }
+
+    /// Adds or updates a membership with its chosen variant (`None` = default) and free-text role.
+    pub fn set_folder_member(
+        &mut self,
+        folder_id: i64,
+        asset_id: i64,
+        file_id: Option<i64>,
+        role: Option<&str>,
+    ) -> Result<()> {
+        self.validate_folder_asset(folder_id, asset_id)?;
+        let role = role.map(str::trim).filter(|role| !role.is_empty());
+        if role.is_some_and(|role| role.chars().count() > 80 || role.chars().any(char::is_control))
+        {
+            return Err("Die Rolle darf höchstens 80 Zeichen ohne Steuerzeichen enthalten".into());
+        }
+        if let Some(file_id) = file_id {
+            let owned: bool = self
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM active_asset_files WHERE id = ?1 AND asset_id = ?2)",
+                    params![file_id, asset_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Variante nicht lesbar: {e}"))?;
+            if !owned {
+                return Err("Die Variante gehört nicht zu diesem Asset".into());
+            }
+        }
+        self.connection
+            .execute(
+                "INSERT INTO folder_assets(folder_id, asset_id, file_id, role) VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(folder_id, asset_id) DO UPDATE SET file_id = excluded.file_id, role = excluded.role",
+                params![folder_id, asset_id, file_id, role],
+            )
+            .map_err(|e| format!("Projektzuordnung kann nicht gespeichert werden: {e}"))?;
         Ok(())
     }
 
@@ -1370,13 +1439,46 @@ impl Library {
         let ids = assets.iter().map(|asset| asset.id).collect::<Vec<_>>();
         let mut files = self.files_for_assets(&ids)?;
         let mut tags = self.by_asset::<String>("SELECT asset_id, tag FROM asset_tags WHERE asset_id IN (SELECT value FROM json_each(?1)) ORDER BY tag COLLATE NOCASE", &ids)?;
-        let mut folders = self.by_asset::<i64>("SELECT asset_id, folder_id FROM folder_assets WHERE asset_id IN (SELECT value FROM json_each(?1)) ORDER BY folder_id", &ids)?;
+        let mut folders = self.folder_members(&ids)?;
         for asset in assets.iter_mut() {
             asset.files = files.remove(&asset.id).unwrap_or_default();
             asset.tags = tags.remove(&asset.id).unwrap_or_default();
-            asset.folder_ids = folders.remove(&asset.id).unwrap_or_default();
+            asset.folder_members = folders.remove(&asset.id).unwrap_or_default();
+            asset.folder_ids = asset
+                .folder_members
+                .iter()
+                .map(|member| member.folder_id)
+                .collect();
         }
         Ok(())
+    }
+
+    /// A chosen variant that was trashed, removed or moved to another asset reads as the default.
+    fn folder_members(&self, ids: &[i64]) -> Result<HashMap<i64, Vec<FolderMember>>> {
+        let mut grouped = HashMap::<i64, Vec<FolderMember>>::new();
+        let mut statement = self
+            .connection
+            .prepare("SELECT fa.asset_id, fa.folder_id, CASE WHEN EXISTS(SELECT 1 FROM active_asset_files f WHERE f.id = fa.file_id AND f.asset_id = fa.asset_id) THEN fa.file_id END, fa.role
+                FROM folder_assets fa WHERE fa.asset_id IN (SELECT value FROM json_each(?1)) ORDER BY fa.folder_id")
+            .map_err(|e| format!("Projektzuordnung nicht lesbar: {e}"))?;
+        let rows = statement
+            .query_map([id_list(ids)], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    FolderMember {
+                        folder_id: row.get(1)?,
+                        file_id: row.get(2)?,
+                        role: row.get(3)?,
+                    },
+                ))
+            })
+            .map_err(|e| format!("Projektzuordnung nicht lesbar: {e}"))?;
+        for row in rows {
+            let (asset_id, member) =
+                row.map_err(|e| format!("Projektzuordnung nicht lesbar: {e}"))?;
+            grouped.entry(asset_id).or_default().push(member);
+        }
+        Ok(grouped)
     }
 
     fn by_asset<T: rusqlite::types::FromSql>(
@@ -1715,6 +1817,7 @@ fn asset_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
         original_folder: row.get(4)?,
         tags: Vec::new(),
         folder_ids: Vec::new(),
+        folder_members: Vec::new(),
         files: Vec::new(),
         image_group: None,
     })
@@ -6131,7 +6234,7 @@ mod tests {
             catalog
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            2
+            3
         );
         catalog.execute("INSERT INTO asset_files(asset_id, original_filename, relative_path, format, size_bytes) SELECT asset_id, '._tone.wav', relative_path || '.sidecar/._tone.wav', 'WAV', 4 FROM asset_files", []).unwrap();
         drop(catalog);

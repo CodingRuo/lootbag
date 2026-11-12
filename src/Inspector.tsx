@@ -12,6 +12,7 @@ import { assetKey } from "./imageWorkflows";
 import VariantEditor from "./VariantEditor";
 import { TrashActions } from "./Trash";
 import { FolderMembershipEditor, type ProjectFolder } from "./ProjectFolders";
+import { saveFolderMember, type FolderMember } from "./projectExport.ts";
 import { nextInspectorTab, type InspectorTab } from "./inspectorTabs";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import { Icon, bytes, isAnimationOnly, type Act, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
@@ -143,6 +144,16 @@ export default function Inspector({ library, query, selected, file, selectedPack
     });
   }
 
+  function changeFolderMember(member: FolderMember) {
+    if (!selected) return;
+    const assetId = selected.id;
+    void act("Projektzuordnung wird gespeichert …", async () => {
+      await saveFolderMember(invoke, assetId, member);
+      setRevision((value) => value + 1);
+      setNotice({ tone: "success", message: "Rolle und Variante gespeichert." });
+    });
+  }
+
   return (
     <aside className="detail" aria-label="Ausgewähltes Asset">
       {selected && file ? (
@@ -232,8 +243,8 @@ export default function Inspector({ library, query, selected, file, selectedPack
                   <p className="detail-hint">Paket-Tags: {selectedPackage.tags.join(", ")}</p>
                 ) : null}
               </section>
-              <FolderMembershipEditor key={`${library.root}:${selected.id}`} folders={projectFolders} folderIds={selected.folderIds}
-                disabled={actionsDisabled} onAdd={(id) => changeFolderMembership(id, true)} onRemove={(id) => changeFolderMembership(id, false)} />
+              <FolderMembershipEditor key={`${library.root}:${selected.id}`} folders={projectFolders} members={selected.folderMembers} variants={selected.imageGroup ? [] : selected.files}
+                disabled={actionsDisabled} onAdd={(id) => changeFolderMembership(id, true)} onRemove={(id) => changeFolderMembership(id, false)} onChange={changeFolderMember} />
             </section>
             <section id="origin-panel" className="inspector-panel" role="tabpanel" aria-labelledby="origin-tab" hidden={inspectorTab !== "origin"} tabIndex={0}>
               <section className="provenance" aria-labelledby="origin-title">

@@ -1190,6 +1190,7 @@ p {
 .catalog-filters label,
 .annotation-editor label,
 .variants label,
+.folder-member label,
 .variant-editor label {
   display: grid;
   gap: 7px;
@@ -1202,6 +1203,8 @@ p {
 .annotation-editor input,
 .annotation-editor select,
 .variants select,
+.folder-member input,
+.folder-member select,
 .variant-editor input {
   width: 100%;
   min-width: 0;
@@ -1379,6 +1382,13 @@ p {
 .folder-memberships li { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .folder-memberships li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11px; color: #a7b4c4; }
 .folder-memberships li > button { flex: 0 0 auto; font-size: 10px; }
+.folder-memberships ul { max-height: 320px; }
+.folder-memberships li.folder-member { flex-wrap: wrap; padding-bottom: 10px; border-bottom: 1px solid #263240; }
+.folder-member label { flex: 1 0 100%; }
+.role-chip { align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px; padding: 1px 6px; border-radius: 999px; background: #3a2f1f; color: #e4c08a; font-size: 9px; }
+.asset-grid.list.project .asset-select { grid-template-columns: 40px minmax(0, 1fr) minmax(0, 140px) minmax(0, 160px) 44px 140px; }
+.asset-grid.list.project .asset-facts { grid-column: 6; }
+.asset-role { color: #e4c08a; }
 
 /* The editor uses its height for the preview; onboarding retains the spacious header. */
 .editor-shell .topbar { height: 52px; flex-basis: 52px; padding: 0 16px; gap: 16px; }

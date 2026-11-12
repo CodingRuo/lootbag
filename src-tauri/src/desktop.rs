@@ -2,7 +2,7 @@ use crate::library::{
     AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform, BulkAction, BulkResult,
     BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, EmbeddedAudioTags, EmptiedTrash,
     ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress, KindCounts, Library,
-    ModelResources, ProjectFolder, Result, TrashEntry, ZipEstimate,
+    ModelResources, ProjectExportPlan, ProjectFolder, Result, TrashEntry, ZipEstimate,
 };
 use std::{
     fs,
@@ -877,6 +877,41 @@ async fn remove_from_folder(app: AppHandle, folder_id: i64, asset_id: i64) -> Re
 }
 
 #[tauri::command]
+async fn set_folder_member(
+    app: AppHandle,
+    folder_id: i64,
+    asset_id: i64,
+    file_id: Option<i64>,
+    role: Option<String>,
+) -> Result<()> {
+    let root = active_root(&app)?;
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.set_folder_member(folder_id, asset_id, file_id, role.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn plan_project_export(app: AppHandle, folder_id: i64) -> Result<ProjectExportPlan> {
+    let root = active_root(&app)?;
+    background(move || Library::writable(&root)?.plan_project_export(folder_id)).await
+}
+
+#[tauri::command]
+async fn export_project(app: AppHandle, folder_id: i64, parent: String) -> Result<ExportOutcome> {
+    let parent = PathBuf::from(parent);
+    selected_path(&app, &parent)?;
+    let root = active_root(&app)?;
+    // shortcut: one blocking copy without progress or cancel; add both if projects grow to many GiB.
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.export_project(folder_id, &parent)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn trash_package(app: AppHandle, package_id: i64) -> Result<()> {
     let root = active_root(&app)?;
     background(move || {
@@ -1366,6 +1401,9 @@ pub fn run() {
             create_folder,
             add_to_folder,
             remove_from_folder,
+            set_folder_member,
+            plan_project_export,
+            export_project,
             trash_package,
             trash_file,
             trash_entries,

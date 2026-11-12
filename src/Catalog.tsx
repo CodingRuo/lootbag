@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import AnnotationEditor from "./AnnotationEditor";
 import { ImageThumbnail } from "./ImagePreview";
 import type { ModelExportSelection } from "./ModelPreview";
@@ -11,6 +11,7 @@ import { folderPath, type ProjectFolder } from "./ProjectFolders";
 import { catalogSelection, nextCatalogIndex, storeCatalogView, storedCatalogView, type CatalogSelection, type CatalogView, type SelectionMode } from "./catalogSelection";
 import { createCatalogAudition, formatDuration } from "./audioAudition";
 import { errorMessage } from "./errorMessage.ts";
+import { exportProject, memberRole } from "./projectExport.ts";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import type { useAudioAnalysis } from "./useAudioAnalysis.ts";
 import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, isAnimationOnly, number, type Act, type Asset, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
@@ -152,6 +153,13 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
           <p className="eyebrow" title={filteredFolderPath ?? filteredPackage?.name}>{filteredFolderPath ?? filteredPackage?.name ?? "ASSET-KATALOG"}</p>
           <h1>{CATALOG_TYPES.find((item) => item.value === (workflow ?? kind ?? ""))?.label}</h1>
         </div>
+        {folderId !== null && <button className="button outlined" disabled={actionsDisabled} title="Gewählte Varianten, Begleitdateien und manifest.json in einen neuen Ordner kopieren"
+          onClick={() => void act("Projekt wird exportiert …", async () => {
+            const result = await exportProject(folderId, invoke,
+              async () => await open({ directory: true, multiple: false, title: `Zielordner für ${filteredFolderPath} auswählen` }),
+              (message) => confirm(message, { title: "Nicht verfügbare Dateien", kind: "warning", okLabel: "Ohne sie exportieren", cancelLabel: "Abbrechen" }));
+            if (result?.status === "exported") setNotice({ tone: "success", message: `Projekt exportiert: ${result.path} · ${bytes(result.sizeBytes ?? 0)}` });
+          })}><Icon name="download" />Projekt exportieren …</button>}
       </div>
       <div className="search-box">
         <Icon name="search" />
@@ -359,7 +367,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
         </div>
       ) : page?.items.length ? (
         <div className="catalog-scroll" aria-busy={queryLoading}>
-          <div className={`asset-grid ${catalogView} ${selectedAssets.length ? "has-selection" : ""}`} role="list" aria-label={catalogView === "cards" ? "Asset-Karten" : "Asset-Liste"}>
+          <div className={`asset-grid ${catalogView} ${folderId !== null ? "project" : ""} ${selectedAssets.length ? "has-selection" : ""}`} role="list" aria-label={catalogView === "cards" ? "Asset-Karten" : "Asset-Liste"}>
             {page.items.map((asset, index) => {
               const firstFile = asset.files.find((item) => item.id === asset.imageGroup?.fileId) ?? asset.files[0];
               const folders = Array.from(new Set(asset.files.map((item) => item.originalFolder || "Paketwurzel"))).join(", ");
@@ -369,6 +377,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
               const animationOnly = isAnimationOnly(firstFile);
               const traits = animationOnly ? " · Animation" : firstFile.modelTraits?.hasAnimation && firstFile.modelTraits.hasMesh ? " · animiert" : "";
               const sound = asset.kind === "sound";
+              const role = folderId === null ? null : memberRole(asset.folderMembers, folderId, projectFolders);
               const duration = sound ? formatDuration(firstFile.audio?.durationSeconds) : null;
               const facts = <span className="asset-facts">{asset.imageGroup ? `${asset.imageGroup.fileCount} ${asset.imageGroup.workflow === "material" ? "Maps" : "Frames"}` : `${firstFile.format}${asset.files.length > 1 ? ` +${asset.files.length - 1}` : ""}${traits}${duration && catalogView === "cards" ? ` · ${duration}` : ""} · ${bytes(firstFile.sizeBytes)}`}</span>;
               return <div role="listitem" key={assetKey(asset)} className={`asset-item ${assetKey(selected) === assetKey(asset) ? "selected" : ""} ${checked ? "bulk-selected" : ""}`}>
@@ -402,11 +411,13 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                     <span className="asset-card-copy">
                       <strong>{wrapName(name)}</strong>
                       {showFilename && <span className="asset-filename">{firstFile.originalFilename}</span>}
+                      {catalogView === "cards" && role && <span className="role-chip" title="Rolle im Projekt">{role}</span>}
                       {catalogView === "cards" && facts}
                       {asset.imageGroup?.errors.length ? <span className="unavailable">Zuordnung prüfen</span> : null}
                       {!firstFile.available && <span className="unavailable">Nicht verfügbar</span>}
                     </span>
                     {catalogView === "list" && <>
+                      {folderId !== null && <span className="asset-column asset-role" title="Rolle im Projekt">{role ?? "—"}</span>}
                       <span className="asset-column" title={asset.packageName}>{asset.packageName}</span>
                       {sound && <span className="asset-column asset-duration">{duration ?? "—"}</span>}
                       {facts}

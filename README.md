@@ -253,6 +253,31 @@ analysis. No import/open/completion automatically scans the library.
 Saved searches and image/model technical filters remain pending, alongside
 native macOS/Windows acceptance.
 
+## Projekte exportieren
+
+A project folder is a game-project selection: each membership can carry a
+free-text role (for example `Wald-Ambience`, `Held`, `Inventar-Icon`, at most
+80 characters) and, for assets with several format variants, the variant to
+export. Edit both in the inspector under `Eigenschaften › Projektordner`;
+while a project folder is the catalog filter, roles appear as chips on cards
+and as a column in the list. A chosen variant that is later trashed or moved
+to another asset falls back to the default (first) variant. Opening a library
+upgrades the catalog to format version 3.
+
+`Projekt exportieren …` in the catalog heading (shown while a project folder
+is selected) asks for a destination folder, then lists unavailable members
+before anything is copied; continue without them or cancel. The export creates
+a new `<destination>/<folder name>` (an existing folder, the library and
+external sources are refused), mirrors subfolders as directories and never
+changes library originals. glTF/GLB models take their declared buffers and
+images; FBX/OBJ take package textures and `.mtl` files whose file names appear
+in the model or its material file. Material sets and sprite sequences are
+exported as the member asset's own file, not the whole group. Duplicate names
+get `-2`, `-3`, … `manifest.json` records project, `exportedAt`, every asset
+(id, name, role, kind, package, original package path, variant, exported files,
+`licenseNote: null`) and the skipped members. The copy runs in one background
+step without progress or cancellation. Game-project profiles are not built yet.
+
 ## Scope
 
 The approved first release covers sound imports, search, annotations,

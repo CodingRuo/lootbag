@@ -22,10 +22,12 @@ engine-specific handling follows the generic workflow.
 - Managed folder/ZIP imports and referenced external sources.
 - Sound discovery, annotations, format variants, playback and individual export.
 - Recoverable package/file trash and project folders holding asset references.
+- Project folders as selections: per-asset role and chosen variant, and an
+  export of the folder (with subfolders) that reports unavailable files first
+  and writes a `manifest.json` beside the copied variants and companion files.
 
-Project folders are the first grouping mechanism. They currently reference
-whole assets. They are not yet full game projects with profiles, selected
-variants, asset roles or a complete selection export.
+Game-project profiles (setting, genre, style, engine) are still open, as are
+content hashes for moved files and license evidence in the manifest.
 
 ## Next useful step
 

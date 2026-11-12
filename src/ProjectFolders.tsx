@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import type { FolderMember } from "./projectExport.ts";
 
 export type ProjectFolder = {
   id: number;
@@ -60,13 +61,16 @@ export function FolderDialog({ folders, parentId, disabled, notice, onCreate, on
   );
 }
 
-export function FolderMembershipEditor({ folders, folderIds, disabled, onAdd, onRemove }: {
+export function FolderMembershipEditor({ folders, members, variants, disabled, onAdd, onRemove, onChange }: {
   folders: ProjectFolder[];
-  folderIds: number[];
+  members: FolderMember[];
+  variants: { id: number; format: string; originalFilename: string }[];
   disabled: boolean;
   onAdd: (folderId: number) => void;
   onRemove: (folderId: number) => void;
+  onChange: (member: FolderMember) => void;
 }) {
+  const folderIds = members.map((member) => member.folderId);
   const [folderId, setFolderId] = useState<number | null>(null);
   const available = folders.filter((folder) => !folderIds.includes(folder.id));
   return (
@@ -74,9 +78,24 @@ export function FolderMembershipEditor({ folders, folderIds, disabled, onAdd, on
       <h3 id="project-memberships-title">Projektordner</h3>
       {folderIds.length > 0 && <ul>{folders.filter((folder) => folderIds.includes(folder.id)).map((folder) => {
         const path = folderPath(folder.id, folders);
-        return <li key={folder.id}>
+        const member = members.find((item) => item.folderId === folder.id)!;
+        const saveRole = (value: string) => { if (value.trim() !== (member.role ?? "")) onChange({ ...member, role: value.trim() || null }); };
+        return <li key={folder.id} className="folder-member">
           <span>{path}</span>
           <button className="text-button" disabled={disabled} aria-label={`Aus ${path} entfernen`} onClick={() => onRemove(folder.id)}>Entfernen</button>
+          <label>
+            Rolle im Projekt
+            <input key={member.role ?? ""} defaultValue={member.role ?? ""} maxLength={80} placeholder="z. B. Wald-Ambience, Held" disabled={disabled}
+              onBlur={(event) => saveRole(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveRole(event.currentTarget.value); } }} />
+          </label>
+          {variants.length > 1 && <label>
+            Variante für den Export
+            <select value={member.fileId ?? ""} disabled={disabled} onChange={(event) => onChange({ ...member, fileId: event.target.value ? Number(event.target.value) : null })}>
+              <option value="">Standard · {variants[0].format}</option>
+              {variants.map((file) => <option key={file.id} value={file.id}>{file.format} · {file.originalFilename}</option>)}
+            </select>
+          </label>}
         </li>;
       })}</ul>}
       {available.length > 0 ? <form className="annotation-editor" onSubmit={(event) => {
