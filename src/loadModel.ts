@@ -289,7 +289,7 @@ export function modelScene(loaded: LoadedModel) {
     const bones = skeleton.bones;
     const positions = new BufferAttribute(new Float32Array(bones.length * 3), 3);
     joints = new Points(new BufferGeometry().setAttribute("position", positions),
-      new PointsMaterial({ color: "#ffffff", size: 5, sizeAttenuation: false, depthTest: false, depthWrite: false }));
+      new PointsMaterial({ color: "#ffffff", size: 3, sizeAttenuation: false, depthTest: false, depthWrite: false }));
     joints.frustumCulled = false;
     joints.renderOrder = 1;
     const joint = new Vector3();
