@@ -1,0 +1,28 @@
+{
+  "provenance": "Owned synthetic audio fixture qualification, 2026-10-08; WAV/MP3/FLAC generated from fixture-source.wav; OGG retains existing owned stereo32000.ogg encoded audio with embedded tags. No personal assets.",
+  "independentReader": "Installed ffprobe readings recorded before application implementation.",
+  "expected": {
+    "title": "Salzburg River",
+    "artist": "Owned Fixture",
+    "album": "Fixture Collection",
+    "genre": "Ambient"
+  },
+  "files": {
+    "tagged-audio.wav": {
+      "bytes": 11194,
+      "sha256": "3fe0b5fd9421a633f9a2a2aa1067c3952a18e15fac709185928bea1af53057bf"
+    },
+    "tagged-audio.mp3": {
+      "bytes": 1580,
+      "sha256": "55269d1b18d50320e73e06ee54363cd376bbde8a52482296ca5fce29bbbc5aae"
+    },
+    "tagged-audio.ogg": {
+      "bytes": 4528,
+      "sha256": "65f0eaaf287cf7131fcdc7378068db4cd013efbaf8e515b027633217056abd54"
+    },
+    "tagged-audio.flac": {
+      "bytes": 11263,
+      "sha256": "0d2578ee8950741f5eb57cb6c4c4b43168ce5a2d1810ef54e8cea214ad52c6a1"
+    }
+  }
+}

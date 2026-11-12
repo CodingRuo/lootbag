@@ -1,0 +1,29 @@
+[package]
+name = "game-asset-library"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "game_asset_library"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "game-asset-library"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", optional = true, features = [] }
+
+[dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "mp3", "ogg", "vorbis", "flac", "id3v2"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+tauri = { version = "2.12.1", features = ["protocol-asset"], optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }

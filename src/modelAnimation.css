@@ -1,0 +1,9 @@
+.model-animation { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.model-animation-fields { display: grid; grid-template-columns: minmax(0, 1fr) 110px; gap: 10px; }
+.model-animation label { display: grid; gap: 5px; min-width: 0; font-size: 11px; color: var(--muted); }
+.model-animation select { width: 100%; min-width: 0; font-size: 12px; }
+.model-animation-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.model-animation-actions label { display: flex; align-items: center; gap: 5px; }
+.model-animation-actions input { width: auto; margin: 0; }
+.model-animation-actions output { margin-left: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.model-animation-timeline input { width: 100%; margin: 0; }
