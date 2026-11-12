@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import AnnotationEditor from "./AnnotationEditor";
 import { ImageThumbnail } from "./ImagePreview";
@@ -8,7 +8,9 @@ import ModelThumbnail, { createCatalogModelThumbnails } from "./ModelThumbnail";
 import { assetKey } from "./imageWorkflows";
 import { TrashActions } from "./Trash";
 import { folderPath, type ProjectFolder } from "./ProjectFolders";
-import { catalogSelection, nextCatalogIndex, type CatalogSelection, type SelectionMode } from "./catalogSelection";
+import { catalogSelection, nextCatalogIndex, storeCatalogView, storedCatalogView, type CatalogSelection, type CatalogView, type SelectionMode } from "./catalogSelection";
+import { createCatalogAudition, formatDuration } from "./audioAudition";
+import { errorMessage } from "./errorMessage.ts";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import type { useAudioAnalysis } from "./useAudioAnalysis.ts";
 import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, isAnimationOnly, number, type Act, type Asset, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
@@ -49,7 +51,13 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
     audioResultsStale, setAudioResultsStale, changeAudioFilters, clearFilters, filterPackage } = query;
   const { audioAnalysis, prepareAudioAnalysis, startAudioAnalysis, stopAudioAnalysis, discardAudioAnalysis } = audio;
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [catalogView, setCatalogView] = useState<"cards" | "list">("cards");
+  const catalogType = workflow ?? kind ?? "";
+  const [chosenViews, setChosenViews] = useState<Record<string, CatalogView>>({});
+  const catalogView = chosenViews[catalogType] ?? storedCatalogView(catalogType);
+  const setCatalogView = (view: CatalogView) => { setChosenViews((views) => ({ ...views, [catalogType]: view })); storeCatalogView(catalogType, view); };
+  const [auditionFileId, setAuditionFileId] = useState<number | null>(null);
+  const [audition] = useState(() => createCatalogAudition(new Audio(),
+    async (fileId) => convertFileSrc(await invoke<string>("resolve_preview", { fileId })), setAuditionFileId));
   const [modelThumbnails] = useState(createCatalogModelThumbnails);
   const thumbnailScope = library?.root ?? "";
   const [bulkTags, setBulkTags] = useState("");
@@ -74,6 +82,18 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
 
   useEffect(() => { modelThumbnails.reset(thumbnailScope); }, [modelThumbnails, thumbnailScope]);
   useEffect(() => () => modelThumbnails.dispose(), [modelThumbnails]);
+  // New results (page, search or filter change) end the quick audition.
+  useEffect(() => { audition.stop(); }, [audition, page]);
+  useEffect(() => {
+    // Any other player starting (the inspector's audio) takes over; the audition element itself is not in the document.
+    const stop = () => audition.stop();
+    document.addEventListener("play", stop, true);
+    return () => { document.removeEventListener("play", stop, true); audition.stop(); };
+  }, [audition]);
+
+  function toggleAudition(fileId: number) {
+    audition.toggle(fileId).catch((reason: unknown) => setNotice({ tone: "error", message: errorMessage(reason, "Der Sound kann nicht abgespielt werden.") }));
+  }
 
   function refreshAudioResults() {
     setAudioResultsStale(false);
@@ -348,6 +368,9 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
               const checked = selection.keys.includes(assetKey(asset));
               const animationOnly = isAnimationOnly(firstFile);
               const traits = animationOnly ? " · Animation" : firstFile.modelTraits?.hasAnimation && firstFile.modelTraits.hasMesh ? " · animiert" : "";
+              const sound = asset.kind === "sound";
+              const duration = sound ? formatDuration(firstFile.audio?.durationSeconds) : null;
+              const facts = <span className="asset-facts">{asset.imageGroup ? `${asset.imageGroup.fileCount} ${asset.imageGroup.workflow === "material" ? "Maps" : "Frames"}` : `${firstFile.format}${asset.files.length > 1 ? ` +${asset.files.length - 1}` : ""}${traits}${duration && catalogView === "cards" ? ` · ${duration}` : ""} · ${bytes(firstFile.sizeBytes)}`}</span>;
               return <div role="listitem" key={assetKey(asset)} className={`asset-item ${assetKey(selected) === assetKey(asset) ? "selected" : ""} ${checked ? "bulk-selected" : ""}`}>
                 <input type="checkbox" className="asset-checkbox" checked={checked} onChange={() => {}} disabled={actionsDisabled || queryLoading}
                   aria-label={`${asset.imageGroup?.name ?? asset.name} auswählen${asset.imageGroup ? " · gesamte Bildgruppe" : " · alle Varianten"}`}
@@ -356,7 +379,9 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                   onTrash={() => trashItem("file", firstFile.id, firstFile.originalFilename)}>
                   <button className="asset-select" disabled={queryLoading} title={`${name}\n${firstFile.originalFilename}\n${asset.packageName} · ${folders}`}
                     onClick={(event) => chooseAsset(asset, event.shiftKey ? (event.metaKey || event.ctrlKey ? "addRange" : "range") : event.metaKey || event.ctrlKey ? "toggle" : "single")}
+                    onKeyUp={(event) => { if (sound && event.key === " ") event.preventDefault(); }}
                     onKeyDown={(event) => {
+                      if (sound && event.key === " ") { event.preventDefault(); if (firstFile.available) toggleAudition(firstFile.id); return; }
                       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
                         event.preventDefault(); setSelection({ keys: visibleKeys, anchor: visibleKeys[0] ?? null }); return;
                       }
@@ -377,12 +402,20 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                     <span className="asset-card-copy">
                       <strong>{wrapName(name)}</strong>
                       {showFilename && <span className="asset-filename">{firstFile.originalFilename}</span>}
-                      <span className="asset-facts">{asset.imageGroup ? `${asset.imageGroup.fileCount} ${asset.imageGroup.workflow === "material" ? "Maps" : "Frames"}` : `${firstFile.format}${asset.files.length > 1 ? ` +${asset.files.length - 1}` : ""}${traits} · ${bytes(firstFile.sizeBytes)}`}</span>
+                      {catalogView === "cards" && facts}
                       {asset.imageGroup?.errors.length ? <span className="unavailable">Zuordnung prüfen</span> : null}
                       {!firstFile.available && <span className="unavailable">Nicht verfügbar</span>}
                     </span>
+                    {catalogView === "list" && <>
+                      <span className="asset-column" title={asset.packageName}>{asset.packageName}</span>
+                      {sound && <span className="asset-column asset-duration">{duration ?? "—"}</span>}
+                      {facts}
+                    </>}
                   </button>
                 </TrashActions>
+                {sound && <button className={`asset-audition ${auditionFileId === firstFile.id ? "playing" : ""}`} aria-label={`Anhören: ${name}`}
+                  aria-pressed={auditionFileId === firstFile.id} disabled={!firstFile.available} title={auditionFileId === firstFile.id ? "Stoppen" : "Anhören"}
+                  onClick={() => toggleAudition(firstFile.id)}><Icon name={auditionFileId === firstFile.id ? "pause" : "play"} /></button>}
               </div>;
             })}
           </div>

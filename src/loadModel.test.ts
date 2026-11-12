@@ -87,3 +87,20 @@ test("the shared scene keeps skeleton-only models visible and rejects a degenera
   tip.position.set(0, 0, 0);
   assert.throws(() => modelScene(loaded), /Gelenkabstände/);
 });
+
+test("a crouching skeleton fills most of the frame instead of its loose bounding sphere", () => {
+  const model = new Group();
+  const joints = [[0, 0, 0], [15, 58, -6], [6, 94, 19], [3, 106, 58], [63, 28, 43], [-39, 37, -22], [-11, 20, -41], [20, 0, 10]]
+    .map(([x, y, z]) => { const bone = new Bone(); bone.position.set(x, y, z); model.add(bone); return bone; });
+  const camera = new PerspectiveCamera(45, 1.45, 0.01, 1000);
+  fitModelCamera(camera, model);
+  camera.updateMatrixWorld();
+  model.updateMatrixWorld(true);
+  const ys = joints.map((bone) => {
+    const projected = bone.getWorldPosition(new Vector3()).project(camera);
+    assert.ok(Math.abs(projected.x) <= 0.71 && Math.abs(projected.y) <= 0.71);
+    return projected.y;
+  });
+  const height = (Math.max(...ys) - Math.min(...ys)) / 2;
+  assert.ok(height > 0.55 && height < 0.75, `skeleton fills ${height} of the viewport height`);
+});

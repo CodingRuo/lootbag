@@ -1463,6 +1463,18 @@ p {
 .asset-grid.list .model-thumbnail-status { top: 2px; left: 2px; max-width: calc(100% - 4px); font-size: 6px; }
 .asset-grid.list .asset-card-copy { padding: 0 22px 0 0; gap: 3px; }
 .asset-grid.list .asset-facts { margin-top: 2px; padding-top: 0; }
+/* List rows are columns: poster · full name · package · duration (sounds) · format/size; the trash button keeps the right edge. */
+.asset-grid.list .asset-select { display: grid; grid-template-columns: 40px minmax(0, 1fr) minmax(0, 180px) 44px 140px; padding-right: 38px; }
+.asset-grid.list .asset-card-copy { padding: 0; }
+.asset-grid.list .asset-card-copy > strong { display: block; overflow: visible; }
+.asset-column { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9cacbe; font-size: 10px; }
+.asset-duration { text-align: right; font-variant-numeric: tabular-nums; }
+.asset-grid.list .asset-facts { grid-column: 5; margin: 0; font-size: 10px; text-align: right; white-space: nowrap; }
+.asset-audition { position: absolute; top: 62px; right: 8px; z-index: 1; width: 26px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #4a5d72; border-radius: 50%; background: #16202eed; color: #d6dfe9; }
+.asset-audition svg { width: 12px; height: 12px; }
+.asset-audition:hover:not(:disabled), .asset-audition.playing { border-color: var(--amber); color: var(--amber); }
+.asset-audition:disabled { opacity: 0.4; }
+.asset-grid.list .asset-audition { top: 50%; left: 43px; right: auto; transform: translateY(-50%); }
 .detail-heading { flex: 0 0 auto; padding: 16px 16px 13px; }
 .detail-source { color: #96a8bd; font-size: 10px; margin-top: 6px; line-height: 1.45; overflow-wrap: anywhere; }
 .inspector-tabs { display: flex; flex: 0 0 auto; padding: 0 16px; gap: 14px; border-bottom: 1px solid var(--line); }

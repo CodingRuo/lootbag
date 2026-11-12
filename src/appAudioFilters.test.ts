@@ -15,6 +15,11 @@ for (const name of readdirSync(sourceRoot).filter((name) => name.endsWith(".tsx"
   transformed.set(url.href, (await transformWithOxc(readFileSync(url, "utf8"), fileURLToPath(url))).code);
 }
 const globals = globalThis as typeof globalThis & { audioFilterHarness: Harness; window: any };
+// The catalog's quick audition needs a media element and document listeners; neither plays in these tests.
+Object.assign(globalThis, {
+  Audio: class { src = ""; onended = null; async play() {} pause() {} removeAttribute() {} load() {} },
+  document: { addEventListener() {}, removeEventListener() {} },
+});
 const mocks: Record<string, string> = {
   react: `export const useState = (...args) => globalThis.audioFilterHarness.useState(...args);
     export const useEffect = (...args) => globalThis.audioFilterHarness.useEffect(...args);

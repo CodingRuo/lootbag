@@ -32,3 +32,49 @@ export function repeatAudioLoop(player: Player, loop: AudioLoop): boolean {
   }
   return false;
 }
+
+// Catalog duration as m:ss (h:mm:ss from one hour); sub-second sounds show 0:01 rather than 0:00.
+export function formatDuration(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value) || value < 0) return null;
+  const total = value > 0 ? Math.max(1, Math.round(value)) : 0;
+  const pad = (part: number) => part.toString().padStart(2, "0");
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total / 60) % 60;
+  return hours ? `${hours}:${pad(minutes)}:${pad(total % 60)}` : `${minutes}:${pad(total % 60)}`;
+}
+
+type AuditionElement = Pick<HTMLAudioElement, "src" | "pause" | "play" | "removeAttribute" | "load" | "onended">;
+
+// Quick catalog audition: one shared element, so starting a sound always stops the previous one.
+export function createCatalogAudition(element: AuditionElement, resolve: (fileId: number) => Promise<string>, onChange: (fileId: number | null) => void) {
+  let current: number | null = null;
+  let request = 0;
+  const set = (fileId: number | null) => { current = fileId; onChange(fileId); };
+  element.onended = () => set(null);
+  function stop() {
+    request++;
+    if (current === null) return;
+    element.pause();
+    element.removeAttribute("src");
+    element.load();
+    set(null);
+  }
+  async function toggle(fileId: number) {
+    if (current === fileId) return stop();
+    stop();
+    const token = ++request;
+    set(fileId);
+    try {
+      const src = await resolve(fileId);
+      if (token !== request) return;
+      element.src = src;
+      await element.play();
+    } catch (reason) {
+      // A newer toggle or stop superseded this request; its abort is expected.
+      if (token !== request) return;
+      set(null);
+      throw reason;
+    }
+  }
+  return { toggle, stop, get playing() { return current; } };
+}

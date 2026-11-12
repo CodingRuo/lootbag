@@ -1,6 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
-  Bone, BufferAttribute, BufferGeometry, Color, DataTexture, DirectionalLight, FileLoader, HemisphereLight, Line, LoadingManager,
+  Bone, Box3, BufferAttribute, BufferGeometry, Color, DataTexture, DirectionalLight, FileLoader, HemisphereLight, Line, LoadingManager,
   Material, Mesh, Object3D, PerspectiveCamera, Points, PointsMaterial, Scene, SkeletonHelper, Texture, Vector3,
   type AnimationClip,
 } from "three";
@@ -310,9 +310,26 @@ export function fitModelCamera(camera: PerspectiveCamera, model: Object3D) {
   const box = modelPreviewBounds(model);
   const center = box.getCenter(new Vector3());
   const radius = Math.max(box.getSize(new Vector3()).length() / 2, 0.001);
-  const vertical = camera.fov * Math.PI / 180;
-  const horizontal = 2 * Math.atan(Math.tan(vertical / 2) * camera.aspect);
-  const distance = radius / Math.sin(Math.min(vertical, horizontal) / 2) * 1.2;
+  // Fit the box corners, not its bounding sphere: compact or sprawling poses (skeletons) otherwise sit small in the frame.
+  camera.position.copy(center).add(new Vector3(1, 0.7, 1.8).normalize());
+  camera.lookAt(center);
+  const toView = camera.quaternion.clone().invert();
+  const points = Array.from({ length: 8 }, (_, corner) =>
+    new Vector3(corner & 1 ? box.max.x : box.min.x, corner & 2 ? box.max.y : box.min.y, corner & 4 ? box.max.z : box.min.z));
+  // Bare skeletons fit their joints; their box corners are far outside a crouching or reaching pose.
+  const skeletonOnly = new Box3().setFromObject(model).isEmpty();
+  if (skeletonOnly) {
+    points.length = 0;
+    model.traverse((child) => { if (child instanceof Bone) points.push(child.getWorldPosition(new Vector3())); });
+  }
+  // Joints get extra margin: limbs and root motion leave the fitted pose while the clip plays.
+  const tanV = Math.tan(camera.fov * Math.PI / 360) * (skeletonOnly ? 0.7 : 0.9);
+  const tanH = tanV * camera.aspect;
+  let distance = radius * 0.01;
+  for (const point of points) {
+    const offset = point.sub(center).applyQuaternion(toView);
+    distance = Math.max(distance, offset.z + Math.abs(offset.x) / tanH, offset.z + Math.abs(offset.y) / tanV);
+  }
   camera.position.copy(center).add(new Vector3(1, 0.7, 1.8).normalize().multiplyScalar(distance));
   camera.near = Math.max(distance / 1000, 0.0001);
   camera.far = Math.max(distance * 100, 10);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { repeatAudioLoop, resolveAudioLoop, seekAudio, validateAudioLoop } from "./audioAudition.ts";
+import { createCatalogAudition, formatDuration, repeatAudioLoop, resolveAudioLoop, seekAudio, validateAudioLoop } from "./audioAudition.ts";
 
 test("a paused sound seeks safely and rejects invalid positions", () => {
   const player = { currentTime: 0, duration: 5, paused: true, ended: false };
@@ -34,4 +34,47 @@ test("whole-sound repeat uses its explicit range even when region fields were cl
   assert.throws(() => resolveAudioLoop(5, "", "2"));
   assert.throws(() => resolveAudioLoop(5, "0", ""));
   assert.deepEqual(resolveAudioLoop(5, "0.5", "2"), { start: 0.5, end: 2 });
+});
+
+test("catalog durations read as m:ss and unknown values stay hidden", () => {
+  assert.equal(formatDuration(3.2), "0:03");
+  assert.equal(formatDuration(0.3), "0:01");
+  assert.equal(formatDuration(0), "0:00");
+  assert.equal(formatDuration(75.6), "1:16");
+  assert.equal(formatDuration(3725), "1:02:05");
+  assert.equal(formatDuration(null), null);
+  assert.equal(formatDuration(Number.NaN), null);
+});
+
+test("quick audition plays one sound at a time and a filter change stops it", async () => {
+  const calls: string[] = [];
+  const element = {
+    src: "", onended: null as (() => void) | null,
+    play: async () => { calls.push(`play ${element.src}`); },
+    pause: () => { calls.push("pause"); },
+    removeAttribute: () => { element.src = ""; },
+    load: () => {},
+  };
+  let playing: number | null = null;
+  const audition = createCatalogAudition(element as never, async (fileId) => `asset://${fileId}`, (fileId) => { playing = fileId; });
+  await audition.toggle(1);
+  assert.equal(playing, 1);
+  await audition.toggle(2);
+  assert.equal(playing, 2);
+  assert.deepEqual(calls, ["play asset://1", "pause", "play asset://2"]);
+  audition.stop(); // what the catalog does when the page or a filter changes
+  assert.equal(playing, null);
+  assert.equal(element.src, "");
+  await audition.toggle(3);
+  await audition.toggle(3);
+  assert.equal(playing, null);
+  // A slow lookup that a stop overtook never starts playing.
+  const late = audition.toggle(4);
+  audition.stop();
+  await late;
+  assert.equal(playing, null);
+  assert.equal(calls[calls.length - 1], "pause");
+  await audition.toggle(5);
+  element.onended?.();
+  assert.equal(audition.playing, null);
 });

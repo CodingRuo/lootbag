@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { catalogSelection, nextCatalogIndex } from "./catalogSelection.ts";
+import { catalogSelection, nextCatalogIndex, storeCatalogView, storedCatalogView } from "./catalogSelection.ts";
 
 const keys = ["asset:1", "asset:2", "material:3", "asset:4"];
 
@@ -25,4 +25,17 @@ test("keyboard navigation stays inside cards and list pages and ignores unrelate
   assert.equal(nextCatalogIndex(2, 7, "Home", 3), 0);
   assert.equal(nextCatalogIndex(2, 7, "End", 3), 6);
   assert.equal(nextCatalogIndex(2, 7, "Tab", 3), null);
+});
+
+test("the catalog view is remembered per type and falls back to cards when storage fails", () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  assert.equal(storedCatalogView("animation", storage), "cards");
+  storeCatalogView("animation", "list", storage);
+  assert.equal(storedCatalogView("animation", storage), "list");
+  assert.equal(storedCatalogView("sound", storage), "cards");
+  assert.equal(storedCatalogView("", storage), "cards");
+  const broken = { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } };
+  assert.doesNotThrow(() => storeCatalogView("animation", "list", broken));
+  assert.equal(storedCatalogView("animation", broken), "cards");
 });

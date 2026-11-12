@@ -22,3 +22,15 @@ export function nextCatalogIndex(index: number, length: number, key: string, col
   if (key === "End") return Math.max(0, length - 1);
   return key in steps ? Math.max(0, Math.min(length - 1, index + steps[key])) : null;
 }
+
+export type CatalogView = "cards" | "list";
+const catalogViewKey = (type: string) => `catalogView:${type || "all"}`;
+
+// The chosen catalog view per sidebar type; storage may be missing or throw (private mode), cards stay the default.
+export function storedCatalogView(type: string, storage?: Pick<Storage, "getItem">): CatalogView {
+  try { return (storage ?? globalThis.localStorage)?.getItem(catalogViewKey(type)) === "list" ? "list" : "cards"; } catch { return "cards"; }
+}
+
+export function storeCatalogView(type: string, view: CatalogView, storage?: Pick<Storage, "setItem">) {
+  try { (storage ?? globalThis.localStorage)?.setItem(catalogViewKey(type), view); } catch { /* the in-memory choice still applies */ }
+}
