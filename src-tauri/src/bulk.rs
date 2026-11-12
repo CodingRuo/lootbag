@@ -1,6 +1,6 @@
 use super::{normalized_tags, ImageWorkflow, Library, Result};
 use rusqlite::params;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(
@@ -53,13 +53,14 @@ impl Library {
             .unchecked_transaction()
             .map_err(|error| format!("Sammelaktion nicht verfügbar: {error}"))?;
         let mut ids = BTreeSet::new();
+        let mut derived = HashMap::new();
         for item in selection {
             match item {
                 BulkSelection::Asset { asset_id } => {
                     ids.insert(*asset_id);
                 }
                 BulkSelection::ImageGroup { file_id, workflow } => {
-                    ids.extend(self.image_group_asset_ids(*file_id, *workflow)?)
+                    ids.extend(self.image_group_asset_ids(*file_id, *workflow, &mut derived)?)
                 }
             }
             if ids.len() > 10_000 {

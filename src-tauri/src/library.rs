@@ -182,7 +182,7 @@ fn catalog_filter(query: &CatalogQuery) -> (&'static str, String) {
         .unwrap_or_default();
     let filter = format!("FROM assets a JOIN packages p ON p.id = a.package_id JOIN active_asset_files f ON f.asset_id = a.id
             WHERE (?1 IS NULL OR p.id = ?1)
-            AND (?2 = '' OR instr(lower(a.name || ' ' || p.name || ' ' || {FILE_FOLDER} || ' ' || f.original_filename || ' ' || p.source_path), lower(?2)) > 0
+            AND (?2 = '' OR instr(lower(a.name || ' ' || p.name || ' ' || {FILE_FOLDER} || ' ' || f.original_filename), lower(?2)) > 0
                 OR EXISTS(SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id AND instr(lower(t.tag), lower(?2)) > 0)
                 OR EXISTS(SELECT 1 FROM package_tags t WHERE t.package_id = p.id AND instr(lower(t.tag), lower(?2)) > 0))
             AND (?3 IS NULL OR {FILE_FOLDER} = ?3)
@@ -245,7 +245,8 @@ impl Library {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| format!("Katalogformat nicht lesbar: {e}"))?;
-        if version != 1 {
+        // Version 2 only marks that the one-time macOS metadata repair has run.
+        if !(1..=2).contains(&version) {
             return Err(format!("Nicht unterstütztes Katalogformat: {version}"));
         }
         connection
@@ -268,8 +269,14 @@ impl Library {
         Ok(library)
     }
 
+    /// Per-command connection to a catalog that `open` already prepared when it was activated.
+    pub fn writable(root: &Path) -> Result<Self> {
+        Self::connect(root, OpenFlags::SQLITE_OPEN_READ_WRITE)
+    }
+
+    /// Activates a library: schema, one-time repairs and crash leftovers. Not for per-command use.
     pub fn open(root: &Path) -> Result<Self> {
-        let Self { root, connection } = Self::connect(root, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let Self { root, connection } = Self::writable(root)?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS external_sources (package_id INTEGER PRIMARY KEY REFERENCES packages(id), root TEXT NOT NULL, identity TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS external_files (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id), identity TEXT NOT NULL, modified TEXT NOT NULL);").map_err(|e| format!("Externe Quellen können nicht geöffnet werden: {e}"))?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS asset_tags (asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE, tag TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY(asset_id, tag));
@@ -307,13 +314,39 @@ impl Library {
             )
             .map_err(|e| format!("Projektordner können nicht geöffnet werden: {e}"))?;
         let mut library = Self { root, connection };
-        library.remove_macos_metadata_records()?;
+        library.remove_import_leftovers();
+        let version: i64 = library
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|e| format!("Katalogformat nicht lesbar: {e}"))?;
+        if version < 2 {
+            library.remove_macos_metadata_records()?;
+            library
+                .connection
+                .pragma_update(None, "user_version", 2)
+                .map_err(|e| format!("Katalogformat kann nicht gespeichert werden: {e}"))?;
+        }
+        // Cheap when every source is migrated; offline legacy sources retry on the next activation.
         library.migrate_external_identities()?;
         Ok(library)
     }
 
+    /// Staging folders of imports interrupted by a crash; never follows links.
+    fn remove_import_leftovers(&self) {
+        let packages = self.root.join("packages");
+        if fs::symlink_metadata(&packages).map_or(true, |m| !m.is_dir()) {
+            return;
+        }
+        for entry in fs::read_dir(packages).into_iter().flatten().flatten() {
+            if entry.file_name().to_string_lossy().starts_with(".import-")
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+            {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+
     fn remove_macos_metadata_records(&mut self) -> Result<()> {
-        // ponytail: scan catalog paths on open; add an indexed migration marker if this becomes costly.
         let files = self
             .connection
             .prepare("SELECT id, asset_id, relative_path FROM asset_files")
@@ -462,29 +495,10 @@ impl Library {
         files: Vec<ImportedFile>,
         run: &mut ImportRun<'_>,
     ) -> Result<AssetPackage> {
-        self.save_import_with(name, source_path, relative_path, files, run, false, || {
-            Ok(())
-        })
-    }
-    fn save_import_with(
-        &mut self,
-        name: String,
-        source_path: String,
-        relative_path: String,
-        files: Vec<ImportedFile>,
-        run: &mut ImportRun<'_>,
-        reserved: bool,
-        before_insert: impl FnOnce() -> Result<()>,
-    ) -> Result<AssetPackage> {
         let transaction = self
             .connection
-            .transaction_with_behavior(if reserved {
-                rusqlite::TransactionBehavior::Immediate
-            } else {
-                rusqlite::TransactionBehavior::Deferred
-            })
+            .transaction()
             .map_err(|e| format!("Katalog kann nicht aktualisiert werden: {e}"))?;
-        before_insert()?;
         transaction
             .execute(
                 "INSERT INTO packages(name, relative_path, source_path) VALUES (?1, ?2, ?3)",
@@ -1286,94 +1300,127 @@ impl Library {
                     audio.channels.as_deref().unwrap_or("any"),
                     audio.analysis.as_deref().unwrap_or("any")
                 ],
-                |row| {
-                    Ok((
-                        Asset {
-                            id: row.get(0)?,
-                            name: row.get(1)?,
-                            kind: AssetKind::for_format(&row.get::<_, String>(5)?)
-                                .ok_or(rusqlite::Error::InvalidQuery)?,
-                            package_id: row.get(2)?,
-                            package_name: row.get(3)?,
-                            original_folder: row.get(4)?,
-                            tags: Vec::new(),
-                            folder_ids: Vec::new(),
-                            files: Vec::new(),
-                            image_group: None,
-                        },
-                        row.get::<_, i64>(6)?,
-                    ))
-                },
+                |row| Ok((asset_row(row)?, row.get::<_, i64>(6)?)),
             )
             .map_err(|e| format!("Katalogsuche fehlgeschlagen: {e}"))?;
-        let mut items = rows
+        let (mut items, matching): (Vec<_>, Vec<_>) = rows
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| format!("Katalogeintrag nicht lesbar: {e}"))?;
-        let mut folders = self
-            .connection
-            .prepare("SELECT folder_id FROM folder_assets WHERE asset_id = ?1 ORDER BY folder_id")
-            .map_err(|e| format!("Projektordner nicht lesbar: {e}"))?;
-        for (asset, matching_file_id) in &mut items {
-            asset.folder_ids = folders
-                .query_map([asset.id], |row| row.get(0))
-                .map_err(|e| format!("Projektordner nicht lesbar: {e}"))?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| format!("Projektordner nicht lesbar: {e}"))?;
-            asset.files = self.asset_files(asset.id)?;
-            if active_audio {
+            .map_err(|e| format!("Katalogeintrag nicht lesbar: {e}"))?
+            .into_iter()
+            .unzip();
+        drop(statement);
+        self.hydrate(&mut items)?;
+        if active_audio {
+            for (asset, matching_file_id) in items.iter_mut().zip(matching) {
                 if let Some(index) = asset
                     .files
                     .iter()
-                    .position(|file| file.id == *matching_file_id)
+                    .position(|file| file.id == matching_file_id)
                 {
                     let representative = asset.files.remove(index);
                     asset.files.insert(0, representative);
                 }
             }
-            asset.tags = self.select_strings(
-                "SELECT tag FROM asset_tags WHERE asset_id = ?1 ORDER BY tag COLLATE NOCASE",
-                Some(asset.id),
-            )?;
         }
-        drop(folders);
-        drop(statement);
         if let Some(snapshot) = snapshot {
             snapshot
                 .commit()
                 .map_err(|e| format!("Katalogsuche fehlgeschlagen: {e}"))?;
         }
         Ok(CatalogPage {
-            items: items.into_iter().map(|(asset, _)| asset).collect(),
+            items,
             total,
             offset,
             limit,
         })
     }
 
-    fn asset_files(&self, asset_id: i64) -> Result<Vec<AssetFile>> {
-        let mut statement = self.connection.prepare(&format!("SELECT f.id, f.original_filename, f.relative_path, f.format, f.size_bytes, {FILE_FOLDER} FROM active_asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id WHERE a.id = ?1 ORDER BY f.format, f.original_filename, f.id"))
+    /// Active catalog rows for the given asset ids, in id order, without files, tags or folders.
+    pub(super) fn assets_by_id(&self, ids: &[i64]) -> Result<Vec<Asset>> {
+        self.connection
+            .prepare("SELECT a.id, a.name, p.id, p.name, a.original_folder, MIN(f.format) FROM assets a JOIN packages p ON p.id = a.package_id JOIN active_asset_files f ON f.asset_id = a.id WHERE a.id IN (SELECT value FROM json_each(?1)) GROUP BY a.id ORDER BY a.id")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([id_list(ids)], asset_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .map_err(|e| format!("Katalogeintrag nicht lesbar: {e}"))
+    }
+
+    /// Loads tags, project folders and files of a whole page with one query each.
+    pub(super) fn hydrate(&self, assets: &mut [Asset]) -> Result<()> {
+        let ids = assets.iter().map(|asset| asset.id).collect::<Vec<_>>();
+        let mut files = self.files_for_assets(&ids)?;
+        let mut tags = self.by_asset::<String>("SELECT asset_id, tag FROM asset_tags WHERE asset_id IN (SELECT value FROM json_each(?1)) ORDER BY tag COLLATE NOCASE", &ids)?;
+        let mut folders = self.by_asset::<i64>("SELECT asset_id, folder_id FROM folder_assets WHERE asset_id IN (SELECT value FROM json_each(?1)) ORDER BY folder_id", &ids)?;
+        for asset in assets.iter_mut() {
+            asset.files = files.remove(&asset.id).unwrap_or_default();
+            asset.tags = tags.remove(&asset.id).unwrap_or_default();
+            asset.folder_ids = folders.remove(&asset.id).unwrap_or_default();
+        }
+        Ok(())
+    }
+
+    fn by_asset<T: rusqlite::types::FromSql>(
+        &self,
+        sql: &str,
+        ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<T>>> {
+        let mut grouped = HashMap::<i64, Vec<T>>::new();
+        let mut statement = self
+            .connection
+            .prepare(sql)
+            .map_err(|e| format!("Katalogeintrag nicht lesbar: {e}"))?;
+        let rows = statement
+            .query_map([id_list(ids)], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| format!("Katalogeintrag nicht lesbar: {e}"))?;
+        for row in rows {
+            let (asset_id, value) = row.map_err(|e| format!("Katalogeintrag nicht lesbar: {e}"))?;
+            grouped.entry(asset_id).or_default().push(value);
+        }
+        Ok(grouped)
+    }
+
+    /// Active files grouped by asset, with audio metadata and availability, in one query.
+    pub(super) fn files_for_assets(&self, ids: &[i64]) -> Result<HashMap<i64, Vec<AssetFile>>> {
+        let mut statement = self.connection.prepare(&format!("SELECT f.asset_id, f.id, f.original_filename, f.relative_path, f.format, f.size_bytes, {FILE_FOLDER},
+                s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes,
+                m.file_id, m.duration_seconds, m.sample_rate, m.channels, m.codec, m.error
+            FROM active_asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id
+            LEFT JOIN external_sources s ON s.package_id = p.id LEFT JOIN external_files e ON e.file_id = f.id
+            LEFT JOIN audio_metadata m ON m.file_id = f.id
+            WHERE a.id IN (SELECT value FROM json_each(?1)) ORDER BY f.format, f.original_filename, f.id"))
             .map_err(|e| format!("Asset-Dateien nicht lesbar: {e}"))?;
         let rows = statement
-            .query_map([asset_id], |row| {
-                let format: String = row.get(3)?;
-                Ok(AssetFile {
-                    id: row.get(0)?,
-                    original_filename: row.get(1)?,
-                    relative_path: row.get(2)?,
-                    kind: AssetKind::for_format(&format).ok_or(rusqlite::Error::InvalidQuery)?,
-                    format,
-                    size_bytes: row.get(4)?,
-                    original_folder: row.get(5)?,
-                    audio: None,
-                    available: self.resolve_preview(row.get(0)?).is_ok(),
-                })
+            .query_map([id_list(ids)], |row| {
+                let format: String = row.get(4)?;
+                let relative_path: String = row.get(3)?;
+                let external = location_row(row, 7)?;
+                let audio = match row.get::<_, Option<i64>>(13)? {
+                    Some(_) => Some(audio_row(row, 14)?),
+                    None => None,
+                };
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    AssetFile {
+                        id: row.get(1)?,
+                        original_filename: row.get(2)?,
+                        available: self.locate(&relative_path, external).is_ok(),
+                        relative_path,
+                        kind: AssetKind::for_format(&format)
+                            .ok_or(rusqlite::Error::InvalidQuery)?,
+                        format,
+                        size_bytes: row.get(5)?,
+                        original_folder: row.get(6)?,
+                        audio,
+                    },
+                ))
             })
             .map_err(|e| format!("Asset-Dateien nicht lesbar: {e}"))?;
-        let mut files = rows
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| format!("Asset-Dateien nicht lesbar: {e}"))?;
-        for file in &mut files {
-            file.audio = self.file_audio(file.id)?;
+        let mut files = HashMap::<i64, Vec<AssetFile>>::new();
+        for row in rows {
+            let (asset_id, file) = row.map_err(|e| format!("Asset-Dateien nicht lesbar: {e}"))?;
+            files.entry(asset_id).or_default().push(file);
         }
         Ok(files)
     }
@@ -1384,15 +1431,13 @@ impl Library {
             .query_row(
                 "SELECT f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes FROM active_asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id LEFT JOIN external_sources s ON s.package_id = p.id LEFT JOIN external_files e ON e.file_id = f.id WHERE f.id = ?1",
                 [file_id],
-                |row| {
-                    let root: Option<String> = row.get(1)?;
-                    let external = if let Some(root) = root {
-                        Some(ReferencedLocation { root, root_identity: row.get(2)?, prefix: row.get(3)?, identity: row.get(4)?, modified: row.get(5)?, size: row.get(6)? })
-                    } else { None };
-                    Ok((row.get(0)?, external))
-                },
+                |row| Ok((row.get(0)?, location_row(row, 1)?)),
             )
             .map_err(|e| format!("Asset-Datei nicht im Katalog: {e}"))?;
+        self.locate(&relative, external)
+    }
+
+    fn locate(&self, relative: &str, external: Option<ReferencedLocation>) -> Result<PathBuf> {
         if let Some(external) = external {
             let relative = Path::new(&relative)
                 .strip_prefix(&external.prefix)
@@ -1431,25 +1476,6 @@ impl Library {
             return Err("Asset-Datei nicht verfügbar".into());
         }
         Ok(candidate)
-    }
-
-    fn file_audio(&self, file_id: i64) -> Result<Option<AudioMetadata>> {
-        use rusqlite::OptionalExtension;
-        self.connection.query_row(
-            "SELECT duration_seconds, sample_rate, channels, codec, error FROM audio_metadata WHERE file_id = ?1",
-            [file_id],
-            |row| {
-                let error: Option<String> = row.get(4)?;
-                Ok(AudioMetadata {
-                    status: if error.is_some() { AudioStatus::Error } else { AudioStatus::Ready },
-                    duration_seconds: row.get(0)?,
-                    sample_rate: row.get(1)?,
-                    channels: row.get(2)?,
-                    codec: row.get(3)?,
-                    error,
-                })
-            },
-        ).optional().map_err(|error| format!("Audioeigenschaften nicht lesbar: {error}"))
     }
 
     pub(crate) fn audio_analysis_busy_timeout(&self) -> Result<()> {
@@ -1528,7 +1554,11 @@ impl Library {
             if overwrite {
                 fs::rename(&temporary, &destination)
                     .map_err(|e| format!("Exportziel konnte nicht ersetzt werden: {e}"))?;
-            } else {
+            } else if let Err(error) = fs::hard_link(&temporary, &destination) {
+                // Linking never replaces; only file systems without hard links copy a second time.
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    return Ok(ExportOutcome::ReplacementRequired);
+                }
                 let mut target = match fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
@@ -1566,21 +1596,26 @@ impl Library {
         if parent.starts_with(&self.root) {
             return Err("Exportziel darf die Bibliothek nicht verändern".into());
         }
-        let mut statement = self
-            .connection
-            .prepare("SELECT root FROM external_sources")
-            .map_err(|e| format!("Externe Quellpfade nicht lesbar: {e}"))?;
-        let roots = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| format!("Externe Quellpfade nicht lesbar: {e}"))?;
-        for root in roots {
-            let root = root.map_err(|e| format!("Externe Quelle nicht lesbar: {e}"))?;
-            if parent.starts_with(Path::new(&root)) {
-                return Err("Exportziel darf die externe Quelle nicht verändern".into());
-            }
+        if self
+            .external_roots()?
+            .iter()
+            .any(|root| parent.starts_with(root))
+        {
+            return Err("Exportziel darf die externe Quelle nicht verändern".into());
         }
-        drop(statement);
         Ok(())
+    }
+
+    /// Roots of all referenced sources, including trashed packages that may be restored.
+    pub fn external_roots(&self) -> Result<Vec<PathBuf>> {
+        self.connection
+            .prepare("SELECT root FROM external_sources")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0).map(PathBuf::from))?
+                    .collect()
+            })
+            .map_err(|e| format!("Externe Quellpfade nicht lesbar: {e}"))
     }
 
     pub fn root(&self) -> &Path {
@@ -1637,6 +1672,61 @@ struct ReferencedFile {
     identity: String,
     modified: String,
     format: String,
+}
+
+fn id_list(ids: &[i64]) -> String {
+    serde_json::Value::from(ids).to_string()
+}
+
+fn asset_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
+    Ok(Asset {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        kind: AssetKind::for_format(&row.get::<_, String>(5)?)
+            .ok_or(rusqlite::Error::InvalidQuery)?,
+        package_id: row.get(2)?,
+        package_name: row.get(3)?,
+        original_folder: row.get(4)?,
+        tags: Vec::new(),
+        folder_ids: Vec::new(),
+        files: Vec::new(),
+        image_group: None,
+    })
+}
+
+/// Columns: root, root identity, package prefix, file identity, modified, size.
+fn location_row(
+    row: &rusqlite::Row<'_>,
+    at: usize,
+) -> rusqlite::Result<Option<ReferencedLocation>> {
+    let Some(root) = row.get::<_, Option<String>>(at)? else {
+        return Ok(None);
+    };
+    Ok(Some(ReferencedLocation {
+        root,
+        root_identity: row.get(at + 1)?,
+        prefix: row.get(at + 2)?,
+        identity: row.get(at + 3)?,
+        modified: row.get(at + 4)?,
+        size: row.get(at + 5)?,
+    }))
+}
+
+/// Columns: duration, sample rate, channels, codec, error.
+fn audio_row(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<AudioMetadata> {
+    let error: Option<String> = row.get(at + 4)?;
+    Ok(AudioMetadata {
+        status: if error.is_some() {
+            AudioStatus::Error
+        } else {
+            AudioStatus::Ready
+        },
+        duration_seconds: row.get(at)?,
+        sample_rate: row.get(at + 1)?,
+        channels: row.get(at + 2)?,
+        codec: row.get(at + 3)?,
+        error,
+    })
 }
 
 struct ReferencedLocation {
@@ -5273,6 +5363,7 @@ mod tests {
         // Fixture setup recreates records produced by the old extension-only importer,
         // including a sidecar manually grouped with a real sound and cached errors.
         let legacy = Connection::open(root.join("catalog.sqlite3")).unwrap();
+        legacy.pragma_update(None, "user_version", 1).unwrap();
         for package in &packages {
             let (_, real_asset, _) = kept.iter().find(|row| row.0 == package.id).unwrap();
             legacy.execute("INSERT INTO assets(package_id, name, original_folder) VALUES (?1, 'Annotated sidecar', '__MACOSX/Cyberpunk')", [package.id]).unwrap();
@@ -5777,20 +5868,6 @@ mod tests {
                 "search {text}"
             );
         }
-        assert_eq!(
-            library
-                .query(CatalogQuery {
-                    text: source
-                        .canonicalize()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
-                    ..Default::default()
-                })
-                .unwrap()
-                .total,
-            2
-        );
         let page = library
             .query(CatalogQuery {
                 package_id: Some(package.id),
@@ -5840,6 +5917,61 @@ mod tests {
             library.catalog_filters(None).unwrap().folders,
             vec!["", "ambience", "effects"]
         );
+        // The absolute import origin is provenance, not searchable text.
+        let downloads = workspace.path("Downloads/Plain");
+        fs::create_dir_all(&downloads).unwrap();
+        fs::write(downloads.join("B002.wav"), b"plain").unwrap();
+        library.import_folder(&downloads).unwrap();
+        let search = |text: &str| {
+            library
+                .query(CatalogQuery {
+                    text: text.into(),
+                    ..Default::default()
+                })
+                .unwrap()
+                .total
+        };
+        assert_eq!(search("downloads"), 0);
+        assert_eq!(search("plain"), 1);
+    }
+
+    #[test]
+    fn opening_runs_one_time_repairs_once_and_removes_interrupted_imports() {
+        let workspace = Workspace::new();
+        let source = workspace.path("Pack");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("tone.wav"), b"tone").unwrap();
+        let root = workspace.path("library");
+        Library::create(&root)
+            .unwrap()
+            .import_folder(&source)
+            .unwrap();
+        let leftover = root.join("packages/.import-crashed");
+        fs::create_dir_all(leftover.join("nested")).unwrap();
+        fs::write(leftover.join("nested/partial.wav"), b"partial").unwrap();
+        // A recorded leftover sidecar shows the repair scan is skipped once the marker is set.
+        let catalog = Connection::open(root.join("catalog.sqlite3")).unwrap();
+        assert_eq!(
+            catalog
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        catalog.execute("INSERT INTO asset_files(asset_id, original_filename, relative_path, format, size_bytes) SELECT asset_id, '._tone.wav', relative_path || '.sidecar/._tone.wav', 'WAV', 4 FROM asset_files", []).unwrap();
+        drop(catalog);
+        let library = Library::open(&root).unwrap();
+        assert!(!leftover.exists());
+        assert!(root.join("packages").read_dir().unwrap().count() == 1);
+        drop(library);
+        let library = Library::writable(&root).unwrap();
+        let page = library.query(CatalogQuery::default()).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].files.len(), 2, "marker skips the rescan");
+        assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("catalog-before-macos-metadata-")));
     }
 
     #[test]

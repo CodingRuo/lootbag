@@ -25,7 +25,8 @@ pnpm tauri build --bundles app
 ## Library storage
 
 Choose a library folder or let the app create its default in your home
-directory. Managed imports copy package contents into library storage,
+directory. The app reopens the last library on the next launch while its
+folder and catalog still exist. Managed imports copy package contents into library storage,
 preserving original folders and companion files. Referenced sources retain
 their files at the external location. The catalog stores names, tags, and
 provenance without renaming original files.
@@ -38,7 +39,11 @@ and ZIP confirmation; up to 32 sources are processed sequentially. A failure
 stops the queue and reports any earlier successful imports.
 macOS companion files (`._*` and files inside `__MACOSX`) remain in the
 package storage but do not appear as assets. Existing catalogs are corrected
-on open, after creating a `catalog-before-macos-metadata-*.sqlite3` backup.
+once on open, after creating a `catalog-before-macos-metadata-*.sqlite3` backup;
+the corrected catalog is marked as format version 2, which older app builds
+cannot open. Opening a library also removes staging folders left by an
+interrupted import. Text search covers names, package, folder, filename and
+tags, not the absolute path the package was imported from.
 
 Close the app before manually copying or moving the entire library.
 Managed locations are relative to the library root. External sources can

@@ -4,11 +4,11 @@ use super::{
 };
 use rusqlite::params;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
     path::Path,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ImageWorkflow {
     Material,
@@ -77,7 +77,7 @@ struct ImageRecord {
     filename: String,
 }
 
-struct DerivedGroup {
+pub(super) struct DerivedGroup {
     name: String,
     members: Vec<DerivedMember>,
 }
@@ -138,21 +138,25 @@ impl Library {
         } else {
             query.limit.clamp(1, 100)
         };
-        let mut items = Vec::new();
-        for group in groups
+        let page = groups
             .into_iter()
             .skip(offset as usize)
             .take(limit as usize)
-        {
+            .collect::<Vec<_>>();
+        let mut assets = self.assets_by_id(
+            &page
+                .iter()
+                .map(|group| group.members[0].record.asset_id)
+                .collect::<Vec<_>>(),
+        )?;
+        self.hydrate(&mut assets)?;
+        let mut items = Vec::new();
+        for group in page {
             let representative = &group.members[0].record;
-            let mut asset = self
-                .query(CatalogQuery {
-                    asset_id: Some(representative.asset_id),
-                    ..Default::default()
-                })?
-                .items
-                .into_iter()
-                .next()
+            let mut asset = assets
+                .iter()
+                .find(|asset| asset.id == representative.asset_id)
+                .cloned()
                 .ok_or("Material nicht im aktiven Katalog")?;
             asset
                 .files
@@ -200,12 +204,23 @@ impl Library {
                 .map(|member| member.record.file_id)
                 .collect::<Vec<_>>(),
         )?;
+        let mut files = self.files_for_assets(
+            &group
+                .members
+                .iter()
+                .map(|member| member.record.asset_id)
+                .collect::<Vec<_>>(),
+        )?;
         let mut members = Vec::new();
         for member in group.members {
-            let file = self
-                .asset_files(member.record.asset_id)?
-                .into_iter()
-                .find(|file| file.id == member.record.file_id)
+            let file = files
+                .get_mut(&member.record.asset_id)
+                .and_then(|files| {
+                    let index = files
+                        .iter()
+                        .position(|file| file.id == member.record.file_id)?;
+                    Some(files.swap_remove(index))
+                })
                 .ok_or("Bilddatei nicht im aktiven Katalog")?;
             let resource_path = path_text(
                 Path::new(&file.relative_path)
@@ -229,18 +244,25 @@ impl Library {
         })
     }
 
+    /// `derived` caches each package's groups so a bulk selection derives them once per package.
     pub(super) fn image_group_asset_ids(
         &self,
         file_id: i64,
         workflow: ImageWorkflow,
+        derived: &mut HashMap<(ImageWorkflow, i64), Vec<DerivedGroup>>,
     ) -> Result<Vec<i64>> {
         let package_id: i64 = self.connection.query_row(
             "SELECT a.package_id FROM active_asset_files f JOIN assets a ON a.id = f.asset_id WHERE f.id = ?1",
             [file_id], |row| row.get(0),
         ).map_err(|error| format!("Bildgruppe nicht mehr im aktiven Katalog: {error}"))?;
-        let group = self
-            .derived_image_groups(workflow, Some(package_id))?
-            .into_iter()
+        let groups = match derived.entry((workflow, package_id)) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                entry.insert(self.derived_image_groups(workflow, Some(package_id))?)
+            }
+        };
+        let group = groups
+            .iter()
             .find(|group| {
                 group
                     .members
@@ -250,7 +272,7 @@ impl Library {
             .ok_or("Bildgruppe ist nicht mehr im aktiven Katalog. Es wurde nichts geändert.")?;
         Ok(group
             .members
-            .into_iter()
+            .iter()
             .map(|member| member.record.asset_id)
             .collect())
     }

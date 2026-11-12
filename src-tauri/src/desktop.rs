@@ -5,10 +5,11 @@ use crate::library::{
     ModelResources, ProjectFolder, Result, TrashEntry, ZipEstimate,
 };
 use std::{
+    fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
     },
     time::{Duration, Instant},
 };
@@ -62,10 +63,7 @@ impl Session {
         if request_id.is_empty() || request_id.len() > 128 {
             return Err("Ungültige Audioanalyse-Anfrage".into());
         }
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         let root = current
             .clone()
             .ok_or("Bitte zuerst eine Bibliothek öffnen")?;
@@ -73,7 +71,7 @@ impl Session {
         let mut job = self
             .audio_analysis
             .lock()
-            .map_err(|_| "Audioanalyse nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if job.as_ref().is_some_and(|job| job.request_id == request_id) {
             return Err(
                 "Audioanalyse-ID ist bereits aktiv. Bitte eine neue Anfrage-ID verwenden".into(),
@@ -95,14 +93,11 @@ impl Session {
         flag: &Arc<AtomicBool>,
         files: Vec<i64>,
     ) -> Result<PreparedAudioAnalysis> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         let mut jobs = self
             .audio_analysis
             .lock()
-            .map_err(|_| "Audioanalyse nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         let job = jobs
             .as_mut()
             .filter(|job| job.request_id == request_id && Arc::ptr_eq(&job.cancelled, flag))
@@ -121,17 +116,14 @@ impl Session {
         &self,
         request_id: &str,
     ) -> Result<(PathBuf, Arc<AtomicBool>, Vec<i64>)> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         let root = current
             .clone()
             .ok_or("Bitte zuerst eine Bibliothek öffnen")?;
         let mut jobs = self
             .audio_analysis
             .lock()
-            .map_err(|_| "Audioanalyse nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         let job = jobs
             .as_mut()
             .filter(|job| job.request_id == request_id && !job.cancelled.load(Ordering::Relaxed))
@@ -146,7 +138,7 @@ impl Session {
         let mut jobs = self
             .audio_analysis
             .lock()
-            .map_err(|_| "Audioanalyse nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if jobs
             .as_ref()
             .is_some_and(|job| request_id.is_none_or(|id| job.request_id == id))
@@ -161,7 +153,7 @@ impl Session {
         let jobs = self
             .audio_analysis
             .lock()
-            .map_err(|_| "Audioanalyse nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         Ok(!flag.load(Ordering::Relaxed)
             && jobs.as_ref().is_some_and(|job| {
                 job.request_id == request_id && Arc::ptr_eq(&job.cancelled, flag)
@@ -171,7 +163,7 @@ impl Session {
         let mut jobs = self
             .audio_analysis
             .lock()
-            .map_err(|_| "Audioanalyse nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if jobs
             .as_ref()
             .is_some_and(|job| job.request_id == request_id && Arc::ptr_eq(&job.cancelled, flag))
@@ -190,10 +182,7 @@ impl Session {
         mut progress: impl FnMut(AudioAnalysisProgress),
     ) -> Result<AudioAnalysisProgress> {
         let result = (|| {
-            let _gate = self
-                .import_gate
-                .try_lock()
-                .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
+            let _gate = file_gate(&self.import_gate)?;
             library.audio_analysis_busy_timeout()?;
             let mut summary = AudioAnalysisProgress {
                 request_id: request_id.into(),
@@ -216,10 +205,7 @@ impl Session {
                 let stored = match measured {
                     Ok(measured) => {
                         // Root ownership is held only for a bounded per-file commit; cancellation takes no root lock.
-                        let current = self
-                            .root
-                            .lock()
-                            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+                        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
                         if current.as_deref() != Some(root)
                             || !self.audio_analysis_is_current(request_id, flag)?
                         {
@@ -245,7 +231,7 @@ impl Session {
                 || self
                     .root
                     .lock()
-                    .map_err(|_| "Bibliothek ist nicht verfügbar")?
+                    .unwrap_or_else(PoisonError::into_inner)
                     .as_deref()
                     != Some(root);
             progress(summary.clone());
@@ -259,10 +245,7 @@ impl Session {
         if request_id.is_empty() || request_id.len() > 128 {
             return Err("Ungültige Audio-Tag-Anfrage".into());
         }
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         let root = current
             .clone()
             .ok_or("Bitte zuerst eine Bibliothek öffnen")?;
@@ -270,7 +253,7 @@ impl Session {
         let mut job = self
             .audio_tags
             .lock()
-            .map_err(|_| "Audio-Tag-Analyse ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some((_, older)) = job.replace((request_id.into(), cancelled.clone())) {
             older.store(true, Ordering::Relaxed);
         }
@@ -282,14 +265,11 @@ impl Session {
         request_id: &str,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<()> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         let mut job = self
             .audio_tags
             .lock()
-            .map_err(|_| "Audio-Tag-Analyse ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         let matches = job
             .as_ref()
             .is_some_and(|(id, flag)| id == request_id && Arc::ptr_eq(flag, cancelled));
@@ -305,7 +285,7 @@ impl Session {
         let mut job = self
             .audio_tags
             .lock()
-            .map_err(|_| "Audio-Tag-Analyse ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if job
             .as_ref()
             .is_some_and(|(id, _)| request_id.is_none_or(|request_id| request_id == id))
@@ -321,7 +301,7 @@ impl Session {
         let current = self
             .sprite_export
             .lock()
-            .map_err(|_| "Sprite-Export ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if current
             .as_ref()
             .is_some_and(|(id, _)| snapshot_id.is_none_or(|requested| requested == id))
@@ -338,14 +318,11 @@ impl Session {
         file_id: i64,
         publish: impl FnOnce(&Path, &ModelResources) -> Result<T>,
     ) -> Result<T> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         let preview = self
             .model_preview
             .lock()
-            .map_err(|_| "Vorschau ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         let snapshot = preview
             .snapshot
             .as_ref()
@@ -362,21 +339,18 @@ impl Session {
     }
     fn set_root(&self, root: PathBuf) -> Result<()> {
         self.cancel_sprite_export(None)?;
-        let mut current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let mut current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         let mut preview = self
             .model_preview
             .lock()
-            .map_err(|_| "Vorschau ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         *current = Some(root);
         preview.request = preview.request.wrapping_add(1);
         preview.snapshot = None;
         if let Some((_, cancelled)) = self
             .audio_waveform
             .lock()
-            .map_err(|_| "Audioanalyse ist nicht verfügbar")?
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
         {
             cancelled.store(true, Ordering::Relaxed);
@@ -388,59 +362,31 @@ impl Session {
 
     fn begin_preview(&self) -> Result<(PathBuf, u64)> {
         self.cancel_sprite_export(None)?;
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         let root = current
             .clone()
             .ok_or("Bitte zuerst eine Bibliothek öffnen")?;
         let mut preview = self
             .model_preview
             .lock()
-            .map_err(|_| "Vorschau ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         preview.request = preview.request.wrapping_add(1);
         preview.snapshot = None;
         Ok((root, preview.request))
     }
 
-    fn allow_thumbnail(
-        &self,
-        root: &Path,
-        allow_resources: impl FnOnce() -> Result<()>,
-    ) -> Result<()> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        if current.as_deref() != Some(root) {
-            return Err("Die Bibliothek wurde während der Vorschau-Vorbereitung gewechselt".into());
-        }
-        allow_resources()
-    }
-
-    fn pin_preview(
-        &self,
-        root: &Path,
-        request: u64,
-        snapshot: &ModelResources,
-        allow_resources: impl FnOnce() -> Result<()>,
-    ) -> Result<()> {
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+    fn pin_preview(&self, root: &Path, request: u64, snapshot: &ModelResources) -> Result<()> {
+        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
         if current.as_deref() != Some(root) {
             return Err("Die Bibliothek wurde während der Vorschau-Vorbereitung gewechselt".into());
         }
         let mut preview = self
             .model_preview
             .lock()
-            .map_err(|_| "Vorschau ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if preview.request != request {
             return Err("Die Vorschau wurde während der Vorbereitung gewechselt".into());
         }
-        allow_resources()?;
         preview.snapshot = Some(snapshot.clone());
         Ok(())
     }
@@ -449,7 +395,7 @@ impl Session {
         let snapshot = self
             .model_preview
             .lock()
-            .map_err(|_| "Vorschau ist nicht verfügbar")?
+            .unwrap_or_else(PoisonError::into_inner)
             .snapshot
             .clone()
             .ok_or("Bitte die Vorschau vor dem Export öffnen")?;
@@ -492,9 +438,56 @@ fn active_root(app: &AppHandle) -> Result<PathBuf> {
     app.state::<Session>()
         .root
         .lock()
-        .map_err(|_| "Bibliothek ist nicht verfügbar")?
+        .unwrap_or_else(PoisonError::into_inner)
         .clone()
         .ok_or_else(|| "Bitte zuerst eine Bibliothek öffnen".into())
+}
+
+/// Serializes catalog and file writes. A panic in an earlier holder must not block the app.
+fn file_gate(gate: &Mutex<()>) -> Result<MutexGuard<'_, ()>> {
+    match gate.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => Err("Bitte den laufenden Dateivorgang abwarten".into()),
+    }
+}
+
+/// The file gate, held while `root` is still the active library.
+fn catalog_write<'a>(app: &'a AppHandle, root: &Path) -> Result<MutexGuard<'a, ()>> {
+    let gate = file_gate(&app.state::<Session>().inner().import_gate)?;
+    if active_root(app)? != root {
+        return Err("Die aktive Bibliothek wurde geändert".into());
+    }
+    Ok(gate)
+}
+
+const LAST_LIBRARY: &str = "last-library";
+
+/// Grants the asset protocol whole source roots once instead of one entry per previewed file.
+fn allow_root(app: &AppHandle, root: &Path) -> Result<()> {
+    app.asset_protocol_scope()
+        .allow_directory(root, true)
+        .map_err(|error| format!("Bibliothek kann nicht freigegeben werden: {error}"))
+}
+
+/// Makes `library` the active one and remembers it for the next launch.
+fn activate(app: &AppHandle, library: &Library) -> Result<LibraryInfo> {
+    let result = info(library)?;
+    allow_root(app, library.root())?;
+    for source in library.external_roots()? {
+        // An offline source is granted again on the next activation or relink.
+        let _ = allow_root(app, &source);
+    }
+    app.state::<Session>().set_root(library.root().to_owned())?;
+    if let Ok(dir) = app.path().app_config_dir() {
+        let _ = fs::create_dir_all(&dir).and_then(|()| {
+            fs::write(
+                dir.join(LAST_LIBRARY),
+                library.root().to_string_lossy().as_bytes(),
+            )
+        });
+    }
+    Ok(result)
 }
 
 fn selected_path(app: &AppHandle, path: &Path) -> Result<()> {
@@ -523,18 +516,12 @@ async fn create_library(app: AppHandle, root: Option<String>) -> Result<LibraryI
         .home_dir()
         .map_err(|error| format!("Standardordner nicht verfügbar: {error}"))?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
+        let _gate = file_gate(&app.state::<Session>().inner().import_gate)?;
         let library = match chosen {
             Some(root) => Library::create(&root)?,
             None => Library::create_default(&home)?,
         };
-        let result = info(&library)?;
-        state.set_root(library.root().to_owned())?;
-        Ok(result)
+        activate(&app, &library)
     })
     .await
 }
@@ -544,15 +531,8 @@ async fn open_library(app: AppHandle, root: String) -> Result<LibraryInfo> {
     let root = PathBuf::from(root);
     selected_path(&app, &root)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        let library = Library::open(&root)?;
-        let result = info(&library)?;
-        state.set_root(library.root().to_owned())?;
-        Ok(result)
+        let _gate = file_gate(&app.state::<Session>().inner().import_gate)?;
+        activate(&app, &Library::open(&root)?)
     })
     .await
 }
@@ -563,10 +543,10 @@ async fn get_library(app: AppHandle) -> Result<Option<LibraryInfo>> {
         .state::<Session>()
         .root
         .lock()
-        .map_err(|_| "Bibliothek ist nicht verfügbar")?
+        .unwrap_or_else(PoisonError::into_inner)
         .clone();
     background(move || {
-        root.map(|root| Library::open(&root).and_then(|library| info(&library)))
+        root.map(|root| Library::writable(&root).and_then(|library| info(&library)))
             .transpose()
     })
     .await
@@ -685,7 +665,7 @@ async fn estimate_zip(app: AppHandle, source: String) -> Result<ZipEstimate> {
     let source = PathBuf::from(source);
     selected_path(&app, &source)?;
     let root = active_root(&app)?;
-    background(move || Library::open(&root)?.estimate_zip(&source)).await
+    background(move || Library::writable(&root)?.estimate_zip(&source)).await
 }
 
 #[tauri::command]
@@ -694,7 +674,7 @@ fn cancel_import(app: AppHandle) -> Result<bool> {
     let control = state
         .import_control
         .lock()
-        .map_err(|_| "Importstatus nicht verfügbar")?;
+        .unwrap_or_else(PoisonError::into_inner);
     if let Some(control) = control.as_ref() {
         control.cancel();
         Ok(true)
@@ -713,19 +693,13 @@ async fn managed_import(
     selected_path(&app, &source)?;
     let root = active_root(&app)?;
     background(move || {
+        let _gate = catalog_write(&app, &root)?;
         let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Es läuft bereits ein Import")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
         let control = Arc::new(ImportControl::default());
         *state
             .import_control
             .lock()
-            .map_err(|_| "Importstatus nicht verfügbar")? = Some(control.clone());
+            .unwrap_or_else(PoisonError::into_inner) = Some(control.clone());
         let mut last_report = None;
         let mut last_stage = "";
         let progress = |progress: ImportProgress| {
@@ -739,7 +713,7 @@ async fn managed_import(
                 let _ = on_progress.send(progress);
             }
         };
-        let result = Library::open(&root).and_then(|mut library| {
+        let result = Library::writable(&root).and_then(|mut library| {
             if is_zip {
                 library.import_zip_with_progress(&source, &control, progress)
             } else {
@@ -749,7 +723,7 @@ async fn managed_import(
         *state
             .import_control
             .lock()
-            .map_err(|_| "Importstatus nicht verfügbar")? = None;
+            .unwrap_or_else(PoisonError::into_inner) = None;
         result
     })
     .await
@@ -761,15 +735,13 @@ async fn reference_folder(app: AppHandle, source: String) -> Result<AssetPackage
     selected_path(&app, &source)?;
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.reference_folder(&source)
+        let _gate = catalog_write(&app, &root)?;
+        let package = Library::writable(&root)?.reference_folder(&source)?;
+        allow_root(
+            &app,
+            Path::new(package.external_root.as_deref().unwrap_or_default()),
+        )?;
+        Ok(package)
     })
     .await
 }
@@ -780,15 +752,13 @@ async fn relink_source(app: AppHandle, package_id: i64, source: String) -> Resul
     selected_path(&app, &source)?;
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.relink_source(package_id, &source)
+        let _gate = catalog_write(&app, &root)?;
+        let package = Library::writable(&root)?.relink_source(package_id, &source)?;
+        allow_root(
+            &app,
+            Path::new(package.external_root.as_deref().unwrap_or_default()),
+        )?;
+        Ok(package)
     })
     .await
 }
@@ -800,13 +770,13 @@ async fn query_catalog(
     audio_criteria: Option<AudioCriteria>,
 ) -> Result<CatalogPage> {
     let root = active_root(&app)?;
-    background(move || Library::open(&root)?.query_with_audio(query, audio_criteria)).await
+    background(move || Library::writable(&root)?.query_with_audio(query, audio_criteria)).await
 }
 
 #[tauri::command]
 async fn catalog_filters(app: AppHandle, package_id: Option<i64>) -> Result<CatalogFilters> {
     let root = active_root(&app)?;
-    background(move || Library::open(&root)?.catalog_filters(package_id)).await
+    background(move || Library::writable(&root)?.catalog_filters(package_id)).await
 }
 
 #[tauri::command]
@@ -817,15 +787,8 @@ async fn create_folder(
 ) -> Result<ProjectFolder> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.create_folder(&name, parent_id)
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.create_folder(&name, parent_id)
     })
     .await
 }
@@ -834,15 +797,8 @@ async fn create_folder(
 async fn add_to_folder(app: AppHandle, folder_id: i64, asset_id: i64) -> Result<()> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.add_to_folder(folder_id, asset_id)
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.add_to_folder(folder_id, asset_id)
     })
     .await
 }
@@ -851,15 +807,8 @@ async fn add_to_folder(app: AppHandle, folder_id: i64, asset_id: i64) -> Result<
 async fn remove_from_folder(app: AppHandle, folder_id: i64, asset_id: i64) -> Result<()> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.remove_from_folder(folder_id, asset_id)
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.remove_from_folder(folder_id, asset_id)
     })
     .await
 }
@@ -868,12 +817,8 @@ async fn remove_from_folder(app: AppHandle, folder_id: i64, asset_id: i64) -> Re
 async fn trash_package(app: AppHandle, package_id: i64) -> Result<()> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        Library::open(&root)?.trash_package(package_id)
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.trash_package(package_id)
     })
     .await
 }
@@ -882,12 +827,8 @@ async fn trash_package(app: AppHandle, package_id: i64) -> Result<()> {
 async fn trash_file(app: AppHandle, file_id: i64) -> Result<()> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        Library::open(&root)?.trash_file(file_id)
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.trash_file(file_id)
     })
     .await
 }
@@ -895,22 +836,15 @@ async fn trash_file(app: AppHandle, file_id: i64) -> Result<()> {
 #[tauri::command]
 async fn trash_entries(app: AppHandle) -> Result<Vec<TrashEntry>> {
     let root = active_root(&app)?;
-    background(move || Library::open(&root)?.trash_entries()).await
+    background(move || Library::writable(&root)?.trash_entries()).await
 }
 
 #[tauri::command]
 async fn empty_trash(app: AppHandle) -> Result<EmptiedTrash> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.empty_trash()
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.empty_trash()
     })
     .await
 }
@@ -919,15 +853,8 @@ async fn empty_trash(app: AppHandle) -> Result<EmptiedTrash> {
 async fn restore_trash(app: AppHandle, trash_id: i64) -> Result<()> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.restore_trash(trash_id)
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.restore_trash(trash_id)
     })
     .await
 }
@@ -941,15 +868,8 @@ async fn annotate_asset(
 ) -> Result<()> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.annotate_asset(asset_id, &name, &tags)
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.annotate_asset(asset_id, &name, &tags)
     })
     .await
 }
@@ -962,15 +882,8 @@ async fn bulk_assets(
 ) -> Result<BulkResult> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.bulk_assets(&selection, action)
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.bulk_assets(&selection, action)
     })
     .await
 }
@@ -979,15 +892,8 @@ async fn bulk_assets(
 async fn annotate_package(app: AppHandle, package_id: i64, tags: Vec<String>) -> Result<()> {
     let root = active_root(&app)?;
     background(move || {
-        let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        if active_root(&app)? != root {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        Library::open(&root)?.annotate_package(package_id, &tags)
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.annotate_package(package_id, &tags)
     })
     .await
 }
@@ -995,23 +901,28 @@ async fn annotate_package(app: AppHandle, package_id: i64, tags: Vec<String>) ->
 #[tauri::command]
 async fn split_variant(app: AppHandle, file_id: i64) -> Result<i64> {
     let root = active_root(&app)?;
-    background(move || Library::open(&root)?.split_variant(file_id)).await
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.split_variant(file_id)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn assign_variant(app: AppHandle, file_id: i64, target_asset_id: i64) -> Result<()> {
     let root = active_root(&app)?;
-    background(move || Library::open(&root)?.assign_variant(file_id, target_asset_id)).await
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.assign_variant(file_id, target_asset_id)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn resolve_preview(app: AppHandle, file_id: i64) -> Result<String> {
     let root = active_root(&app)?;
     background(move || {
-        let file = Library::open(&root)?.resolve_preview(file_id)?;
-        app.asset_protocol_scope()
-            .allow_file(&file)
-            .map_err(|error| format!("Vorschau kann nicht freigegeben werden: {error}"))?;
+        let file = Library::writable(&root)?.resolve_preview(file_id)?;
         Ok(file.to_string_lossy().into_owned())
     })
     .await
@@ -1021,7 +932,7 @@ async fn resolve_preview(app: AppHandle, file_id: i64) -> Result<String> {
 async fn model_resources(app: AppHandle, file_id: i64) -> Result<ModelResources> {
     let (root, request) = app.state::<Session>().begin_preview()?;
     background(move || {
-        let snapshot = Library::open(&root)?.model_resources(file_id)?;
+        let snapshot = Library::writable(&root)?.model_resources(file_id)?;
         pin_resources(&app, &root, request, &snapshot)?;
         Ok(snapshot)
     })
@@ -1031,20 +942,14 @@ async fn model_resources(app: AppHandle, file_id: i64) -> Result<ModelResources>
 #[tauri::command]
 async fn model_thumbnail_resources(app: AppHandle, file_id: i64) -> Result<ModelResources> {
     let root = active_root(&app)?;
-    background(move || {
-        let snapshot = Library::open_read_only(&root)?.model_resources(file_id)?;
-        app.state::<Session>()
-            .allow_thumbnail(&root, || allow_resource_files(&app, &snapshot))?;
-        Ok(snapshot)
-    })
-    .await
+    background(move || Library::open_read_only(&root)?.model_resources(file_id)).await
 }
 
 #[tauri::command]
 async fn image_group(app: AppHandle, file_id: i64, workflow: ImageWorkflow) -> Result<ImageGroup> {
     let (root, request) = app.state::<Session>().begin_preview()?;
     background(move || {
-        let group = Library::open(&root)?.image_group(file_id, workflow)?;
+        let group = Library::writable(&root)?.image_group(file_id, workflow)?;
         pin_resources(&app, &root, request, &group.resources)?;
         Ok(group)
     })
@@ -1055,7 +960,7 @@ async fn image_group(app: AppHandle, file_id: i64, workflow: ImageWorkflow) -> R
 async fn sheet_resources(app: AppHandle, file_id: i64) -> Result<ModelResources> {
     let (root, request) = app.state::<Session>().begin_preview()?;
     background(move || {
-        let snapshot = Library::open(&root)?.sheet_resources(file_id)?;
+        let snapshot = Library::writable(&root)?.sheet_resources(file_id)?;
         pin_resources(&app, &root, request, &snapshot)?;
         Ok(snapshot)
     })
@@ -1081,7 +986,7 @@ async fn export_sprite(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resu
         let mut job = state
             .sprite_export
             .lock()
-            .map_err(|_| "Sprite-Export ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if job.is_some() {
             return Err("Bitte den laufenden Sprite-Export abwarten".into());
         }
@@ -1092,10 +997,7 @@ async fn export_sprite(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resu
         let state = app.state::<Session>();
         let result = (|| {
             let payload = crate::library::SpritePayload::parse(&bytes)?;
-            let _gate = state
-                .import_gate
-                .try_lock()
-                .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
+            let _gate = file_gate(&state.import_gate)?;
             if cancelled.load(Ordering::SeqCst) {
                 return Err("Sprite-Export wurde abgebrochen".into());
             }
@@ -1103,7 +1005,7 @@ async fn export_sprite(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resu
                 &payload.plan.snapshot_id,
                 payload.plan.file_id,
                 |root, snapshot| {
-                    Library::open(root)?.export_sprite(snapshot, &payload, || {
+                    Library::writable(root)?.export_sprite(snapshot, &payload, || {
                         if cancelled.load(Ordering::SeqCst) {
                             Err("Sprite-Export wurde abgebrochen".into())
                         } else {
@@ -1116,7 +1018,7 @@ async fn export_sprite(app: AppHandle, request: tauri::ipc::Request<'_>) -> Resu
         let mut job = state
             .sprite_export
             .lock()
-            .map_err(|_| "Sprite-Export ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if job
             .as_ref()
             .is_some_and(|(_, flag)| Arc::ptr_eq(flag, &cancelled))
@@ -1136,7 +1038,7 @@ fn cancel_sprite_export(app: AppHandle, snapshot_id: String, dispose: bool) -> R
         let mut preview = state
             .model_preview
             .lock()
-            .map_err(|_| "Vorschau ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if preview
             .snapshot
             .as_ref()
@@ -1155,19 +1057,7 @@ fn pin_resources(
     request: u64,
     snapshot: &ModelResources,
 ) -> Result<()> {
-    app.state::<Session>()
-        .pin_preview(root, request, snapshot, || {
-            allow_resource_files(app, snapshot)
-        })
-}
-
-fn allow_resource_files(app: &AppHandle, snapshot: &ModelResources) -> Result<()> {
-    for resource in &snapshot.resources {
-        app.asset_protocol_scope()
-            .allow_file(&resource.path)
-            .map_err(|error| format!("Asset-Ressource kann nicht freigegeben werden: {error}"))?;
-    }
-    Ok(())
+    app.state::<Session>().pin_preview(root, request, snapshot)
 }
 
 #[tauri::command]
@@ -1187,13 +1077,10 @@ async fn export_model(
     }
     background(move || {
         let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
+        let _gate = file_gate(&state.import_gate)?;
         let root = active_root(&app)?;
         let snapshot = state.export_preview(&snapshot_id, file_id)?;
-        Library::open(&root)?.export_model(&snapshot, &resource_paths, destination.as_deref())
+        Library::writable(&root)?.export_model(&snapshot, &resource_paths, destination.as_deref())
     })
     .await
 }
@@ -1230,7 +1117,7 @@ async fn run_audio_analysis(
     background(move || {
         let state = app.state::<Session>();
         let mut last_report = None;
-        let library = match Library::open(&root) {
+        let library = match Library::writable(&root) {
             Ok(library) => library,
             Err(error) => {
                 state.finish_audio_analysis(&request_id, &flag)?;
@@ -1261,19 +1148,14 @@ fn cancel_audio_analysis(app: AppHandle, request_id: String) -> Result<()> {
 async fn analyze_audio(app: AppHandle, file_id: i64) -> Result<AudioMetadata> {
     let root = active_root(&app)?;
     background(move || {
+        // No file gate: the store revalidates the source inside its own SQLite write transaction.
         let state = app.state::<Session>();
-        let _gate = state
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        let library = Library::open(&root)?;
+        let library = Library::writable(&root)?;
+        // Short wait: the root lock below is held while SQLite waits for the writer.
         library.audio_analysis_busy_timeout()?;
         let flag = AtomicBool::new(false);
         let measured = library.inspect_audio(file_id, &flag)?;
-        let current = state
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let current = state.root.lock().unwrap_or_else(PoisonError::into_inner);
         if current.as_deref() != Some(&root) {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
@@ -1294,7 +1176,7 @@ async fn audio_tags(app: AppHandle, file_id: i64, request_id: String) -> Result<
             let _gate = state
                 .audio_tags_gate
                 .lock()
-                .map_err(|_| "Audio-Tag-Analyse ist nicht verfügbar")?;
+                .unwrap_or_else(PoisonError::into_inner);
             Library::open_read_only(&root)?.embedded_audio_tags(file_id, &cancelled)
         })();
         state.finish_audio_tags(&root, &request_id, &cancelled)?;
@@ -1315,10 +1197,7 @@ async fn audio_waveform(app: AppHandle, file_id: i64, request_id: String) -> Res
     }
     let (root, cancelled) = {
         let state = app.state::<Session>();
-        let current_root = state
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
+        let current_root = state.root.lock().unwrap_or_else(PoisonError::into_inner);
         let root = current_root
             .clone()
             .ok_or("Bitte zuerst eine Bibliothek öffnen")?;
@@ -1326,7 +1205,7 @@ async fn audio_waveform(app: AppHandle, file_id: i64, request_id: String) -> Res
         let mut current = state
             .audio_waveform
             .lock()
-            .map_err(|_| "Audioanalyse ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some((_, previous)) = current.replace((request_id.clone(), cancelled.clone())) {
             previous.store(true, Ordering::Relaxed);
         }
@@ -1337,7 +1216,7 @@ async fn audio_waveform(app: AppHandle, file_id: i64, request_id: String) -> Res
         let _gate = state
             .audio_gate
             .lock()
-            .map_err(|_| "Audioanalyse ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if cancelled.load(Ordering::Relaxed) {
             return Err("Wellenform-Analyse abgebrochen".into());
         }
@@ -1347,7 +1226,7 @@ async fn audio_waveform(app: AppHandle, file_id: i64, request_id: String) -> Res
         let mut current = state
             .audio_waveform
             .lock()
-            .map_err(|_| "Audioanalyse ist nicht verfügbar")?;
+            .unwrap_or_else(PoisonError::into_inner);
         if current.as_ref().is_some_and(|(id, _)| id == &request_id) {
             current.take();
         }
@@ -1365,7 +1244,7 @@ fn cancel_audio_waveform(app: AppHandle, request_id: String) -> Result<()> {
     let mut current = state
         .audio_waveform
         .lock()
-        .map_err(|_| "Audioanalyse ist nicht verfügbar")?;
+        .unwrap_or_else(PoisonError::into_inner);
     if current.as_ref().is_some_and(|(id, _)| id == &request_id) {
         if let Some((_, cancelled)) = current.take() {
             cancelled.store(true, Ordering::Relaxed);
@@ -1386,7 +1265,7 @@ async fn export_asset(
         selected_path(&app, destination)?;
     }
     let root = active_root(&app)?;
-    background(move || Library::open(&root)?.export(file_id, destination.as_deref(), overwrite))
+    background(move || Library::writable(&root)?.export(file_id, destination.as_deref(), overwrite))
         .await
 }
 
@@ -1394,6 +1273,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Session::default())
+        .setup(|app| {
+            let remembered = app
+                .path()
+                .app_config_dir()
+                .ok()
+                .and_then(|dir| fs::read_to_string(dir.join(LAST_LIBRARY)).ok());
+            // A moved or deleted library simply starts without one.
+            if let Some(library) = remembered.and_then(|root| Library::open(Path::new(&root)).ok())
+            {
+                let _ = activate(app.handle(), &library);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             create_library,
             open_library,
@@ -1447,6 +1339,24 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::{fs, time::SystemTime};
+
+    #[test]
+    fn a_panic_while_holding_the_file_gate_does_not_block_later_writes() {
+        let gate = Mutex::new(());
+        let _ = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _held = file_gate(&gate).unwrap();
+                    panic!("simulated failure during a file operation");
+                })
+                .join()
+        });
+        assert!(gate.is_poisoned());
+        let held = file_gate(&gate).unwrap();
+        assert!(file_gate(&gate).is_err(), "a live holder still blocks");
+        drop(held);
+        assert!(file_gate(&gate).is_ok());
+    }
 
     #[test]
     fn explicit_audio_population_jobs_keep_frozen_scope_partial_progress_and_cancel_owners() {
@@ -1756,9 +1666,7 @@ mod tests {
         let session = Session::default();
         session.set_root(library.root().to_owned()).unwrap();
         let (current, request) = session.begin_preview().unwrap();
-        session
-            .pin_preview(&current, request, &snapshot, || Ok(()))
-            .unwrap();
+        session.pin_preview(&current, request, &snapshot).unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         *session.sprite_export.lock().unwrap() =
             Some((snapshot.snapshot_id.clone(), cancelled.clone()));
@@ -1785,9 +1693,7 @@ mod tests {
             ))
             .is_err());
         let (current, request) = session.begin_preview().unwrap();
-        session
-            .pin_preview(&current, request, &snapshot, || Ok(()))
-            .unwrap();
+        session.pin_preview(&current, request, &snapshot).unwrap();
         session.set_root(root.join("another-library")).unwrap();
         assert!(session
             .with_sprite_preview::<()>(&snapshot.snapshot_id, id, |_, _| panic!(
@@ -1850,12 +1756,10 @@ mod tests {
             let (active_root, slow_request) = session.begin_preview().unwrap();
             let (_, current_request) = session.begin_preview().unwrap();
             session
-                .pin_preview(&active_root, current_request, current, || Ok(()))
+                .pin_preview(&active_root, current_request, current)
                 .unwrap();
             assert!(session
-                .pin_preview(&active_root, slow_request, slow, || {
-                    panic!("Superseded requests must not gain file-protocol access")
-                })
+                .pin_preview(&active_root, slow_request, slow)
                 .is_err());
             assert_eq!(
                 session
@@ -1871,9 +1775,6 @@ mod tests {
                 .unwrap()
                 .model_resources(model.file_id)
                 .unwrap();
-            let generation = session.model_preview.lock().unwrap().request;
-            session.allow_thumbnail(&active_root, || Ok(())).unwrap();
-            assert_eq!(session.model_preview.lock().unwrap().request, generation);
             assert_eq!(
                 session
                     .export_preview(&current.snapshot_id, current.file_id)
@@ -1888,18 +1789,10 @@ mod tests {
         let (active_root, old_request) = session.begin_preview().unwrap();
         session.set_root(library.root().to_owned()).unwrap();
         assert!(session
-            .pin_preview(&active_root, old_request, &model, || {
-                panic!("A reopened library must invalidate pending resource access")
-            })
+            .pin_preview(&active_root, old_request, &model)
             .is_err());
         assert!(session
             .export_preview(&model.snapshot_id, model.file_id)
-            .is_err());
-        session.set_root(root.join("another-library")).unwrap();
-        assert!(session
-            .allow_thumbnail(&active_root, || {
-                panic!("Old-library thumbnails must not gain file-protocol access")
-            })
             .is_err());
         drop(library);
         fs::remove_dir_all(root).unwrap();
