@@ -427,6 +427,42 @@ fn mtl_texture_names_with_spaces_keep_their_whole_name() {
 }
 
 #[test]
+fn a_texture_named_with_its_folder_exports_only_that_file() {
+    let workspace = Workspace::new();
+    write(
+        workspace.path("Kit/Rock.obj"),
+        b"mtllib rock.mtl\nv 0 0 0\n",
+    );
+    write(
+        workspace.path("Kit/rock.mtl"),
+        b"map_Kd Textures/albedo.png\n",
+    );
+    write(workspace.path("Kit/Textures/albedo.png"), b"rock");
+    write(workspace.path("Kit/Other/albedo.png"), b"other");
+    let mut library = Library::create(&workspace.path("library")).unwrap();
+    library.import_folder(&workspace.path("Kit")).unwrap();
+    let folder = library.create_folder("Props", None).unwrap();
+    library
+        .add_to_folder(folder.id, find(&library, "Rock", "Kit").id)
+        .unwrap();
+    let exports = workspace.path("exports");
+    fs::create_dir(&exports).unwrap();
+    library.export_project(folder.id, &exports).unwrap();
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(exports.join("Props/manifest.json")).unwrap()).unwrap();
+    let rock = manifest["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|asset| asset["name"] == "Rock")
+        .unwrap();
+    assert_eq!(
+        rock["exportedFiles"],
+        json!(["Rock/Rock.obj", "Rock/Textures/albedo.png", "Rock/rock.mtl"])
+    );
+}
+
+#[test]
 fn package_info_is_saved_listed_and_removed_with_the_package() {
     let workspace = Workspace::new();
     let mut library = fixture(&workspace);
@@ -553,7 +589,7 @@ fn export_writes_credits_and_licence_fields_and_counts_packages_without_licence(
 fn credits_write_names_and_package_info_as_literal_markdown() {
     let info = PackageInfo {
         author: Some("![x](https://evil.example/p.png)\n# Owned".into()),
-        license: Some("<b>CC0</b> | *MIT*".into()),
+        license: Some("<b>CC0</b> | *MIT* &copy;".into()),
         ..Default::default()
     };
     let credits = BTreeMap::from([(("[Pack]_1".to_string(), 1), (&info, vec!["a`b\\c-1.0+"]))]);
@@ -561,6 +597,6 @@ fn credits_write_names_and_package_info_as_literal_markdown() {
         credits_text("Game #1", &credits),
         "# Credits – Game \\#1\n\n## \\[Pack\\]\\_1\n\n\
          - Urheber: \\!\\[x\\]\\(https://evil\\.example/p\\.png\\) \\# Owned\n\
-         - Lizenz: \\<b\\>CC0\\</b\\> \\| \\*MIT\\*\n- Assets:\n  - a\\`b\\\\c\\-1\\.0\\+\n"
+         - Lizenz: \\<b\\>CC0\\</b\\> \\| \\*MIT\\* &amp;copy;\n- Assets:\n  - a\\`b\\\\c\\-1\\.0\\+\n"
     );
 }

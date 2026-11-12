@@ -76,6 +76,23 @@ fn extract(root: &Path, entry: &mut dyn Read, size: u64, target: &Path) -> Resul
     result
 }
 
+/// Cache files whose CRC was checked (or written) this session, with the size, modification time
+/// and CRC they had then; a change to either is checked again.
+type Verified = HashMap<PathBuf, (u64, Option<std::time::SystemTime>, String)>;
+static VERIFIED: std::sync::Mutex<Option<Verified>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+thread_local!(static CRC_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
+fn remember_verified(target: &Path, crc: &str) {
+    if let (Ok(m), Ok(mut verified)) = (fs::symlink_metadata(target), VERIFIED.lock()) {
+        verified.get_or_insert_with(HashMap::new).insert(
+            target.to_owned(),
+            (m.len(), m.modified().ok(), crc.to_owned()),
+        );
+    }
+}
+
 /// Whether `target` already holds the entry with this size and CRC; a link or folder there is refused.
 fn cached(target: &Path, size: u64, crc: &str) -> Result<bool> {
     match fs::symlink_metadata(target) {
@@ -83,6 +100,15 @@ fn cached(target: &Path, size: u64, crc: &str) -> Result<bool> {
             Err("ZIP-Cache wurde durch eine Verknüpfung ersetzt".into())
         }
         Ok(m) if m.len() == size => {
+            let stamp = (m.len(), m.modified().ok(), crc.to_owned());
+            if VERIFIED
+                .lock()
+                .is_ok_and(|verified| verified.as_ref().and_then(|v| v.get(target)) == Some(&stamp))
+            {
+                return Ok(true);
+            }
+            #[cfg(test)]
+            CRC_READS.with(|reads| reads.set(reads.get() + 1));
             let Ok(mut file) = fs::File::open(target) else {
                 return Ok(false);
             };
@@ -90,11 +116,16 @@ fn cached(target: &Path, size: u64, crc: &str) -> Result<bool> {
             let mut buffer = vec![0; 1 << 16];
             loop {
                 match file.read(&mut buffer) {
-                    Ok(0) => return Ok(crc_text(hasher.finalize()) == crc),
+                    Ok(0) => break,
                     Ok(read) => hasher.update(&buffer[..read]),
                     Err(_) => return Ok(false),
                 }
             }
+            let valid = crc_text(hasher.finalize()) == crc;
+            if valid {
+                remember_verified(target, crc);
+            }
+            Ok(valid)
         }
         _ => Ok(false),
     }
@@ -112,10 +143,24 @@ fn remove_cache_dir(root: &Path, target: &Path) {
             return;
         }
     }
-    if let (Ok(cache), Ok(canonical)) = (root.join(".cache").canonical(), target.canonical()) {
-        if canonical.starts_with(cache) {
-            let _ = fs::remove_dir_all(target);
-        }
+    let (Ok(cache), Ok(canonical)) = (root.join(".cache").canonical(), target.canonical()) else {
+        return;
+    };
+    let Some(parent) = canonical.parent().filter(|_| canonical.starts_with(&cache)) else {
+        return;
+    };
+    // Renaming moves the checked directory itself (the last component is never followed) to a name
+    // nothing else uses; only that renamed directory, still in the checked parent, is deleted.
+    // shortcut: a parent swapped for a link between the checks and the rename can still redirect it;
+    // single-user local app, whoever can swap folders in the library already owns its files.
+    let moved = parent.join(format!(".remove-{}", unique_suffix()));
+    if fs::rename(&canonical, &moved).is_ok()
+        && moved
+            .canonical()
+            .is_ok_and(|path| path.parent() == Some(parent))
+        && fs::symlink_metadata(&moved).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+    {
+        let _ = fs::remove_dir_all(&moved);
     }
 }
 
@@ -163,6 +208,7 @@ impl Library {
         let mut archive = open_zip(&source)?;
         let mut files = Vec::new();
         let mut names = HashSet::new();
+        let mut dirs = HashSet::new();
         for index in 0..archive.len() {
             let entry = archive
                 .by_index_raw(index)
@@ -174,16 +220,30 @@ impl Library {
                     entry.name()
                 ));
             }
-            if entry.is_dir() {
-                continue;
-            }
-            // Such entries would share one cache file on case-insensitive disks.
+            // Such entries would share one cache path on case-insensitive disks, as would a file
+            // named like another entry's folder (`a.wav` and `A.WAV/x.wav`).
             // shortcut: lowercase only, so NFC/NFD spellings of one name (e.g. "ä") still pass; normalize once a Unicode crate is in the tree.
-            if !names.insert(path_text(&path)?.to_lowercase()) {
+            let lower = path_text(&path)?.to_lowercase();
+            let parents: Vec<_> = lower
+                .match_indices('/')
+                .map(|(at, _)| lower[..at].to_owned())
+                .collect();
+            let collides = parents.iter().any(|dir| names.contains(dir))
+                || if entry.is_dir() {
+                    names.contains(&lower)
+                } else {
+                    dirs.contains(&lower) || !names.insert(lower.clone())
+                };
+            if collides {
                 return Err(format!(
-                    "ZIP enthält Dateinamen, die sich nur in Groß-/Kleinschreibung unterscheiden: {}",
+                    "ZIP enthält Pfade, die sich nur in Groß-/Kleinschreibung unterscheiden oder Datei und Ordner zugleich sind: {}",
                     entry.name()
                 ));
+            }
+            dirs.extend(parents);
+            if entry.is_dir() {
+                dirs.insert(lower);
+                continue;
             }
             let Some(format) = assets::candidate_format(&path) else {
                 continue;
@@ -274,6 +334,7 @@ impl Library {
             .by_index(index)
             .map_err(|e| format!("ZIP-Eintrag nicht lesbar: {e}"))?;
         extract(&self.root, &mut entry, location.size as u64, &target)?;
+        remember_verified(&target, &location.identity);
         Ok(target)
     }
 
@@ -321,20 +382,23 @@ impl Library {
         Ok(result)
     }
 
-    /// Extracts the archive entries a model preview needs (`wanted` by archive path) into the
-    /// cache; returns their archive paths.
+    /// Extracts the archive entries a model preview needs (`select`ed from all archive paths) into
+    /// the cache; returns their archive paths.
     pub(super) fn extract_zip_resources(
         &self,
         location: &ReferencedLocation,
-        wanted: impl Fn(&Path) -> bool,
+        select: impl FnOnce(&[&str]) -> Vec<String>,
     ) -> Result<Vec<PathBuf>> {
         let mut archive = self.open_package_zip(location)?;
+        let wanted: HashSet<String> = select(&archive.file_names().collect::<Vec<_>>())
+            .into_iter()
+            .collect();
         let cache = Path::new(".cache").join(&location.prefix);
         let mut found = Vec::new();
         for index in 0..archive.len() {
             if !archive
                 .name_for_index(index)
-                .is_some_and(|name| wanted(Path::new(name)))
+                .is_some_and(|name| wanted.contains(name))
             {
                 continue;
             }
@@ -350,8 +414,11 @@ impl Library {
             let target = self.root.join(&relative);
             let size = entry.size();
             // A broken companion is reported by the preview as missing, like in a folder.
-            if !cached(&target, size, &crc_text(entry.crc32()))? {
-                let _ = extract(&self.root, &mut entry, size, &target);
+            let crc = crc_text(entry.crc32());
+            if !cached(&target, size, &crc)?
+                && extract(&self.root, &mut entry, size, &target).is_ok()
+            {
+                remember_verified(&target, &crc);
             }
             found.push(path);
         }
@@ -677,6 +744,57 @@ mod tests {
     }
 
     #[test]
+    fn a_gltf_buffer_with_any_extension_is_taken_from_the_archive() {
+        let workspace = Workspace::new();
+        let archive = workspace.0.join("model.zip");
+        let gltf = br#"{"asset":{"version":"2.0"},"buffers":[{"uri":"mesh.dat"}]}"#;
+        write_zip(&archive, &[("model.gltf", gltf), ("mesh.dat", b"mesh")]);
+        let mut library = Library::create(&workspace.0.join("library")).unwrap();
+        library.reference_zip(&archive).unwrap();
+
+        let snapshot = library
+            .model_resources(file_id(&library, "model.gltf"))
+            .unwrap();
+
+        assert!(snapshot.errors.is_empty(), "{:?}", snapshot.errors);
+        assert!(snapshot
+            .resources
+            .iter()
+            .any(|r| r.relative_path == "mesh.dat"));
+    }
+
+    #[test]
+    fn a_texture_named_with_its_folder_skips_same_named_files_elsewhere() {
+        let workspace = Workspace::new();
+        let archive = workspace.0.join("props.zip");
+        write_zip(
+            &archive,
+            &[
+                ("Props/crate.obj", b"mtllib crate.mtl\n"),
+                ("Props/crate.mtl", b"map_Kd Textures/albedo.png\n"),
+                ("Props/Textures/albedo.png", b"crate"),
+                ("Other/albedo.png", b"other"),
+            ],
+        );
+        let root = workspace.0.join("library");
+        let mut library = Library::create(&root).unwrap();
+        library.reference_zip(&archive).unwrap();
+
+        library
+            .model_resources(file_id(&library, "crate.obj"))
+            .unwrap();
+
+        let cache = files_below(&root.join(".cache"));
+        assert!(cache
+            .iter()
+            .any(|p| p.ends_with("Props/Textures/albedo.png")));
+        assert!(
+            !cache.iter().any(|p| p.ends_with("Other/albedo.png")),
+            "{cache:?}"
+        );
+    }
+
+    #[test]
     fn hashes_and_model_traits_stream_zip_entries_without_caching_them() {
         let workspace = Workspace::new();
         let archive = workspace.0.join("pack.zip");
@@ -731,6 +849,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_rewritten_archive_drops_its_entry_hashes_and_duplicates() {
+        let workspace = Workspace::new();
+        let archive = workspace.0.join("pack.zip");
+        write_zip(
+            &archive,
+            &[
+                ("A/step.wav", b"same bytes"),
+                ("B/stomp.wav", b"same bytes"),
+            ],
+        );
+        let root = workspace.0.join("library");
+        let mut library = Library::create(&root).unwrap();
+        library.reference_zip(&archive).unwrap();
+        let cancel = AtomicBool::new(false);
+        library.hash_pending_files(&mut 0, 100, &cancel).unwrap();
+        let duplicates = |library: &Library| {
+            library
+                .query(CatalogQuery::default())
+                .unwrap()
+                .items
+                .iter()
+                .map(|a| a.duplicates)
+                .sum::<i64>()
+        };
+        assert_eq!(duplicates(&library), 2);
+
+        write_zip(
+            &archive,
+            &[
+                ("A/step.wav", b"other bytes!"),
+                ("B/stomp.wav", b"same bytes"),
+            ],
+        );
+        library.hash_pending_files(&mut 0, 100, &cancel).unwrap();
+
+        assert_eq!(
+            duplicates(&library),
+            0,
+            "hashes of the old archive are dropped"
+        );
+        let hashes: i64 = library
+            .connection
+            .query_row("SELECT count(*) FROM file_hashes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(hashes, 0);
+    }
+
+    #[test]
+    fn a_verified_cache_hit_is_not_read_again_until_it_changes() {
+        let workspace = Workspace::new();
+        let archive = workspace.0.join("pack.zip");
+        write_zip(&archive, &[("hit.wav", b"hit audio")]);
+        let mut library = Library::create(&workspace.0.join("library")).unwrap();
+        library.reference_zip(&archive).unwrap();
+        let hit = file_id(&library, "hit.wav");
+        let reads = || CRC_READS.with(|reads| reads.replace(0));
+        let cached = library.resolve_preview(hit).unwrap();
+        reads();
+
+        library.resolve_preview(hit).unwrap();
+        library.resolve_preview(hit).unwrap();
+        assert_eq!(reads(), 0, "extracted entries count as verified");
+
+        fs::write(&cached, b"HIT AUDIO").unwrap();
+        assert_eq!(
+            fs::read(library.resolve_preview(hit).unwrap()).unwrap(),
+            b"hit audio"
+        );
+        assert_eq!(reads(), 1, "a changed file is checked again");
+    }
+
     fn location(library: &Library, file_id: i64) -> (String, ReferencedLocation) {
         library
             .connection
@@ -781,6 +971,8 @@ mod tests {
         for entries in [
             [("Hit.wav", b"one"), ("hit.WAV", b"two")],
             [("Tex/leaf.png", b"one"), ("tex/Leaf.png", b"two")],
+            [("a.wav", b"one"), ("A.WAV/x.wav", b"two")],
+            [("A.WAV/x.wav", b"one"), ("a.wav", b"two")],
         ] {
             let archive = workspace.0.join("collide.zip");
             write_zip(&archive, &entries.map(|(name, bytes)| (name, &bytes[..])));

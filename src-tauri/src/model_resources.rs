@@ -1,11 +1,11 @@
-use super::project_export::{mentioned_stems, MAX_SCAN_BYTES};
+use super::project_export::{mentioned_paths, mentioned_stems, stem_companions, MAX_SCAN_BYTES};
 use super::{
     assets, modified_identity, path_text, unique_suffix, zip_sources, AssetKind, Canonical,
     ExportOutcome, Library, ReferencedLocation, Result,
 };
 use rusqlite::OptionalExtension;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Read},
     path::{Component, Path, PathBuf},
@@ -210,43 +210,62 @@ impl Library {
             snapshot.errors.push("Blender: Nur gespeichertes Vorschaubild und Originaldatei; externe Texturen und verknüpfte Bibliotheken sind nicht aufgelöst.".into());
         } else {
             if let Some(location) = &zip {
-                // Only what the model names: its glTF URIs, else resources whose file stem the model
-                // or a named .mtl mentions, as the project export picks companions.
+                // Only what the model names: its glTF URIs (any extension, path-checked on extraction),
+                // else resources the model or a named .mtl mentions, picked as the project export does.
                 let small_text = |path: &Path| {
                     fs::metadata(path)
                         .ok()
                         .filter(|metadata| metadata.len() <= MAX_SCAN_BYTES)
                         .and_then(|_| fs::read(path).ok())
-                        .map(|text| mentioned_stems(&text.to_ascii_lowercase()))
+                        .map(|text| text.to_ascii_lowercase())
                         .unwrap_or_default()
                 };
-                let names = if matches!(snapshot.format.as_str(), "GLTF" | "GLB") {
-                    HashSet::new()
+                let mut texts = if matches!(snapshot.format.as_str(), "GLTF" | "GLB") {
+                    Vec::new()
                 } else {
-                    small_text(&entry)
+                    vec![small_text(&entry)]
                 };
-                let wanted = |path: &Path, names: &HashSet<Vec<u8>>| {
-                    is_resource(path)
-                        && (snapshot
-                            .declared_paths
+                let wanted = |texts: &[Vec<u8>], names: &[&str]| {
+                    let stems = texts
+                        .iter()
+                        .flat_map(|text| mentioned_stems(text))
+                        .collect();
+                    let qualified = texts
+                        .iter()
+                        .flat_map(|text| mentioned_paths(text))
+                        .collect();
+                    let resources: Vec<&str> = names
+                        .iter()
+                        .copied()
+                        .filter(|name| is_resource(Path::new(name)))
+                        .collect();
+                    let mut chosen: Vec<String> = stem_companions(&resources, &stems, &qualified)
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect();
+                    chosen.extend(
+                        names
                             .iter()
-                            .any(|declared| Path::new(declared) == path)
-                            || path.file_stem().is_some_and(|stem| {
-                                names.contains(
-                                    stem.to_string_lossy().to_ascii_lowercase().as_bytes(),
-                                )
-                            }))
+                            .filter(|name| {
+                                snapshot
+                                    .declared_paths
+                                    .iter()
+                                    .any(|declared| Path::new(declared) == Path::new(name))
+                            })
+                            .map(|name| name.to_string()),
+                    );
+                    chosen
                 };
-                let found = self.extract_zip_resources(location, |path| wanted(path, &names))?;
-                let mut more = names.clone();
+                let found = self.extract_zip_resources(location, |names| wanted(&texts, names))?;
+                let named = texts.len();
                 for mtl in found.iter().filter(|path| {
                     path.extension()
                         .is_some_and(|extension| extension.eq_ignore_ascii_case("mtl"))
                 }) {
-                    more.extend(small_text(&snapshot.package_root.join(mtl)));
+                    texts.push(small_text(&snapshot.package_root.join(mtl)));
                 }
-                if more != names {
-                    self.extract_zip_resources(location, |path| wanted(path, &more))?;
+                if texts.len() > named {
+                    self.extract_zip_resources(location, |names| wanted(&texts, names))?;
                 }
             }
             enumerate_resources(&snapshot.package_root, Path::new(""), &mut candidates)?;

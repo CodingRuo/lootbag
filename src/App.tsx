@@ -70,9 +70,16 @@ export default function App() {
   const filteredFolderPath = folderId === null ? null : folderPath(folderId, projectFolders);
   const actionsDisabled = !native || busy !== null;
   const audio = useAudioAnalysis({ library, query, revision, actionsDisabled, operationRunning, act, setNotice });
-  // A revision bump would discard in-flight sound work, so background passes leave it alone.
+  // A revision bump would discard prepared or in-flight sound work, so background passes defer theirs until it is idle.
+  const audioPhase = audio.audioAnalysis?.phase;
   const audioBusy = useRef(false);
-  audioBusy.current = audio.audioAnalysis?.phase === "preparing" || audio.audioAnalysis?.phase === "running";
+  const refreshAfterAudio = useRef(false);
+  audioBusy.current = audioPhase === "preparing" || audioPhase === "prepared" || audioPhase === "running";
+  useEffect(() => {
+    if (audioBusy.current || !refreshAfterAudio.current) return;
+    refreshAfterAudio.current = false;
+    setRevision((value) => value + 1);
+  }, [audioPhase]);
   const imports = useImportQueue({ library, actionsDisabled, mounted, operationRunning, operationGeneration, currentLibraryRoot, setBusy, setNotice, setLibrary, setRevision });
 
   useEffect(() => {
@@ -123,7 +130,9 @@ export default function App() {
     const stops: (() => void)[] = [];
     for (const event of ["file-hashes-progress", "auto-tags-progress"]) {
       listen<{ done: number; remaining: number }>(event, ({ payload }) => {
-        if (active && payload.done && payload.remaining === 0 && !audioBusy.current) setRevision((value) => value + 1);
+        if (!active || !payload.done || payload.remaining !== 0) return;
+        if (audioBusy.current) refreshAfterAudio.current = true;
+        else setRevision((value) => value + 1);
       }).then((stop) => { if (active) stops.push(stop); else stop(); }).catch(() => {});
     }
     return () => { active = false; unlisten?.(); stops.forEach((stop) => stop()); };

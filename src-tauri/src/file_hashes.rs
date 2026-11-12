@@ -1,7 +1,7 @@
 //! Content hashes for finding the same file shipped in several packages.
 use super::{
     id_list, location_row, modified_identity,
-    zip_sources::{is_zip, Cancellable, OpenArchives},
+    zip_sources::{archive_identity, is_zip, Cancellable, OpenArchives},
     Library, ReferencedLocation, Result,
 };
 use rusqlite::params;
@@ -10,6 +10,7 @@ use std::{
     collections::HashMap,
     fs,
     io::{self, Read},
+    path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -62,7 +63,8 @@ fn file_stamp(metadata: &fs::Metadata) -> Option<String> {
 }
 
 impl Library {
-    /// Forgets hashes whose file changed since hashing; offline files keep theirs.
+    /// Forgets hashes whose file or archive changed since hashing, so duplicates leave them; offline
+    /// files keep theirs.
     fn drop_stale_hashes(&self, cancel: &AtomicBool) -> Result<()> {
         let failed = |e: rusqlite::Error| format!("Duplikatsuche fehlgeschlagen: {e}");
         let hashed = self
@@ -82,10 +84,24 @@ impl Library {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
+            // `None` keeps the hash (offline, retried later); a source that is there but no longer the
+            // catalogued one yields a stamp that cannot match, so its hash is dropped.
             let current = match external {
-                Some(zip) if is_zip(&zip.root_identity) => Some(zip_stamp(&zip)),
-                external => self
-                    .locate(&relative, external)
+                Some(zip) if is_zip(&zip.root_identity) => archive_identity(Path::new(&zip.root))
+                    .ok()
+                    .map(|identity| format!("{identity}|{}", zip.identity)),
+                Some(external) => {
+                    let present = Path::new(&relative)
+                        .strip_prefix(&external.prefix)
+                        .is_ok_and(|inside| Path::new(&external.root).join(inside).exists());
+                    match self.locate(&relative, Some(external)) {
+                        Ok(path) => fs::metadata(path).ok().and_then(|m| file_stamp(&m)),
+                        Err(_) if present => Some(String::new()),
+                        Err(_) => None,
+                    }
+                }
+                None => self
+                    .locate(&relative, None)
                     .ok()
                     .and_then(|path| fs::metadata(path).ok())
                     .and_then(|metadata| file_stamp(&metadata)),
@@ -360,6 +376,35 @@ mod tests {
         assert_eq!(duplicates_of(&library, "Rock"), 0);
         assert_eq!(duplicates_of(&library, "Stone"), 0);
         assert_eq!(hash_all(&library), 0, "its new stamp is current");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_changed_external_file_leaves_its_duplicate_group() {
+        let root = workspace();
+        let mut library = Library::create(&root.join("library")).unwrap();
+        library
+            .import_folder(&pack(&root, "Managed", &[("Hit.wav", b"same sound")]))
+            .unwrap();
+        let external = pack(&root, "External", &[("Hit Copy.wav", b"same sound")]);
+        library.reference_folder(&external).unwrap();
+        assert_eq!(hash_all(&library), 2);
+        assert_eq!(duplicates_of(&library, "Hit"), 1);
+        let path = external.join("Hit Copy.wav");
+        fs::write(&path, b"other bits").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+
+        assert_eq!(
+            hash_all(&library),
+            0,
+            "changed file is unavailable, not rehashed"
+        );
+        assert_eq!(duplicates_of(&library, "Hit"), 0, "stale hash dropped");
         let _ = fs::remove_dir_all(root);
     }
 

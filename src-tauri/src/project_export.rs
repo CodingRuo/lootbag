@@ -338,6 +338,8 @@ fn md(text: &str) -> String {
     for c in text.chars() {
         match c {
             '\r' | '\n' => escaped.push(' '),
+            // A backslash does not stop entity references like `&copy;` everywhere.
+            '&' => escaped.push_str("&amp;"),
             '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '#' | '+' | '-' | '.'
             | '!' | '|' | '<' | '>' => {
                 escaped.push('\\');
@@ -383,8 +385,9 @@ fn credits_text(
 /// Extra resources beyond the entry and its declared glTF references, plus a note for each
 /// included file that stands in for a differently named reference (e.g. PNG for PSD).
 // shortcut: FBX/OBJ are not parsed; a texture or .mtl is included when its file stem followed by
-// "." appears in the model (or a matched .mtl), case-insensitively. Same-named files in other
-// folders are included too, and PSD references also take same-stem PNG replacements.
+// "." appears in the model (or a matched .mtl), case-insensitively. A reference with a folder part
+// prefers files under that folder path; otherwise same-named files in other folders are included too,
+// and PSD references also take same-stem PNG replacements.
 fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String>)> {
     if matches!(snapshot.format.as_str(), "GLTF" | "GLB") {
         return Ok(Default::default());
@@ -430,10 +433,11 @@ fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String
             names.extend(mentioned_stems(lower.last().unwrap()));
         }
     }
-    let included = others
-        .into_iter()
-        .filter(|path| names.contains(&stem(path)))
-        .collect::<Vec<_>>();
+    let qualified = lower
+        .iter()
+        .flat_map(|text| mentioned_paths(text))
+        .collect();
+    let included = stem_companions(&others, &names, &qualified);
     let file_name = |path: &str| {
         Path::new(path)
             .file_name()
@@ -516,11 +520,76 @@ fn texture_references(text: &[u8], mtl: bool) -> Vec<(String, String, String, Ve
 
 /// Runs of name bytes directly before a ".", e.g. `texture_01_a` from `..\\textures\\texture_01_a.png`.
 pub(super) fn mentioned_stems(text: &[u8]) -> HashSet<Vec<u8>> {
+    mentioned(text, b"/\\\":")
+}
+
+/// Folder-qualified references as lowercase "dir/stem", e.g. `textures/albedo` from `..\\Textures\\albedo.png`.
+pub(super) fn mentioned_paths(text: &[u8]) -> HashSet<String> {
+    mentioned(&text.to_ascii_lowercase(), b"\":")
+        .into_iter()
+        .filter_map(|run| {
+            let run = String::from_utf8_lossy(&run).replace('\\', "/");
+            let parts: Vec<_> = run
+                .split('/')
+                .filter(|part| !matches!(*part, "" | "." | ".."))
+                .collect();
+            (parts.len() > 1).then(|| parts.join("/"))
+        })
+        .collect()
+}
+
+/// Of `paths`, those whose file stem is in `stems`. A stem the model also names with a folder
+/// (`qualified`, from `mentioned_paths`) takes only paths ending in that folder path, unless none does.
+pub(super) fn stem_companions<'a>(
+    paths: &[&'a str],
+    stems: &HashSet<Vec<u8>>,
+    qualified: &HashSet<String>,
+) -> Vec<&'a str> {
+    let plain = |path: &str| {
+        let path = path.to_ascii_lowercase().replace('\\', "/");
+        match path.rsplit_once('.') {
+            Some((base, _)) if !base.ends_with('/') && !base.is_empty() => base.to_owned(),
+            _ => path,
+        }
+    };
+    let stem = |path: &str| {
+        plain(path)
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let ends_in = |path: &str, reference: &str| {
+        let path = plain(path);
+        path == reference || path.ends_with(&format!("/{reference}"))
+    };
+    paths
+        .iter()
+        .copied()
+        .filter(|path| {
+            let name = stem(path);
+            if !stems.contains(name.as_bytes()) {
+                return false;
+            }
+            let references: Vec<_> = qualified
+                .iter()
+                .filter(|reference| reference.rsplit('/').next() == Some(name.as_str()))
+                .collect();
+            references.is_empty()
+                || references.iter().any(|reference| ends_in(path, reference))
+                || !paths
+                    .iter()
+                    .any(|other| references.iter().any(|reference| ends_in(other, reference)))
+        })
+        .collect()
+}
+
+fn mentioned(text: &[u8], separators: &[u8]) -> HashSet<Vec<u8>> {
     let mut stems = HashSet::new();
     for (dot, _) in text.iter().enumerate().filter(|(_, byte)| **byte == b'.') {
         let start = text[dot.saturating_sub(255)..dot]
             .iter()
-            .rposition(|byte| matches!(byte, b'/' | b'\\' | b'"' | b':') || byte.is_ascii_control())
+            .rposition(|byte| separators.contains(byte) || byte.is_ascii_control())
             .map_or(dot.saturating_sub(255), |position| {
                 dot.saturating_sub(255) + position + 1
             });

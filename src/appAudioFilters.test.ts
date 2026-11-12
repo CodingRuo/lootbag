@@ -804,6 +804,34 @@ test("finished duplicate and auto-tag passes refresh sound results unless a soun
   } finally { app.dispose(); }
 });
 
+test("passes finishing while a sound analysis is prepared or running refresh once it is idle", async () => {
+  const app = new Harness();
+  const finish = async (event: string) => {
+    for (const handler of app.listeners[event] ?? []) handler({ payload: { done: 3, remaining: 0 } });
+    await app.settle(); await app.runTimers();
+  };
+  try {
+    await app.mount(); await app.chooseType("sound"); await app.runTimers();
+    app.latestRequest!.resolve(page()); await app.settle();
+    await app.click("Analyse vorbereiten");
+    const requestId = app.prepareRequests[0].args.requestId;
+    app.prepareRequests[0].resolve({ requestId, total: 87 }); await app.settle();
+    const requests = app.requests.length;
+    await finish("file-hashes-progress");
+    assert.equal(app.requests.length, requests, "A prepared sound analysis is not discarded");
+    assert.match(app.text(app.tree), /87\s+passende Dateivarianten/);
+    await app.click("Analyse starten");
+    await finish("auto-tags-progress");
+    assert.equal(app.requests.length, requests);
+    assert.deepEqual(app.populationCancellations, []);
+    app.populationRequests[0].resolve({ requestId, total: 87, processed: 87, ready: 87, errors: 0, skipped: 0, cancelled: false });
+    await app.settle(); await app.runTimers();
+    assert.equal(app.requests.length, requests + 1, "The deferred refresh runs once the analysis finished");
+    await app.runTimers();
+    assert.equal(app.requests.length, requests + 1, "and only once");
+  } finally { app.dispose(); }
+});
+
 test("saved searches with malformed JSON or wrongly typed fields cannot break the catalog", async () => {
   const app = new Harness();
   app.savedSearches = [
