@@ -46,6 +46,9 @@ const hooks = registerHooks({
 });
 const { default: App } = await import(new URL("App.tsx", sourceRoot).href);
 const { default: AudioPreview } = await import(new URL("AudioPreview.tsx", sourceRoot).href);
+// App composes its regions from these function components; the harness renders them inline so their controls stay queryable.
+const regions = new Set(await Promise.all(["Header", "Onboarding", "Sidebar", "Catalog", "Inspector"]
+  .map(async (name) => (await import(new URL(`${name}.tsx`, sourceRoot).href)).default)));
 
 const library = { root: "/owned/library", name: "Owned library", packages: [{ id: 1, name: "Fixture", relativePath: "fixture", assetCount: 41, sourceKind: "managed", available: true, externalRoot: null, tags: [] }], folders: [], assetCount: 41 };
 const matchingFile = { id: 11, originalFilename: "match.mp3", relativePath: "match.mp3", originalFolder: "", format: "MP3", kind: "sound", sizeBytes: 50, audio: { status: "ready", durationSeconds: 1, sampleRate: 44100, channels: 2, codec: "mp3", error: null }, available: true };
@@ -112,7 +115,7 @@ class Harness {
     globals.window = { setTimeout: (callback: () => void) => { const id = ++this.timerId; this.timers.set(id, callback); return id; }, clearTimeout: (id: number) => this.timers.delete(id) };
     for (let turn = 0; turn < 20; turn++) {
       if (this.dirty) {
-        this.dirty = false; this.cursor = 0; this.tree = this.component();
+        this.dirty = false; this.cursor = 0; this.tree = this.expand(this.component());
         for (const effect of this.pending.splice(0)) effect();
       }
       await Promise.resolve(); await Promise.resolve();
@@ -123,6 +126,12 @@ class Harness {
   async runTimers() {
     for (const [id, callback] of this.timers) { this.timers.delete(id); callback(); }
     await this.settle();
+  }
+  expand(node: any): any {
+    if (Array.isArray(node)) return node.map((item) => this.expand(item));
+    if (!node || typeof node !== "object" || !("props" in node)) return node;
+    if (regions.has(node.type)) return this.expand(node.type(node.props));
+    return node.props.children === undefined ? node : { ...node, props: { ...node.props, children: this.expand(node.props.children) } };
   }
   elements(node: any): Element[] {
     if (Array.isArray(node)) return node.flatMap((item) => this.elements(item));

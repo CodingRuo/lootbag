@@ -1,0 +1,146 @@
+import type { Dispatch, SetStateAction } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import type { AudioMetadata } from "./AudioPreview";
+import type { ImageGroupSummary } from "./imageWorkflows";
+import type { ProjectFolder } from "./ProjectFolders";
+
+// Shared catalog types and tiny UI helpers used by App and its regions.
+export type AssetPackage = {
+  id: number;
+  name: string;
+  relativePath: string;
+  assetCount: number;
+  sourcePath?: string;
+  sourceKind: "managed" | "external";
+  available: boolean;
+  externalRoot: string | null;
+  tags: string[];
+};
+export type AssetKind = "sound" | "image" | "model";
+export type AssetFile = {
+  id: number;
+  originalFilename: string;
+  relativePath: string;
+  originalFolder: string;
+  format: string;
+  kind: AssetKind;
+  sizeBytes: number;
+  audio: AudioMetadata | null;
+  available: boolean;
+};
+export type Asset = {
+  id: number;
+  name: string;
+  kind: AssetKind;
+  packageId: number;
+  packageName: string;
+  originalFolder: string;
+  files: AssetFile[];
+  tags: string[];
+  folderIds: number[];
+  imageGroup?: ImageGroupSummary | null;
+};
+export type LibraryInfo = {
+  root: string;
+  name: string;
+  packages: AssetPackage[];
+  folders: ProjectFolder[];
+  assetCount: number;
+};
+export type CatalogPage = {
+  items: Asset[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+export type AudioFilters = {
+  minDurationSeconds: string;
+  maxDurationSeconds: string;
+  channels: "any" | "mono" | "stereo" | "multi";
+  analysis: "any" | "notAnalysed" | "ready" | "error";
+};
+export const EMPTY_AUDIO_FILTERS: AudioFilters = { minDurationSeconds: "", maxDurationSeconds: "", channels: "any", analysis: "any" };
+
+export type AudioAnalysisProgress = {
+  requestId: string;
+  total: number;
+  processed: number;
+  ready: number;
+  errors: number;
+  skipped: number;
+  cancelled: boolean;
+};
+export type AudioAnalysis = {
+  requestId: string;
+  phase: "preparing" | "prepared" | "running" | "completed" | "failed";
+  progress: AudioAnalysisProgress | null;
+  stopping: boolean;
+  total: number;
+  message: string | null;
+};
+export type Notice = { tone: "error" | "success"; message: string };
+export type Setter<T> = Dispatch<SetStateAction<T>>;
+export type Act = (label: string, operation: (isCurrent: () => boolean) => Promise<void>) => Promise<void>;
+
+export const PAGE_SIZE = 40;
+export const native = isTauri();
+export const number = new Intl.NumberFormat("de-DE");
+const icons = {
+  folder: <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  search: (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="m16 16 5 5" />
+    </>
+  ),
+  sound: (
+    <>
+      <path d="M4 10h4l5-4v12l-5-4H4Z" />
+      <path d="M17 9a5 5 0 0 1 0 6M19 6a9 9 0 0 1 0 12" />
+    </>
+  ),
+  image: <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8" cy="8" r="1.5" /><path d="m3 17 6-6 4 4 3-3 5 5" /></>,
+  model: <><path d="m12 3 9 5v8l-9 5-9-5V8Z" /><path d="m3 8 9 5 9-5M12 13v8" /></>,
+  grid: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
+  list: <path d="M3 5h2m4 0h12M3 12h2m4 0h12M3 19h2m4 0h12" />,
+  filter: <><path d="M3 6h18M3 12h18M3 18h18" /><path d="M8 3v6m8 0v6m-8 0v6" /></>,
+  download: <path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" />,
+  arrow: <path d="M5 12h14m-6-6 6 6-6 6" />,
+  back: <path d="m14 6-6 6 6 6" />,
+  next: <path d="m10 6 6 6-6 6" />,
+  first: <path d="M5 5v14m12-13-6 6 6 6" />,
+  last: <path d="M19 5v14M7 6l6 6-6 6" />,
+  close: <path d="m6 6 12 12M6 18 18 6" />,
+  library: (
+    <>
+      <rect x="3" y="4" width="5" height="16" rx="1" />
+      <rect x="10" y="4" width="5" height="16" rx="1" />
+      <path d="m17 5 3-1 3 15-3 1Z" />
+    </>
+  ),
+};
+
+export function Icon({ name }: { name: keyof typeof icons }) {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.65"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {icons[name]}
+    </svg>
+  );
+}
+
+export function bytes(value: number) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(units.length - 1, Math.max(0, Math.floor(Math.log(value || 1) / Math.log(1024))));
+  return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 }).format(value / 1024 ** index)} ${units[index]}`;
+}
