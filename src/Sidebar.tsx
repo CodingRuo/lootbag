@@ -1,10 +1,16 @@
 import type { RefObject } from "react";
 import { TrashActions } from "./Trash";
 import { folderPath, type ProjectFolder } from "./ProjectFolders";
+import type { SavedSearch } from "./useCatalogQuery.ts";
+import { errorMessage } from "./errorMessage.ts";
 import { CATALOG_TYPES, Icon, number, type CatalogType, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 // Library heading, asset type, package and project folder filters, trash, library actions and storage location.
-export default function Sidebar({ library, traitsPending, catalogType, chooseType, packageId, folderId, projectFolders, actionsDisabled, filterPackage, filterFolder, trashItem, editPackageInfo, refreshSources, setNotice, setShowFolderDialog, setShowTrash, trashGeneration, openLibrary, referenceFolder }: {
+export default function Sidebar({ savedSearches, searchJson, applySavedSearch, deleteSavedSearch, library, traitsPending, catalogType, chooseType, packageId, folderId, projectFolders, actionsDisabled, filterPackage, filterFolder, trashItem, editPackageInfo, refreshSources, setNotice, setShowFolderDialog, setShowTrash, trashGeneration, openLibrary, referenceFolder }: {
+  savedSearches: SavedSearch[];
+  searchJson: string;
+  applySavedSearch: (saved: SavedSearch) => void;
+  deleteSavedSearch: (id: number) => Promise<void>;
   catalogType: CatalogType;
   traitsPending: boolean;
   chooseType: (value: CatalogType) => void;
@@ -52,6 +58,24 @@ export default function Sidebar({ library, traitsPending, catalogType, chooseTyp
               <Icon name={item.icon} /><span>{item.label}</span><span className="count">{number.format(count)}{detecting && <span title="Animationen werden erkannt"> …</span>}</span>
             </button>;
           })}
+        </nav>
+        <div className="package-heading">
+          <h3>GESPEICHERTE SUCHEN</h3>
+          <span>{number.format(savedSearches.length)}</span>
+        </div>
+        <nav className="packages saved-searches" aria-label="Gespeicherte Suchen">
+          {savedSearches.length ? savedSearches.map((item) => (
+            <div key={item.id} className="saved-search-row">
+              <button className={`package-item ${item.queryJson === searchJson ? "active" : ""}`} aria-pressed={item.queryJson === searchJson}
+                title={item.name} onClick={() => applySavedSearch(item)}>
+                <Icon name="search" /><span>{item.name}</span>
+              </button>
+              <button className="icon-button" aria-label={`Gespeicherte Suche ${item.name} löschen`} title="Löschen" disabled={actionsDisabled}
+                onClick={() => deleteSavedSearch(item.id).catch((error: unknown) => setNotice({ tone: "error", message: errorMessage(error) }))}>
+                <Icon name="trash" />
+              </button>
+            </div>
+          )) : <p className="sidebar-empty">Suche oder Filter setzen und speichern.</p>}
         </nav>
         <div className="package-heading">
           <h3>PAKETE</h3>

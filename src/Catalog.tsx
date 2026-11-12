@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import AnnotationEditor from "./AnnotationEditor";
@@ -49,7 +49,9 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
 }) {
   const { text, setText, packageId, folderId, originalFolder, setOriginalFolder, format, setFormat, kind, workflow, tag, setTag, duplicates, setDuplicates,
     audioFilters, offset, setOffset, filters, page, queryLoading, queryError, audioFilterCount, audioFilterError,
-    audioResultsStale, setAudioResultsStale, changeAudioFilters, clearFilters, filterPackage } = query;
+    audioResultsStale, setAudioResultsStale, changeAudioFilters, clearFilters, filterPackage, searchActive, saveSearch } = query;
+  const searchInput = useRef<HTMLInputElement>(null);
+  const [saveName, setSaveName] = useState<string | null>(null);
   const { audioAnalysis, prepareAudioAnalysis, startAudioAnalysis, stopAudioAnalysis, discardAudioAnalysis } = audio;
   const [filtersOpen, setFiltersOpen] = useState(false);
   const catalogType = workflow ?? kind ?? "";
@@ -81,6 +83,19 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   const selectedAssets = (page?.items ?? []).filter((asset) => selection.keys.includes(assetKey(asset)));
   const bulkDisabled = actionsDisabled || queryLoading || audioFilterError !== null || selectedAssets.length === 0;
 
+  // "/" outside text fields and Command/Control-F focus the search box.
+  useEffect(() => {
+    function focusSearch(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const typing = target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? "");
+      if (!((event.key === "/" && !typing && !event.metaKey && !event.ctrlKey) || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f"))) return;
+      event.preventDefault();
+      searchInput.current?.focus();
+      searchInput.current?.select();
+    }
+    document.addEventListener("keydown", focusSearch);
+    return () => document.removeEventListener("keydown", focusSearch);
+  }, []);
   useEffect(() => { modelThumbnails.reset(thumbnailScope); }, [modelThumbnails, thumbnailScope]);
   useEffect(() => () => modelThumbnails.dispose(), [modelThumbnails]);
   // New results (page, search or filter change) end the quick audition.
@@ -168,9 +183,25 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
             setText(event.target.value);
             setOffset(0);
           }}
+          ref={searchInput}
           aria-label="Assets durchsuchen"
-          placeholder="Name, Tags, Datei, Paket oder Originalordner suchen …"
+          aria-keyshortcuts="/ Meta+F Control+F"
+          placeholder="Name, Tags, Datei, Paket oder Originalordner suchen …  ( / )"
         />
+        {saveName === null ? searchActive && <button className="text-button" onClick={() => setSaveName(text.trim().slice(0, 100))}>Suche speichern</button>
+          : <form className="save-search" onSubmit={(event) => {
+            event.preventDefault();
+            const name = saveName;
+            void act("Suche wird gespeichert …", async () => {
+              await saveSearch(name);
+              setSaveName(null);
+              setNotice({ tone: "success", message: `Suche „${name.trim()}“ gespeichert.` });
+            });
+          }}>
+            <input aria-label="Name der gespeicherten Suche" value={saveName} maxLength={100} required autoFocus placeholder="Name" onChange={(event) => setSaveName(event.target.value)} />
+            <button className="text-button" type="submit" disabled={actionsDisabled || !saveName.trim()}>Speichern</button>
+            <button className="text-button" type="button" onClick={() => setSaveName(null)}>Abbrechen</button>
+          </form>}
       </div>
       <div className="catalog-tools">
         <button className={`button outlined filter-toggle ${activeFilterCount ? "active" : ""}`} aria-expanded={filtersOpen}

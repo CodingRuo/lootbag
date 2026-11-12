@@ -13,6 +13,7 @@ type CatalogFilters = {
   duplicates: number;
 };
 export type CatalogQuery = ReturnType<typeof useCatalogQuery>;
+export type SavedSearch = { id: number; name: string; queryJson: string };
 
 // Catalog query state, its debounced page loading and the filter choices for the active scope.
 export function useCatalogQuery({ library, revision, setSelected, setSelection, setSelectedFileId, setModelSelection, setNotice }: {
@@ -56,6 +57,10 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
   const [page, setPage] = useState<CatalogPage | null>(null);
   const [queryLoading, setQueryLoading] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  // Fixed key order, so the active saved search is recognised by string equality.
+  const searchJson = JSON.stringify({ text, kind, workflow, packageId, folderId, originalFolder, format, tag, duplicates, audioFilters });
+  const searchActive = searchJson !== JSON.stringify({ text: "", kind: null, workflow: null, packageId: null, folderId: null, originalFolder: null, format: null, tag: null, duplicates: false, audioFilters: EMPTY_AUDIO_FILTERS });
   const focusAssetId = useRef<number | null>(null);
   const focusFileId = useRef<number | null>(null);
   const selectionScope = JSON.stringify([library?.root, text, packageId, folderId, originalFolder, format, kind, workflow, tag, duplicates, audioFilters, offset]);
@@ -139,6 +144,34 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
     };
   }, [library?.root, packageId, revision]);
 
+  useEffect(() => {
+    if (!library) return;
+    let active = true;
+    invoke<SavedSearch[]>("saved_searches")
+      .then((result) => { if (active) setSavedSearches(result); })
+      .catch((error: unknown) => { if (active) setNotice({ tone: "error", message: errorMessage(error) }); });
+    return () => { active = false; };
+  }, [library?.root]);
+
+  async function saveSearch(name: string) {
+    const saved = await invoke<SavedSearch>("save_search", { name, queryJson: searchJson });
+    setSavedSearches((list) => [...list.filter((item) => item.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name, "de")));
+  }
+
+  async function deleteSavedSearch(id: number) {
+    await invoke("delete_saved_search", { id });
+    setSavedSearches((list) => list.filter((item) => item.id !== id));
+  }
+
+  function applySavedSearch(saved: SavedSearch) {
+    const value = JSON.parse(saved.queryJson);
+    setText(value.text ?? ""); setKind(value.kind ?? null); setWorkflow(value.workflow ?? null);
+    setPackageId(value.packageId ?? null); setFolderId(value.folderId ?? null); setOriginalFolder(value.originalFolder ?? null);
+    setFormat(value.format ?? null); setTag(value.tag ?? null); setDuplicates(value.duplicates === true);
+    setAudioFilters({ ...EMPTY_AUDIO_FILTERS, ...value.audioFilters });
+    setOffset(0); setSelected(null); setSelectedFileId(null); setModelSelection(null);
+  }
+
   function changeAudioFilters(next: AudioFilters) {
     setAudioFilters(next);
     setSelected(null);
@@ -192,5 +225,6 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
     kind, setKind, workflow, setWorkflow, tag, setTag, duplicates, setDuplicates, audioFilters, setAudioFilters, offset, setOffset, filters,
     page, setPage, queryLoading, queryError, focusAssetId, focusFileId, audioFilterCount, audioCriteria, audioFilterError,
     audioResultsStale, setAudioResultsStale, changeAudioFilters, clearFilters, filterFolder, filterPackage, chooseType,
+    savedSearches, searchJson, searchActive, saveSearch, deleteSavedSearch, applySavedSearch,
   };
 }

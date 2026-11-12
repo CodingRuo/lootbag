@@ -115,12 +115,14 @@ export default function App() {
       // Sound results cannot change, and a revision bump would discard a running sound analysis.
       if (payload.remaining === 0 && catalogKind.current !== "sound") setRevision((value) => value + 1);
     }).then((stop) => { if (active) unlisten = stop; else stop(); }).catch(() => {});
-    // Duplicate counts and the filter change only once hashing has finished.
-    let unlistenHashes: (() => void) | undefined;
-    listen<{ done: number; remaining: number }>("file-hashes-progress", ({ payload }) => {
-      if (active && payload.done && payload.remaining === 0 && catalogKind.current !== "sound") setRevision((value) => value + 1);
-    }).then((stop) => { if (active) unlistenHashes = stop; else stop(); }).catch(() => {});
-    return () => { active = false; unlisten?.(); unlistenHashes?.(); };
+    // Duplicate counts, auto-tags and the filter change only once their pass has finished.
+    const stops: (() => void)[] = [];
+    for (const event of ["file-hashes-progress", "auto-tags-progress"]) {
+      listen<{ done: number; remaining: number }>(event, ({ payload }) => {
+        if (active && payload.done && payload.remaining === 0 && catalogKind.current !== "sound") setRevision((value) => value + 1);
+      }).then((stop) => { if (active) stops.push(stop); else stop(); }).catch(() => {});
+    }
+    return () => { active = false; unlisten?.(); stops.forEach((stop) => stop()); };
   }, []);
 
   useEffect(() => { setModelSelection(null); }, [library?.root, file?.id, file?.available, selected?.imageGroup?.workflow, selectedPackage?.externalRoot]);
@@ -312,7 +314,7 @@ export default function App() {
         <Onboarding actionsDisabled={actionsDisabled} createLibrary={createLibrary} openLibrary={openLibrary} />
       ) : (
         <div className="workspace">
-          <Sidebar library={library} traitsPending={traitsPending} catalogType={query.workflow ?? query.kind ?? ""} chooseType={query.chooseType} openLibrary={openLibrary} referenceFolder={referenceFolder} packageId={packageId} folderId={folderId} projectFolders={projectFolders} actionsDisabled={actionsDisabled}
+          <Sidebar savedSearches={query.savedSearches} searchJson={query.searchJson} applySavedSearch={query.applySavedSearch} deleteSavedSearch={query.deleteSavedSearch} library={library} traitsPending={traitsPending} catalogType={query.workflow ?? query.kind ?? ""} chooseType={query.chooseType} openLibrary={openLibrary} referenceFolder={referenceFolder} packageId={packageId} folderId={folderId} projectFolders={projectFolders} actionsDisabled={actionsDisabled}
             filterPackage={query.filterPackage} filterFolder={query.filterFolder} trashItem={trashItem} editPackageInfo={editPackageInfo} refreshSources={refreshSources}
             setNotice={setNotice} setShowFolderDialog={setShowFolderDialog} setShowTrash={setShowTrash} trashGeneration={trashGeneration} />
           <Catalog library={library} query={query} audio={audio} selected={selected} setSelected={setSelected} selection={selection} setSelection={setSelection}

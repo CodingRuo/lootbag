@@ -44,6 +44,8 @@ export type Asset = {
   originalFolder: string;
   files: AssetFile[];
   tags: string[];
+  // Derived from file and folder names; shown muted in the inspector only.
+  autoTags?: string[];
   folderIds: number[];
   folderMembers: FolderMember[];
   imageGroup?: ImageGroupSummary | null;

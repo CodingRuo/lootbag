@@ -13,6 +13,9 @@ mod file_hashes;
 pub use file_hashes::DuplicateCopy;
 #[path = "image_groups.rs"]
 mod image_groups;
+#[path = "search.rs"]
+mod search;
+pub use search::SavedSearch;
 #[path = "sprite_export.rs"]
 mod sprite_export;
 pub use image_groups::{
@@ -98,6 +101,8 @@ pub struct Asset {
     pub original_folder: String,
     pub files: Vec<AssetFile>,
     pub tags: Vec<String>,
+    /// Derived from file and folder names; separate from the user's `tags`.
+    pub auto_tags: Vec<String>,
     pub folder_ids: Vec<i64>,
     pub folder_members: Vec<FolderMember>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -204,7 +209,8 @@ pub struct Library {
 // File provenance is derived from the immutable package-relative path, even after regrouping.
 const FILE_FOLDER: &str = "substr(f.relative_path, length(p.relative_path) + 2, max(0, length(f.relative_path) - length(p.relative_path) - length(f.original_filename) - 2))";
 
-fn catalog_filter(query: &CatalogQuery) -> (&'static str, String) {
+/// Returns the folder CTE, the filter and the value for its text parameter `?2`.
+fn catalog_filter(query: &CatalogQuery) -> (&'static str, String, String) {
     let folder_filter = "WITH RECURSIVE selected_folders(id) AS (
         SELECT id FROM folders WHERE id = ?6 UNION
         SELECT f.id FROM folders f JOIN selected_folders s ON f.parent_id = s.id)";
@@ -228,18 +234,23 @@ fn catalog_filter(query: &CatalogQuery) -> (&'static str, String) {
     } else {
         String::new()
     };
+    let (text, text_filter) = match search::fts_match(&query.text) {
+        Some(expression) => (expression, "f.id IN (SELECT rowid FROM file_search WHERE file_search MATCH ?2)".to_owned()),
+        None => (query.text.trim().to_owned(), format!("instr(lower(a.name || ' ' || p.name || ' ' || {FILE_FOLDER} || ' ' || f.original_filename), lower(?2)) > 0
+                OR EXISTS(SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id AND instr(lower(t.tag), lower(?2)) > 0)
+                OR EXISTS(SELECT 1 FROM auto_tags t WHERE t.asset_id = a.id AND instr(t.tag, lower(?2)) > 0)
+                OR EXISTS(SELECT 1 FROM package_tags t WHERE t.package_id = p.id AND instr(lower(t.tag), lower(?2)) > 0)")),
+    };
     let filter = format!("FROM assets a JOIN packages p ON p.id = a.package_id JOIN active_asset_files f ON f.asset_id = a.id
             WHERE (?1 IS NULL OR p.id = ?1)
-            AND (?2 = '' OR instr(lower(a.name || ' ' || p.name || ' ' || {FILE_FOLDER} || ' ' || f.original_filename), lower(?2)) > 0
-                OR EXISTS(SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id AND instr(lower(t.tag), lower(?2)) > 0)
-                OR EXISTS(SELECT 1 FROM package_tags t WHERE t.package_id = p.id AND instr(lower(t.tag), lower(?2)) > 0))
+            AND (?2 = '' OR {text_filter})
             AND (?3 IS NULL OR {FILE_FOLDER} = ?3)
             AND (?4 IS NULL OR f.format = upper(?4))
             AND (?5 IS NULL OR EXISTS(SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id AND t.tag = ?5 COLLATE NOCASE)
                 OR EXISTS(SELECT 1 FROM package_tags t WHERE t.package_id = p.id AND t.tag = ?5 COLLATE NOCASE))
             AND (?6 IS NULL OR EXISTS(SELECT 1 FROM folder_assets fa JOIN selected_folders s ON s.id = fa.folder_id WHERE fa.asset_id = a.id))
             AND (?7 IS NULL OR a.id = ?7) {kind_filter} {duplicates}");
-    (folder_filter, filter)
+    (folder_filter, filter, text)
 }
 
 impl Library {
@@ -365,6 +376,7 @@ impl Library {
             CREATE INDEX IF NOT EXISTS folder_assets_asset_id ON folder_assets(asset_id);",
             )
             .map_err(|e| format!("Projektordner können nicht geöffnet werden: {e}"))?;
+        search::create_schema(&connection)?;
         let mut library = Self { root, connection };
         library.remove_import_leftovers();
         let version: i64 = library
@@ -1297,7 +1309,7 @@ impl Library {
         }
         let audio = audio.unwrap_or_default();
         audio.validate(&query)?;
-        let (folders, mut filter) = catalog_filter(&query);
+        let (folders, mut filter, text) = catalog_filter(&query);
         filter.push_str(audio_filters::FILTER);
         let mut statement = self
             .connection
@@ -1309,7 +1321,7 @@ impl Library {
             .query_map(
                 params![
                     query.package_id,
-                    query.text.trim(),
+                    text,
                     query.original_folder,
                     query.format,
                     query.tag,
@@ -1365,7 +1377,7 @@ impl Library {
         } else {
             None
         };
-        let (folder_filter, mut filter) = catalog_filter(&query);
+        let (folder_filter, mut filter, text) = catalog_filter(&query);
         filter.push_str(audio_filters::FILTER);
         let total = self
             .connection
@@ -1373,7 +1385,7 @@ impl Library {
                 &format!("{folder_filter} SELECT COUNT(DISTINCT a.id) {filter}"),
                 params![
                     query.package_id,
-                    query.text.trim(),
+                    text,
                     query.original_folder,
                     query.format,
                     query.tag,
@@ -1403,7 +1415,7 @@ impl Library {
             .query_map(
                 params![
                     query.package_id,
-                    query.text.trim(),
+                    text,
                     query.original_folder,
                     query.format,
                     query.tag,
@@ -1468,12 +1480,14 @@ impl Library {
         let ids = assets.iter().map(|asset| asset.id).collect::<Vec<_>>();
         let mut files = self.files_for_assets(&ids)?;
         let mut tags = self.by_asset::<String>("SELECT asset_id, tag FROM asset_tags WHERE asset_id IN (SELECT value FROM json_each(?1)) ORDER BY tag COLLATE NOCASE", &ids)?;
+        let mut auto_tags = self.by_asset::<String>("SELECT asset_id, tag FROM auto_tags WHERE asset_id IN (SELECT value FROM json_each(?1)) ORDER BY rowid", &ids)?;
         let mut folders = self.folder_members(&ids)?;
         let duplicates = self.duplicate_counts(&ids)?;
         for asset in assets.iter_mut() {
             asset.duplicates = duplicates.get(&asset.id).copied().unwrap_or_default();
             asset.files = files.remove(&asset.id).unwrap_or_default();
             asset.tags = tags.remove(&asset.id).unwrap_or_default();
+            asset.auto_tags = auto_tags.remove(&asset.id).unwrap_or_default();
             asset.folder_members = folders.remove(&asset.id).unwrap_or_default();
             asset.folder_ids = asset
                 .folder_members
@@ -1847,6 +1861,7 @@ fn asset_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
         package_name: row.get(3)?,
         original_folder: row.get(4)?,
         tags: Vec::new(),
+        auto_tags: Vec::new(),
         folder_ids: Vec::new(),
         folder_members: Vec::new(),
         files: Vec::new(),
@@ -6130,6 +6145,223 @@ mod tests {
     }
 
     #[test]
+    fn prefix_search_and_auto_tags_follow_tags_trash_and_filters() {
+        let workspace = Workspace::new();
+        let source = workspace.path("POLYGON Apocalypse");
+        let crouch = source.join("Animations/Polygon/Feminine/Locomotion/Crouch");
+        fs::create_dir_all(&crouch).unwrap();
+        fs::write(source.join("SM_Prop_Barrel_Nuke_01.obj"), b"o barrel").unwrap();
+        fs::write(source.join("SM_Prop_Barrel_Nuke_01.fbx"), b"barrel fbx").unwrap();
+        fs::write(source.join("Zombie_Attack_Bite_001.wav"), b"bite").unwrap();
+        fs::write(source.join("WoodenCrate.png"), b"crate").unwrap();
+        fs::write(
+            crouch.join("A_Crouch_BckStrafeB_RootMotion_Femn.fbx"),
+            b"crouch",
+        )
+        .unwrap();
+        let mut library = Library::create(&workspace.path("library")).unwrap();
+        library.import_folder(&source).unwrap();
+        let find = |library: &Library, text: &str, kind: Option<AssetKind>| {
+            let mut names = library
+                .query(CatalogQuery {
+                    text: text.into(),
+                    kind,
+                    ..Default::default()
+                })
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|asset| asset.name)
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        assert_eq!(find(&library, "barr nuk", None), ["SM_Prop_Barrel_Nuke_01"]);
+        assert_eq!(find(&library, "bite", None), ["Zombie_Attack_Bite_001"]);
+        assert_eq!(
+            find(&library, "crouch fem", None),
+            ["A_Crouch_BckStrafeB_RootMotion_Femn"]
+        );
+        assert_eq!(
+            find(&library, "apoc", None).len(),
+            4,
+            "package name is indexed"
+        );
+        assert_eq!(
+            find(&library, "barrel", Some(AssetKind::Sound)),
+            Vec::<String>::new(),
+            "filters still apply"
+        );
+        assert_eq!(
+            find(&library, "_Nuke_", None),
+            ["SM_Prop_Barrel_Nuke_01"],
+            "separators fall back to substring search"
+        );
+        assert!(
+            find(&library, "crate", None).is_empty(),
+            "camelCase parts need auto-tags"
+        );
+
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let barrel = library
+            .query(CatalogQuery {
+                text: "barrel".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .items
+            .remove(0);
+        library
+            .annotate_asset(barrel.id, "Fass", &["Explosiv".into()])
+            .unwrap();
+        assert_eq!(
+            library.tag_pending_assets(&mut 0, 100, &cancel).unwrap(),
+            (4, 0)
+        );
+        let animation = library
+            .query(CatalogQuery {
+                text: "crouch".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .items
+            .remove(0);
+        assert_eq!(
+            animation.auto_tags,
+            [
+                "crouch",
+                "bckstrafeb",
+                "rootmotion",
+                "femn",
+                "locomotion",
+                "feminine",
+                "polygon",
+                "animations"
+            ]
+        );
+        assert_eq!(find(&library, "crate", None), ["WoodenCrate"]);
+        let tagged = library
+            .query(CatalogQuery {
+                asset_id: Some(barrel.id),
+                ..Default::default()
+            })
+            .unwrap()
+            .items
+            .remove(0);
+        assert_eq!(tagged.auto_tags, ["prop", "barrel", "nuke"]);
+        assert_eq!(tagged.tags, ["Explosiv"]);
+        // Regenerating replaces only auto-tags; renamed assets keep their filename-derived tags.
+        library.reset_auto_tags().unwrap();
+        assert!(
+            find(&library, "crate", None).is_empty(),
+            "index drops removed auto-tags"
+        );
+        assert_eq!(
+            library.tag_pending_assets(&mut 0, 1, &cancel).unwrap(),
+            (1, 3)
+        );
+        assert_eq!(
+            library.tag_pending_assets(&mut 0, 100, &cancel).unwrap(),
+            (3, 0)
+        );
+        let tagged = library
+            .query(CatalogQuery {
+                asset_id: Some(barrel.id),
+                ..Default::default()
+            })
+            .unwrap()
+            .items
+            .remove(0);
+        assert_eq!(
+            (
+                tagged.name.as_str(),
+                tagged.tags.as_slice(),
+                tagged.auto_tags.len()
+            ),
+            ("Fass", &["Explosiv".to_owned()][..], 3)
+        );
+
+        // The index follows renames and tag edits; trash and restore need no index update.
+        assert_eq!(find(&library, "fass expl", None), ["Fass"]);
+        assert!(
+            find(&library, "SM_Prop", None).len() == 1,
+            "filenames stay searchable after renaming"
+        );
+        library.annotate_asset(barrel.id, "Fass", &[]).unwrap();
+        assert!(find(&library, "explosiv", None).is_empty());
+        let file = tagged
+            .files
+            .iter()
+            .find(|file| file.format == "OBJ")
+            .unwrap()
+            .id;
+        library.trash_file(file).unwrap();
+        assert_eq!(
+            find(&library, "fass", None),
+            ["Fass"],
+            "the remaining variant still matches"
+        );
+        library
+            .trash_file(
+                tagged
+                    .files
+                    .iter()
+                    .find(|file| file.format == "FBX")
+                    .unwrap()
+                    .id,
+            )
+            .unwrap();
+        assert!(find(&library, "fass", None).is_empty());
+        let trash = library.trash_entries().unwrap();
+        library.restore_trash(trash[0].id).unwrap();
+        assert_eq!(find(&library, "fass", None), ["Fass"]);
+        library.empty_trash().unwrap();
+        let indexed: i64 = library
+            .connection
+            .query_row("SELECT COUNT(*) FROM file_search", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(indexed, 4, "emptied files leave the index");
+        drop(library);
+        let library = Library::open(&workspace.path("library")).unwrap();
+        assert_eq!(find(&library, "nuk", None), ["Fass"]);
+    }
+
+    #[test]
+    fn saved_searches_round_trip_replace_by_name_and_delete_after_reopen() {
+        let workspace = Workspace::new();
+        let library = Library::create(&workspace.path("library")).unwrap();
+        let first = library
+            .save_search(" Fässer ", r#"{"text":"barrel"}"#)
+            .unwrap();
+        assert_eq!(first.name, "Fässer");
+        library
+            .save_search("Zombies", r#"{"text":"bite","kind":"sound"}"#)
+            .unwrap();
+        let replaced = library
+            .save_search("fässer", r#"{"text":"barr nuk"}"#)
+            .unwrap();
+        assert_eq!(replaced.id, first.id);
+        for (name, json) in [("", "{}"), ("x", "[]"), ("x", "nope")] {
+            assert!(library.save_search(name, json).is_err());
+        }
+        drop(library);
+        let library = Library::open(&workspace.path("library")).unwrap();
+        let saved = library.saved_searches().unwrap();
+        assert_eq!(
+            saved
+                .iter()
+                .map(|s| (s.name.as_str(), s.query_json.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("Fässer", r#"{"text":"barr nuk"}"#),
+                ("Zombies", r#"{"text":"bite","kind":"sound"}"#)
+            ]
+        );
+        library.delete_saved_search(first.id).unwrap();
+        assert_eq!(library.saved_searches().unwrap().len(), 1);
+    }
+
+    #[test]
     fn annotations_and_provenance_can_be_searched_with_combined_catalog_filters() {
         let workspace = Workspace::new();
         let source = workspace.path("80pixelartstyle");
@@ -6889,3 +7121,4 @@ mod tests {
 #[cfg(test)]
 #[path = "audio_population_tests.rs"]
 mod audio_population_tests;
+

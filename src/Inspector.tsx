@@ -127,6 +127,9 @@ export default function Inspector({ library, query, selected, setSelected, file,
     });
   }
 
+  // Auto-tags the user already has are not offered again.
+  const autoTags = (selected?.autoTags ?? []).filter((tag) => !selected?.tags.some((own) => own.toLowerCase() === tag));
+
   function saveAssetAnnotations(name: string | undefined, tags: string[]) {
     if (!selected || name === undefined) return;
     const assetId = selected.id;
@@ -267,6 +270,13 @@ export default function Inspector({ library, query, selected, setSelected, file,
                 />
                 {selectedPackage?.tags.length ? (
                   <p className="detail-hint">Paket-Tags: {selectedPackage.tags.join(", ")}</p>
+                ) : null}
+                {autoTags.length ? (
+                  <p className="detail-hint auto-tags" aria-label="Auto-Tags">Auto-Tags:
+                    {autoTags.map((tag) => <button key={tag} type="button" className="auto-tag" disabled={actionsDisabled}
+                      title={`„${tag}“ als Tag übernehmen`} aria-label={`Auto-Tag ${tag} übernehmen`}
+                      onClick={() => saveAssetAnnotations(selected.name, [...selected.tags, tag])}>{tag}</button>)}
+                  </p>
                 ) : null}
               </section>
               <FolderMembershipEditor key={`${library.root}:${selected.id}`} folders={projectFolders} members={selected.folderMembers} variants={selected.imageGroup ? [] : selected.files}

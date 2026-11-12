@@ -3,7 +3,7 @@ use crate::library::{
     BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DuplicateCopy, EmbeddedAudioTags,
     EmptiedTrash, ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress,
     KindCounts, Library, ModelResources, PackageInfo, PackageInfoDetails, ProjectExportPlan,
-    ProjectFolder, Result, TrashEntry, ZipEstimate,
+    ProjectFolder, Result, SavedSearch, TrashEntry, ZipEstimate,
 };
 use std::{
     fs,
@@ -485,9 +485,9 @@ struct BackfillProgress {
     remaining: usize,
 }
 
-/// Classifies not yet inspected model files of `root`, then hashes files that may be duplicates,
-/// on a worker thread that replaces an earlier run. Emits `model-traits-progress` and
-/// `file-hashes-progress` after each batch so the catalog can refresh.
+/// Derives auto-tags from names, classifies not yet inspected model files of `root`, then hashes
+/// files that may be duplicates, on a worker thread that replaces an earlier run. Emits
+/// `auto-tags-progress`, `model-traits-progress` and `file-hashes-progress` after each batch.
 fn start_backfill(app: &AppHandle, root: PathBuf) {
     let cancelled = Arc::new(AtomicBool::new(false));
     app.state::<Session>()
@@ -518,6 +518,9 @@ fn start_backfill(app: &AppHandle, root: PathBuf) {
                 }
             }
         };
+        run("auto-tags-progress", &|after| {
+            library.tag_pending_assets(after, 500, &cancelled)
+        });
         run("model-traits-progress", &|after| {
             library.inspect_pending_models(after, 200, &cancelled)
         });
@@ -1004,6 +1007,32 @@ async fn annotate_package(app: AppHandle, package_id: i64, tags: Vec<String>) ->
 }
 
 #[tauri::command]
+async fn saved_searches(app: AppHandle) -> Result<Vec<SavedSearch>> {
+    let root = active_root(&app)?;
+    background(move || Library::writable(&root)?.saved_searches()).await
+}
+
+#[tauri::command]
+async fn save_search(app: AppHandle, name: String, query_json: String) -> Result<SavedSearch> {
+    let root = active_root(&app)?;
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.save_search(&name, &query_json)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_saved_search(app: AppHandle, id: i64) -> Result<()> {
+    let root = active_root(&app)?;
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.delete_saved_search(id)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn asset_duplicates(app: AppHandle, asset_id: i64) -> Result<Vec<DuplicateCopy>> {
     let root = active_root(&app)?;
     background(move || Library::writable(&root)?.asset_duplicates(asset_id)).await
@@ -1444,6 +1473,9 @@ pub fn run() {
             get_package_info,
             set_package_info,
             asset_duplicates,
+            saved_searches,
+            save_search,
+            delete_saved_search,
             split_variant,
             assign_variant,
             resolve_preview,

@@ -14,11 +14,13 @@ for (const name of readdirSync(sourceRoot).filter((name) => name.endsWith(".tsx"
   const url = new URL(name, sourceRoot);
   transformed.set(url.href, (await transformWithOxc(readFileSync(url, "utf8"), fileURLToPath(url))).code);
 }
+const keydownListeners = new Set<(event: any) => void>();
 const globals = globalThis as typeof globalThis & { audioFilterHarness: Harness; window: any };
 // The catalog's quick audition needs a media element and document listeners; neither plays in these tests.
 Object.assign(globalThis, {
   Audio: class { src = ""; onended = null; async play() {} pause() {} removeAttribute() {} load() {} },
-  document: { addEventListener() {}, removeEventListener() {} },
+  document: { addEventListener(type: string, listener: (event: any) => void) { if (type === "keydown") keydownListeners.add(listener); },
+    removeEventListener(_type: string, listener: (event: any) => void) { keydownListeners.delete(listener); } },
 });
 const mocks: Record<string, string> = {
   react: `export const useState = (...args) => globalThis.audioFilterHarness.useState(...args);
@@ -82,6 +84,9 @@ class Harness {
   component: () => Element = App;
   libraryInfo: any = library;
   packageInfoSaves: any[] = [];
+  savedSearches: any[] = [];
+  savedSearchCalls: [string, any][] = [];
+  annotations: any[] = [];
   audioTags: any = { status: "ready", title: null, artist: null, album: null, genre: null, message: null };
   invoke = (command: string, args: any) => {
     if (command === "prepare_audio_analysis") return new Promise((resolve, reject) => this.prepareRequests.push({ args, resolve, reject }));
@@ -92,6 +97,12 @@ class Harness {
     }
     if (command === "query_catalog") return new Promise((resolve, reject) => this.requests.push({ args, resolve, reject }));
     if (command === "get_library") return Promise.resolve(this.libraryInfo);
+    if (command === "saved_searches") return Promise.resolve(this.savedSearches);
+    if (command === "save_search" || command === "delete_saved_search") {
+      this.savedSearchCalls.push([command, args]);
+      return Promise.resolve(command === "save_search" ? { id: 9, name: args.name.trim(), queryJson: args.queryJson } : undefined);
+    }
+    if (command === "annotate_asset") { this.annotations.push(args); return Promise.resolve(); }
     if (command === "set_package_info") { this.packageInfoSaves.push(args); return Promise.resolve(); }
     if (command === "open_library") return Promise.resolve({ ...library, root: "/owned/reopened" });
     if (command === "catalog_filters") return Promise.resolve({ folders: ["ambience"], formats: ["MP3", "WAV", "OGG", "FLAC", "PNG", "OBJ"], tags: ["wind"], duplicates: 3 });
@@ -678,5 +689,72 @@ test("duplicates show a card chip, filter the catalog and list selectable copies
     app.latestRequest!.resolve(page([other], 1)); await app.settle();
     assert.equal(app.text(app.find((node) => node.type === "h2" && /Other Sound/.test(app.text(node)))), "Other Sound");
     assert.equal(app.find((node) => node.type === AudioPreview).props.file.id, 31);
+  } finally { app.dispose(); }
+});
+
+// Saved searches, the search shortcut and auto-tags share the App harness above.
+test("saved searches apply every stored filter, can be saved from the search box and deleted", async () => {
+  const app = new Harness();
+  const stored = { text: "barr nuk", kind: "model", workflow: null, packageId: 1, folderId: null, originalFolder: null, format: null, tag: null, duplicates: true,
+    audioFilters: { minDurationSeconds: "", maxDurationSeconds: "", channels: "any", analysis: "any" } };
+  app.savedSearches = [{ id: 5, name: "Fässer", queryJson: JSON.stringify(stored) }];
+  try {
+    await app.mount();
+    assert.equal(app.elements(app.tree).some((node) => node.type === "button" && app.text(node).trim() === "Suche speichern"), false, "Nothing to save without a search");
+    const saved = () => app.find((node) => node.type === "button" && node.props.title === "Fässer");
+    assert.equal(saved().props["aria-pressed"], false);
+    saved().props.onClick(); await app.settle(); await app.runTimers();
+    const { query } = app.latestRequest!.args;
+    assert.deepEqual([query.text, query.kind, query.packageId, query.duplicates, query.offset], ["barr nuk", "model", 1, true, 0]);
+    assert.equal(app.control("Assets durchsuchen").props.value, "barr nuk");
+    assert.equal(saved().props["aria-pressed"], true);
+
+    await app.change("Assets durchsuchen", "bite");
+    await app.click("Suche speichern");
+    assert.equal(app.control("Name der gespeicherten Suche").props.value, "bite");
+    await app.change("Name der gespeicherten Suche", "Zombies");
+    app.find((node) => node.type === "form" && node.props.className === "save-search").props.onSubmit({ preventDefault() {} });
+    await app.settle();
+    const [command, args] = app.savedSearchCalls[0];
+    assert.equal(command, "save_search");
+    assert.equal(args.name, "Zombies");
+    assert.equal(JSON.parse(args.queryJson).text, "bite");
+    assert.ok(app.find((node) => node.type === "button" && node.props.title === "Zombies"));
+
+    app.control("Gespeicherte Suche Fässer löschen").props.onClick(); await app.settle();
+    assert.deepEqual(app.savedSearchCalls[1], ["delete_saved_search", { id: 5 }]);
+    assert.equal(app.elements(app.tree).some((node) => node.props.title === "Fässer"), false);
+  } finally { app.dispose(); }
+});
+
+test("slash and Command-F focus the search box, but slash keeps working inside text fields", async () => {
+  const app = new Harness();
+  try {
+    await app.mount();
+    let focused = 0;
+    app.control("Assets durchsuchen").props.ref.current = { focus: () => focused++, select() {} };
+    const press = (key: string, tagName = "DIV", metaKey = false) => {
+      let prevented = false;
+      for (const listener of keydownListeners) listener({ key, metaKey, ctrlKey: false, target: { tagName }, preventDefault: () => { prevented = true; } });
+      return prevented;
+    };
+    assert.equal(press("/"), true);
+    assert.equal(focused, 1);
+    assert.equal(press("/", "INPUT"), false, "Typing a slash in a field stays text");
+    assert.equal(press("f", "INPUT", true), true);
+    assert.equal(focused, 2);
+    assert.equal(press("a"), false);
+  } finally { app.dispose(); }
+});
+
+test("inspector offers auto-tags the user does not have and adopts one into the user tags", async () => {
+  const app = new Harness();
+  try {
+    await app.settle(); await app.runTimers();
+    app.requests[0].resolve(page([{ ...asset, tags: ["Wind"], autoTags: ["wind", "river"] }])); await app.settle();
+    assert.match(app.text(app.control("Auto-Tags")), /river/);
+    assert.equal(app.elements(app.tree).some((node) => node.props["aria-label"] === "Auto-Tag wind übernehmen"), false);
+    app.control("Auto-Tag river übernehmen").props.onClick(); await app.settle();
+    assert.deepEqual(app.annotations, [{ assetId: 1, name: "Sound", tags: ["Wind", "river"] }]);
   } finally { app.dispose(); }
 });

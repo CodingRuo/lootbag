@@ -44,8 +44,8 @@ package storage but do not appear as assets. Existing catalogs are corrected
 once on open, after creating a `catalog-before-macos-metadata-*.sqlite3` backup;
 the corrected catalog is marked as format version 2, which older app builds
 cannot open. Opening a library also removes staging folders left by an
-interrupted import. Text search covers names, package, folder, filename and
-tags, not the absolute path the package was imported from.
+interrupted import. Text search covers names, package, folder, filename,
+tags and auto-tags, not the absolute path the package was imported from.
 
 Close the app before manually copying or moving the entire library.
 Managed locations are relative to the library root. External sources can
@@ -252,7 +252,7 @@ exists, while rate/channels/codec can still be measured. Older cached MP3
 estimates are corrected only by explicit reanalysis; saved values can become
 stale after source edits. Use `Audiofilter aktualisieren` to query again after
 analysis. No import/open/completion automatically scans the library.
-Saved searches and image/model technical filters remain pending, alongside
+Image/model technical filters remain pending, alongside
 native macOS/Windows acceptance.
 
 ## Projekte exportieren
@@ -303,6 +303,35 @@ automatically, and external sources are not scanned.
 Project exports also write `CREDITS.md` next to `manifest.json` (`CREDITS-2.md`
 if a subfolder has that name): one section per package with Urheber, Lizenz
 (or "nicht hinterlegt – bitte prüfen"), Shop/Link and the exported asset names.
+
+## Suche, Auto-Tags und gespeicherte Suchen
+
+The catalog keeps an SQLite FTS5 index of each asset's name, filenames,
+folders, package name, user, package and auto-tags. Triggers update it in the
+same transaction as every import, rename, tag edit or regrouping; trashed
+assets stay indexed but are filtered out by the catalog query. Each typed word
+is a prefix, and all words must match: `barr nuk` finds
+`SM_Prop_Barrel_Nuke_01`. A query containing other characters than letters and
+digits (`SM_Prop`, `A001.wav`) uses the previous substring search. Prefix
+search does not find word middles; camelCase parts come in via auto-tags.
+Type/package/folder/format/tag/duplicate/audio filters combine with both.
+`/` or Command/Control-F focuses the search box. On the 6,968-asset test library
+`barrel`, `crouch fem` and `bite` take under 1 ms instead of about 8 ms with the
+substring search; building the index on first open takes about 25 ms and the
+auto-tag pass about 1.5 s in the background.
+
+Auto-tags are derived without reading files, after opening and after each
+import: filename stems and the original folder path are split on `_ - . /`
+spaces and letter/digit changes; whole segments come first (filename, then
+folders deepest first), then camelCase parts (`RootMotion` → `rootmotion`,
+`root`, `motion`). Numbers, tokens under three letters and a short stopword list
+(`tex`, `mod`, `lod`, `the`, `fbx`, `png` …) are dropped; at most 8 per asset. They live
+in their own table, so user tags stay authoritative. The inspector shows them
+muted below the tags; clicking one adds it to the user tags. Cards do not show them.
+
+`Suche speichern` next to the search box stores the current text and filters
+under a name (same name replaces) in the catalog, so saved searches travel
+with the library. `Gespeicherte Suchen` in the sidebar applies or deletes them.
 
 ## Duplikate
 

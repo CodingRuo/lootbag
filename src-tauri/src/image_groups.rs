@@ -150,7 +150,7 @@ impl Library {
     pub(super) fn query_image_groups(&self, query: CatalogQuery) -> Result<CatalogPage> {
         let workflow = query.workflow.ok_or("Bild-Arbeitsablauf fehlt")?;
         let mut groups = self.derived_image_groups(workflow, query.package_id)?;
-        let (folder_filter, filter) = catalog_filter(&query);
+        let (folder_filter, filter, text) = catalog_filter(&query);
         let mut statement = self
             .connection
             .prepare(&format!("{folder_filter} SELECT f.id {filter}"))
@@ -159,7 +159,7 @@ impl Library {
             .query_map(
                 params![
                     query.package_id,
-                    query.text.trim(),
+                    text,
                     query.original_folder,
                     query.format,
                     query.tag,
