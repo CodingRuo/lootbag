@@ -357,43 +357,66 @@ fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String
         .iter()
         .map(|path| file_name(path).to_ascii_lowercase())
         .collect();
+    // One pass per text: a texture reference whose exact file is not copied but whose stem is gets a note.
     let mut notes = Vec::new();
-    for path in &included {
-        // Every reference "<stem>.<ext>" whose exact file is not copied gets a note, even if another
-        // extension of the same stem is referenced and copied too.
-        let needle = [stem(path), b".".to_vec()].concat();
-        for (text, raw) in lower.iter().zip(&texts) {
-            let mut from = 0;
-            while let Some(at) = text[from..]
-                .windows(needle.len())
-                .position(|window| window == needle.as_slice())
-                .map(|at| from + at)
-            {
-                let end = at + needle.len();
-                let extension = text[end..]
-                    .iter()
-                    .take_while(|byte| byte.is_ascii_alphanumeric())
-                    .count();
-                from = end;
-                // "wood." inside "darkwood.png" is another texture.
-                let joined =
-                    at > 0 && matches!(text[at - 1], b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-');
-                let referenced = String::from_utf8_lossy(&text[at..end + extension]).into_owned();
-                if joined || extension == 0 || copied.contains(&referenced) {
-                    continue;
-                }
-                let note = format!(
-                    "Textur {} ersetzt durch {} – Referenz im Modell unverändert",
-                    String::from_utf8_lossy(&raw[at..end + extension]),
-                    file_name(path)
-                );
-                if !notes.contains(&note) {
-                    notes.push(note);
-                }
+    for (index, raw) in texts.iter().enumerate() {
+        for (stem_name, full, spelled) in texture_references(raw, index > 0) {
+            if copied.contains(&full) {
+                continue;
+            }
+            let Some(replacement) = included
+                .iter()
+                .find(|path| stem(path) == stem_name.as_bytes())
+            else {
+                continue;
+            };
+            let note = format!(
+                "Textur {spelled} ersetzt durch {} – Referenz im Modell unverändert",
+                file_name(replacement)
+            );
+            if !notes.contains(&note) {
+                notes.push(note);
             }
         }
     }
     Ok((included.into_iter().map(str::to_owned).collect(), notes))
+}
+
+const TEXTURE_EXTENSIONS: [&str; 12] = [
+    "png", "jpg", "jpeg", "tga", "psd", "tif", "tiff", "bmp", "exr", "dds", "webp", "gif",
+];
+
+/// Texture file names referenced in a model or MTL text as (lowercase stem, lowercase name, original spelling).
+/// FBX keeps whole names (spaces included); MTL lines start with a keyword, so only the last word counts there.
+fn texture_references(text: &[u8], mtl: bool) -> Vec<(String, String, String)> {
+    let mut references = Vec::new();
+    for (dot, _) in text.iter().enumerate().filter(|(_, byte)| **byte == b'.') {
+        let extension = text[dot + 1..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_alphanumeric())
+            .count();
+        let ext = String::from_utf8_lossy(&text[dot + 1..dot + 1 + extension]).to_ascii_lowercase();
+        if !TEXTURE_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
+        let floor = dot.saturating_sub(255);
+        let mut start = text[floor..dot]
+            .iter()
+            .rposition(|byte| matches!(byte, b'/' | b'\\' | b'"' | b':') || byte.is_ascii_control())
+            .map_or(floor, |position| floor + position + 1);
+        if mtl {
+            if let Some(space) = text[start..dot].iter().rposition(|byte| *byte == b' ') {
+                start += space + 1;
+            }
+        }
+        if start == dot {
+            continue;
+        }
+        let spelled = String::from_utf8_lossy(&text[start..dot + 1 + extension]).into_owned();
+        let stem = String::from_utf8_lossy(&text[start..dot]).to_ascii_lowercase();
+        references.push((stem, spelled.to_ascii_lowercase(), spelled));
+    }
+    references
 }
 
 /// Runs of name bytes directly before a ".", e.g. `texture_01_a` from `..\\textures\\texture_01_a.png`.

@@ -371,3 +371,22 @@ fn failed_copy_keeps_the_partial_export_and_names_it() {
     // Nothing in the export folder is deleted: a file already there (ours or the user's) stays.
     assert_eq!(fs::read(out.join("Gone.wav")).unwrap(), b"gone");
 }
+
+#[test]
+fn texture_notes_ignore_the_model_itself_and_other_names_containing_the_stem() {
+    let workspace = Workspace::new();
+    // Own file name, an LOD name and "Old Wood.tga" must not be mistaken for a missing "Wood" texture.
+    write(
+        workspace.path("Kit/Wood.fbx"),
+        b"Kaydara\0Wood.fbx\0Wood.LOD0.fbx\0Textures\\Wood.png\0Textures\\Old Wood.tga\0",
+    );
+    write(workspace.path("Kit/Textures/Wood.png"), b"wood");
+    let mut library = Library::create(&workspace.path("library")).unwrap();
+    library.import_folder(&workspace.path("Kit")).unwrap();
+    let folder = library.create_folder("Props", None).unwrap();
+    library
+        .add_to_folder(folder.id, find(&library, "Wood", "Kit").id)
+        .unwrap();
+    let plan = library.plan_project_export(folder.id).unwrap();
+    assert_eq!(plan.substitutions, 0);
+}
