@@ -13,6 +13,7 @@ import VariantEditor from "./VariantEditor";
 import { TrashActions } from "./Trash";
 import { FolderMembershipEditor, type ProjectFolder } from "./ProjectFolders";
 import { saveFolderMember, type FolderMember } from "./projectExport.ts";
+import { originFacts } from "./packageInfo.ts";
 import { nextInspectorTab, type InspectorTab } from "./inspectorTabs";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import { Icon, bytes, isAnimationOnly, type Act, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
@@ -22,7 +23,7 @@ type ExportResult =
   | { status: "exported"; path: string; sizeBytes: number };
 
 // Detail aside for the selected asset: variants, preview/properties/origin tabs and export.
-export default function Inspector({ library, query, selected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, relinkSource }: {
+export default function Inspector({ library, query, selected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, relinkSource, editPackageInfo }: {
   library: LibraryInfo;
   query: CatalogQuery;
   selected: Asset | null;
@@ -39,9 +40,11 @@ export default function Inspector({ library, query, selected, file, selectedPack
   setNotice: Setter<Notice | null>;
   trashItem: (kind: "package" | "file", id: number, name: string) => void;
   relinkSource: (sourcePackage: AssetPackage) => void;
+  editPackageInfo: (id: number) => void;
 }) {
   const { audioFilterCount, queryLoading, queryError, focusAssetId, focusFileId, setAudioResultsStale } = query;
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("preview");
+  const facts = originFacts(selectedPackage?.info);
   const format = file && isAnimationOnly(file) ? `${file.format} · Animation` : file?.format;
   useEffect(() => { setInspectorTab("preview"); }, [assetKey(selected)]);
 
@@ -253,6 +256,16 @@ export default function Inspector({ library, query, selected, file, selectedPack
                   <div>
                     <dt>Paket</dt>
                     <dd>{selected.packageName}</dd>
+                  </div>
+                  {facts.map((fact) => <div key={fact.key}>
+                    <dt>{fact.label}</dt>
+                    <dd className={fact.key === "url" ? "source-path" : ""}>{fact.value}</dd>
+                    {fact.key === "url" && <dd><button className="text-button" onClick={() => void navigator.clipboard.writeText(fact.value)
+                      .then(() => setNotice({ tone: "success", message: "Link kopiert." }), () => setNotice({ tone: "error", message: "Link konnte nicht kopiert werden." }))}>Link kopieren</button></dd>}
+                  </div>)}
+                  <div>
+                    {!selectedPackage?.info.license && <dd className="detail-hint">Keine Lizenz hinterlegt</dd>}
+                    <dd><button className="text-button" disabled={actionsDisabled} onClick={() => editPackageInfo(selected.packageId)}>Paketinfo bearbeiten…</button></dd>
                   </div>
                   <div>
                     <dt>Originalordner</dt>

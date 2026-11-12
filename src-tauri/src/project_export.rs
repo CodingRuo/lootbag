@@ -1,7 +1,9 @@
-use super::{path_text, AssetFile, AssetKind, ExportOutcome, Library, ModelResources, Result};
-use serde_json::{json, Value};
+use super::{
+    path_text, AssetFile, AssetKind, ExportOutcome, Library, ModelResources, PackageInfo, Result,
+};
+use serde_json::json;
 use std::{
-    collections::HashSet,
+    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
     fs, io,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -20,6 +22,8 @@ pub struct ProjectExportPlan {
     pub missing: Vec<String>,
     /// Exported textures that replace a differently named model reference (see manifest notes).
     pub substitutions: usize,
+    /// Packages of exportable members without a licence entry (informational).
+    pub packages_without_license: usize,
 }
 
 struct Member {
@@ -29,7 +33,9 @@ struct Member {
     name: String,
     role: Option<String>,
     package: String,
+    package_id: i64,
     package_prefix: String,
+    info: PackageInfo,
     file: Option<AssetFile>,
     /// Model snapshot plus extra package-relative resources to copy beside the entry.
     model: Option<(ModelResources, Vec<String>)>,
@@ -54,7 +60,7 @@ impl Library {
             .prepare(
                 "WITH RECURSIVE tree(id, dir) AS (SELECT id, '' FROM folders WHERE id = ?1
                 UNION ALL SELECT f.id, t.dir || f.name || '/' FROM folders f JOIN tree t ON f.parent_id = t.id)
-            SELECT t.dir, a.id, a.name, fa.role, fa.file_id, p.name, p.relative_path FROM tree t
+            SELECT t.dir, a.id, a.name, fa.role, fa.file_id, p.name, p.relative_path, p.id FROM tree t
             JOIN folder_assets fa ON fa.folder_id = t.id JOIN active_assets a ON a.id = fa.asset_id
             JOIN packages p ON p.id = a.package_id ORDER BY t.dir, a.name COLLATE NOCASE, a.id",
             )
@@ -69,6 +75,7 @@ impl Library {
                     row.get::<_, Option<i64>>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
                 ))
             })
             .map_err(|e| format!("Projektordner nicht lesbar: {e}"))?
@@ -80,7 +87,11 @@ impl Library {
         let ids = rows.iter().map(|row| row.1).collect::<Vec<_>>();
         let files = self.files_for_assets(&ids)?;
         let mut members = Vec::new();
-        for (dir, asset_id, name, role, file_id, package, package_prefix) in rows {
+        let mut infos = HashMap::new();
+        for (dir, asset_id, name, role, file_id, package, package_prefix, package_id) in rows {
+            if let Entry::Vacant(slot) = infos.entry(package_id) {
+                slot.insert(self.package_info(package_id)?);
+            }
             let variants = files.get(&asset_id).map(Vec::as_slice).unwrap_or_default();
             // Trashed or reassigned variants are no longer active files of this asset: use the default.
             let file = file_id
@@ -93,7 +104,9 @@ impl Library {
                 name,
                 role,
                 package,
+                package_id,
                 package_prefix,
+                info: infos[&package_id].clone(),
                 model: None,
                 missing: None,
                 notes: Vec::new(),
@@ -166,6 +179,12 @@ impl Library {
                 .filter(|member| member.missing.is_none())
                 .map(|member| member.notes.len())
                 .sum(),
+            packages_without_license: members
+                .iter()
+                .filter(|member| member.missing.is_none() && member.info.license.is_none())
+                .map(|member| member.package_id)
+                .collect::<HashSet<_>>()
+                .len(),
         })
     }
 
@@ -208,6 +227,9 @@ impl Library {
         }
         // Reserved before member files; only a subfolder named like it moves the manifest aside.
         let manifest_name = unique_name(&mut used, "", "manifest", ".json");
+        let credits_name = unique_name(&mut used, "", "CREDITS", ".md");
+        // Keyed by name then id: credits list packages alphabetically, same-named packages apart.
+        let mut credits: BTreeMap<(String, i64), (&PackageInfo, Vec<&str>)> = BTreeMap::new();
         let (mut assets, mut missing, mut size_bytes) = (Vec::new(), Vec::new(), 0_u64);
         for member in members {
             let file = match (&member.missing, &member.file) {
@@ -262,6 +284,13 @@ impl Library {
                 ));
             };
             size_bytes += copied;
+            let names = &mut credits
+                .entry((member.package.clone(), member.package_id))
+                .or_insert((&member.info, Vec::new()))
+                .1;
+            if !names.contains(&member.name.as_str()) {
+                names.push(&member.name);
+            }
             assets.push(json!({
                 "assetId": member.asset_id,
                 "name": member.name,
@@ -271,25 +300,65 @@ impl Library {
                 "originalPath": file.relative_path.strip_prefix(&format!("{}/", member.package_prefix)).unwrap_or(&file.relative_path),
                 "variant": { "fileId": file.id, "format": file.format, "file": file.original_filename },
                 "exportedFiles": exported,
-                "licenseNote": Value::Null,
+                "license": member.info.license,
+                "author": member.info.author,
+                "store": member.info.store,
+                "url": member.info.url,
                 "notes": member.notes,
             }));
         }
         let manifest = json!({ "project": project, "exportedAt": iso_utc(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()), "assets": assets, "missing": missing });
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
-        let mut output = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(root.join(manifest_name))
+        write_new(&root.join(manifest_name), &bytes)
             .map_err(|e| format!("Manifest kann nicht geschrieben werden: {e}"))?;
-        io::Write::write_all(&mut output, &bytes)
-            .and_then(|()| output.sync_all())
-            .map_err(|e| format!("Manifest kann nicht geschrieben werden: {e}"))?;
+        write_new(
+            &root.join(credits_name),
+            credits_text(project, &credits).as_bytes(),
+        )
+        .map_err(|e| format!("CREDITS.md kann nicht geschrieben werden: {e}"))?;
         Ok(ExportOutcome::Exported {
             path: path_text(root)?,
             size_bytes,
         })
     }
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    io::Write::write_all(&mut output, bytes).and_then(|()| output.sync_all())
+}
+
+/// One section per package with its credit line, licence, shop/link and the exported asset names.
+// shortcut: user text is written verbatim, not Markdown-escaped; escape if names with `*`/`_` render badly.
+fn credits_text(
+    project: &str,
+    credits: &BTreeMap<(String, i64), (&PackageInfo, Vec<&str>)>,
+) -> String {
+    let mut text = format!("# Credits – {project}\n");
+    for ((package, _), (info, names)) in credits {
+        text.push_str(&format!("\n## {package}\n\n"));
+        if let Some(author) = &info.author {
+            text.push_str(&format!("- Urheber: {author}\n"));
+        }
+        match &info.license {
+            Some(license) => text.push_str(&format!("- Lizenz: {license}\n")),
+            None => text.push_str("- Lizenz: nicht hinterlegt – bitte prüfen\n"),
+        }
+        match (&info.store, &info.url) {
+            (Some(store), Some(url)) => text.push_str(&format!("- Shop: {store} – {url}\n")),
+            (Some(store), None) => text.push_str(&format!("- Shop: {store}\n")),
+            (None, Some(url)) => text.push_str(&format!("- Link: {url}\n")),
+            (None, None) => {}
+        }
+        text.push_str("- Assets:\n");
+        for name in names {
+            text.push_str(&format!("  - {name}\n"));
+        }
+    }
+    text
 }
 
 /// Extra resources beyond the entry and its declared glTF references, plus a note for each

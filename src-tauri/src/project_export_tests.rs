@@ -1,6 +1,7 @@
 use super::*;
 use crate::library::{Asset, CatalogQuery, FolderMember};
 use rusqlite::Connection;
+use serde_json::Value;
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
@@ -220,7 +221,7 @@ fn export_copies_chosen_variants_and_model_companions_with_a_manifest() {
         first["exportedFiles"],
         json!(["tree/Tree/tree.bin", "tree/Tree/tree.gltf"])
     );
-    assert_eq!(first["licenseNote"], Value::Null);
+    assert_eq!(first["license"], Value::Null);
     let held = entries
         .iter()
         .find(|entry| entry["assetId"] == hit.id)
@@ -423,4 +424,127 @@ fn mtl_texture_names_with_spaces_keep_their_whole_name() {
         manifest["assets"][0]["notes"],
         json!(["Textur Old Wood.tga ersetzt durch Old Wood.png – Referenz im Modell unverändert"])
     );
+}
+
+#[test]
+fn package_info_is_saved_listed_and_removed_with_the_package() {
+    let workspace = Workspace::new();
+    let mut library = fixture(&workspace);
+    write(workspace.path("Lic/LICENSE.txt"), b"cc0");
+    write(workspace.path("Lic/Docs/readme.md"), b"read");
+    write(workspace.path("Lic/Docs/Deep/License.txt"), b"too deep");
+    write(workspace.path("Lic/Beep.wav"), b"beep");
+    let lic = library.import_folder(&workspace.path("Lic")).unwrap();
+    let pack = find(&library, "Hit", "Pack").package_id;
+    let info = PackageInfo {
+        store: Some("itch.io".into()),
+        license: Some("CC0".into()),
+        purchased: Some("2025-01-31".into()),
+        ..Default::default()
+    };
+    library.set_package_info(pack, &info).unwrap();
+    assert_eq!(library.get_package_info(pack).unwrap().info, info);
+    let listed = library.packages().unwrap();
+    assert_eq!(listed.iter().find(|p| p.id == pack).unwrap().info, info);
+    assert!(library
+        .set_package_info(
+            pack,
+            &PackageInfo {
+                url: Some("www.x.de".into()),
+                ..Default::default()
+            }
+        )
+        .is_err());
+    assert!(library.set_package_info(9_999, &info).is_err());
+    assert_eq!(
+        library.get_package_info(lic.id).unwrap().license_files,
+        ["LICENSE.txt", "Docs/readme.md"]
+    );
+    // Clearing every field removes the row.
+    library.set_package_info(lic.id, &info).unwrap();
+    library
+        .set_package_info(lic.id, &PackageInfo::default())
+        .unwrap();
+    let rows = |library: &Library| -> i64 {
+        library
+            .connection
+            .query_row("SELECT count(*) FROM package_info", [], |row| row.get(0))
+            .unwrap()
+    };
+    assert_eq!(rows(&library), 1);
+    library.trash_package(pack).unwrap();
+    assert!(library.set_package_info(pack, &info).is_err());
+    assert_eq!(rows(&library), 1);
+    library.empty_trash().unwrap();
+    assert_eq!(rows(&library), 0);
+}
+
+#[test]
+fn export_writes_credits_and_licence_fields_and_counts_packages_without_licence() {
+    let workspace = Workspace::new();
+    let mut library = fixture(&workspace);
+    let game = library.create_folder("Game", None).unwrap();
+    // A subfolder named like the credits file moves CREDITS.md aside.
+    let sub = library.create_folder("credits.md", Some(game.id)).unwrap();
+    let hit = find(&library, "Hit", "Pack");
+    let tree = find(&library, "tree", "Pack");
+    let other = find(&library, "Hit", "Other");
+    library.add_to_folder(game.id, hit.id).unwrap();
+    library.add_to_folder(game.id, tree.id).unwrap();
+    library.add_to_folder(sub.id, other.id).unwrap();
+    library
+        .set_package_info(
+            hit.package_id,
+            &PackageInfo {
+                store: Some("Kenney".into()),
+                url: Some("https://kenney.nl".into()),
+                license: Some("CC0".into()),
+                author: Some("Kenney Vleugels".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        library
+            .plan_project_export(game.id)
+            .unwrap()
+            .packages_without_license,
+        1
+    );
+    let exports = workspace.path("exports");
+    fs::create_dir(&exports).unwrap();
+    library.export_project(game.id, &exports).unwrap();
+    let out = exports.join("Game");
+    let credits = fs::read_to_string(out.join("CREDITS-2.md")).unwrap();
+    assert_eq!(
+        credits,
+        "# Credits – Game\n\n## Other\n\n- Lizenz: nicht hinterlegt – bitte prüfen\n- Assets:\n  - Hit\n\n\
+         ## Pack\n\n- Urheber: Kenney Vleugels\n- Lizenz: CC0\n- Shop: Kenney – https://kenney.nl\n- Assets:\n  - Hit\n  - tree\n"
+    );
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(out.join("manifest.json")).unwrap()).unwrap();
+    let entry = |id: i64| {
+        manifest["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["assetId"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        (
+            entry(hit.id)["license"].as_str(),
+            entry(hit.id)["author"].as_str(),
+            entry(hit.id)["store"].as_str(),
+            entry(hit.id)["url"].as_str()
+        ),
+        (
+            Some("CC0"),
+            Some("Kenney Vleugels"),
+            Some("Kenney"),
+            Some("https://kenney.nl")
+        )
+    );
+    assert_eq!(entry(other.id)["license"], Value::Null);
 }

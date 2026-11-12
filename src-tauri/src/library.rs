@@ -49,6 +49,9 @@ mod bulk;
 mod project_export;
 pub use bulk::{BulkAction, BulkResult, BulkSelection};
 pub use project_export::ProjectExportPlan;
+#[path = "package_info.rs"]
+mod package_info;
+pub use package_info::{PackageInfo, PackageInfoDetails};
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +65,7 @@ pub struct AssetPackage {
     pub available: bool,
     pub external_root: Option<String>,
     pub tags: Vec<String>,
+    pub info: PackageInfo,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -312,7 +316,8 @@ impl Library {
             CREATE TABLE IF NOT EXISTS package_tags (package_id INTEGER NOT NULL REFERENCES packages(id) ON DELETE CASCADE, tag TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY(package_id, tag));
             CREATE TABLE IF NOT EXISTS audio_metadata (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, duration_seconds REAL, sample_rate INTEGER, channels INTEGER, codec TEXT, error TEXT);
             CREATE TABLE IF NOT EXISTS model_traits (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, has_mesh INTEGER, has_animation INTEGER, error TEXT);
-            CREATE INDEX IF NOT EXISTS asset_files_asset_id ON asset_files(asset_id);")
+            CREATE INDEX IF NOT EXISTS asset_files_asset_id ON asset_files(asset_id);
+            CREATE TABLE IF NOT EXISTS package_info (package_id INTEGER PRIMARY KEY REFERENCES packages(id) ON DELETE CASCADE, store TEXT, url TEXT, license TEXT, author TEXT, purchased TEXT, version TEXT, notes TEXT);")
             .map_err(|e| format!("Annotationen können nicht geöffnet werden: {e}"))?;
         connection
             .execute_batch(
@@ -574,6 +579,7 @@ impl Library {
             available: true,
             external_root: None,
             tags: Vec::new(),
+            info: PackageInfo::default(),
         })
     }
 
@@ -648,6 +654,7 @@ impl Library {
             source_kind: "external".into(),
             available: true,
             tags: Vec::new(),
+            info: PackageInfo::default(),
         })
     }
 
@@ -734,6 +741,7 @@ impl Library {
                     available,
                     external_root,
                     tags: Vec::new(),
+                    info: PackageInfo::default(),
                 })
             })
             .map_err(|e| format!("Pakete nicht lesbar: {e}"))?;
@@ -745,6 +753,7 @@ impl Library {
                 "SELECT tag FROM package_tags WHERE package_id = ?1 ORDER BY tag COLLATE NOCASE",
                 Some(package.id),
             )?;
+            package.info = self.package_info(package.id)?;
         }
         Ok(packages)
     }

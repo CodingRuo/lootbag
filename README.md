@@ -267,9 +267,9 @@ to another asset falls back to the default (first) variant. Opening a library
 upgrades the catalog to format version 3.
 
 `Projekt exportieren …` in the catalog heading (shown while a project folder
-is selected) asks for a destination folder, then lists unavailable members
-and the number of texture substitutions before anything is copied; continue
-or cancel. The export creates
+is selected) asks for a destination folder, then lists unavailable members,
+the number of texture substitutions and of packages without a licence entry
+before anything is copied; continue or cancel. The export creates
 a new `<destination>/<folder name>` (an existing folder, the library and
 external sources are refused), mirrors subfolders as directories and never
 changes library originals. glTF/GLB models take their declared buffers and
@@ -281,10 +281,28 @@ exported as the member asset's own file, not the whole group. Duplicate names
 get `-2`, `-3`, … `manifest.json` (`manifest-2.json` if a subfolder already
 has that name) records project, `exportedAt`, every asset
 (id, name, role, kind, package, original package path, variant, exported files,
-`licenseNote: null`, `notes`) and the skipped members. A failed copy keeps the
+`license`, `author`, `store`, `url` from the package info, `notes`) and the skipped members. A failed copy keeps the
 partial folder and names it in the error ("Export unvollständig: …"); nothing
 in it is deleted. The copy runs in one background
 step without progress or cancellation. Game-project profiles are not built yet.
+
+## Paketinfos und Credits
+
+`Paketinfo bearbeiten…` in a package's `⋯` menu (or in the inspector's
+`Herkunft` tab) records where a package came from: Shop, Link, Lizenz,
+Urheber, Gekauft am, Version and Notizen. All fields are optional free text
+(at most 200 characters, notes 2000); a link must start with `http://` or
+`https://`, the date is `YYYY-MM-DD`. The info is stored per package in the
+catalog and deleted with the package when the trash is emptied. `Herkunft`
+shows shop, link (selectable, with `Link kopieren`), licence and author, or
+"Keine Lizenz hinterlegt". For imported packages the dialog lists licence and
+readme files found in the package root and its direct subfolders
+(`LICENSE*`, `*license*.txt/md/pdf`, `README*`); nothing is read or filled in
+automatically, and external sources are not scanned.
+
+Project exports also write `CREDITS.md` next to `manifest.json` (`CREDITS-2.md`
+if a subfolder has that name): one section per package with Urheber, Lizenz
+(or "nicht hinterlegt – bitte prüfen"), Shop/Link and the exported asset names.
 
 ## Scope
 

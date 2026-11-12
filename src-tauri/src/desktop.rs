@@ -2,7 +2,8 @@ use crate::library::{
     AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform, BulkAction, BulkResult,
     BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, EmbeddedAudioTags, EmptiedTrash,
     ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress, KindCounts, Library,
-    ModelResources, ProjectExportPlan, ProjectFolder, Result, TrashEntry, ZipEstimate,
+    ModelResources, PackageInfo, PackageInfoDetails, ProjectExportPlan, ProjectFolder, Result,
+    TrashEntry, ZipEstimate,
 };
 use std::{
     fs,
@@ -997,6 +998,22 @@ async fn annotate_package(app: AppHandle, package_id: i64, tags: Vec<String>) ->
 }
 
 #[tauri::command]
+async fn get_package_info(app: AppHandle, package_id: i64) -> Result<PackageInfoDetails> {
+    let root = active_root(&app)?;
+    background(move || Library::writable(&root)?.get_package_info(package_id)).await
+}
+
+#[tauri::command]
+async fn set_package_info(app: AppHandle, package_id: i64, info: PackageInfo) -> Result<()> {
+    let root = active_root(&app)?;
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.set_package_info(package_id, &info)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn split_variant(app: AppHandle, file_id: i64) -> Result<i64> {
     let root = active_root(&app)?;
     background(move || {
@@ -1412,6 +1429,8 @@ pub fn run() {
             annotate_asset,
             bulk_assets,
             annotate_package,
+            get_package_info,
+            set_package_info,
             split_variant,
             assign_variant,
             resolve_preview,

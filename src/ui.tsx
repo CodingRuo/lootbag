@@ -4,6 +4,7 @@ import type { AudioMetadata } from "./AudioPreview";
 import type { ImageGroupSummary } from "./imageWorkflows";
 import type { ProjectFolder } from "./ProjectFolders";
 import type { FolderMember } from "./projectExport.ts";
+import type { PackageInfo } from "./packageInfo.ts";
 
 // Shared catalog types and tiny UI helpers used by App and its regions.
 export type AssetPackage = {
@@ -16,6 +17,7 @@ export type AssetPackage = {
   available: boolean;
   externalRoot: string | null;
   tags: string[];
+  info: PackageInfo;
 };
 export type AssetKind = "sound" | "image" | "model";
 export type AssetFile = {

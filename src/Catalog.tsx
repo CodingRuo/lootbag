@@ -151,11 +151,11 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
           <p className="eyebrow" title={filteredFolderPath ?? filteredPackage?.name}>{filteredFolderPath ?? filteredPackage?.name ?? "ASSET-KATALOG"}</p>
           <h1>{CATALOG_TYPES.find((item) => item.value === (workflow ?? kind ?? ""))?.label}</h1>
         </div>
-        {folderId !== null && <button className="button outlined" disabled={actionsDisabled} title="Gewählte Varianten, Begleitdateien und manifest.json in einen neuen Ordner kopieren"
+        {folderId !== null && <button className="button outlined" disabled={actionsDisabled} title="Gewählte Varianten, Begleitdateien, manifest.json und CREDITS.md in einen neuen Ordner kopieren"
           onClick={() => void act("Projekt wird exportiert …", async () => {
             const result = await exportProject(folderId, invoke,
               async () => await open({ directory: true, multiple: false, title: `Zielordner für ${filteredFolderPath} auswählen` }),
-              (message) => confirm(message, { title: "Nicht verfügbare Dateien", kind: "warning", okLabel: "Ohne sie exportieren", cancelLabel: "Abbrechen" }));
+              (message) => confirm(message, { title: "Vor dem Export", kind: "warning", okLabel: "Exportieren", cancelLabel: "Abbrechen" }));
             if (result?.status === "exported") setNotice({ tone: "success", message: `Projekt exportiert: ${result.path} · ${bytes(result.sizeBytes ?? 0)}` });
           })}><Icon name="download" />Projekt exportieren …</button>}
       </div>

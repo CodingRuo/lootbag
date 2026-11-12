@@ -40,3 +40,13 @@ test("export reports texture substitutions before copying", async () => {
   assert.match(message, /^2 Texturen werden durch gleichnamige Dateien ersetzt/);
   assert.deepEqual(calls, ["plan_project_export"]);
 });
+
+test("export names packages without licence before copying and still exports on confirmation", async () => {
+  const plan = { project: "Game", assetCount: 4, sizeBytes: 10, missing: [], substitutions: 0, packagesWithoutLicense: 3 };
+  let message = "";
+  const calls: string[] = [];
+  const invoke = async (command: string) => { calls.push(command); return (command === "plan_project_export" ? plan : { status: "exported", path: "/x/Game" }) as never; };
+  assert.deepEqual(await exportProject(1, invoke, async () => "/x", async (text) => { message = text; return true; }), { status: "exported", path: "/x/Game" });
+  assert.match(message, /^3 Pakete ohne Lizenzangabe/);
+  assert.deepEqual(calls, ["plan_project_export", "export_project"]);
+});

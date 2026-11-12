@@ -53,11 +53,12 @@ const hooks = registerHooks({
 const { default: App } = await import(new URL("App.tsx", sourceRoot).href);
 const { default: AudioPreview } = await import(new URL("AudioPreview.tsx", sourceRoot).href);
 const { default: ModelThumbnail } = await import(new URL("ModelThumbnail.tsx", sourceRoot).href);
+const { PackageInfoDialog } = await import(new URL("PackageInfoDialog.tsx", sourceRoot).href);
 // App composes its regions from these function components; the harness renders them inline so their controls stay queryable.
 const regions = new Set(await Promise.all(["Header", "Onboarding", "Sidebar", "Catalog", "Inspector"]
   .map(async (name) => (await import(new URL(`${name}.tsx`, sourceRoot).href)).default)));
 
-const library = { root: "/owned/library", name: "Owned library", packages: [{ id: 1, name: "Fixture", relativePath: "fixture", assetCount: 41, sourceKind: "managed", available: true, externalRoot: null, tags: [] }], folders: [], assetCount: 41, kindCounts: { sound: 41, image: 0, model: 0, material: 0, spriteSequence: 0, animation: 0 } };
+const library = { root: "/owned/library", name: "Owned library", packages: [{ id: 1, name: "Fixture", relativePath: "fixture", assetCount: 41, sourceKind: "managed", available: true, externalRoot: null, tags: [], info: { store: null, url: null, license: null, author: null, purchased: null, version: null, notes: null } }], folders: [], assetCount: 41, kindCounts: { sound: 41, image: 0, model: 0, material: 0, spriteSequence: 0, animation: 0 } };
 const matchingFile = { id: 11, originalFilename: "match.mp3", relativePath: "match.mp3", originalFolder: "", format: "MP3", kind: "sound", sizeBytes: 50, audio: { status: "ready", durationSeconds: 1, sampleRate: 44100, channels: 2, codec: "mp3", error: null }, available: true };
 const alternateFile = { ...matchingFile, id: 12, originalFilename: "alternate.wav", format: "WAV", audio: { ...matchingFile.audio, durationSeconds: 9, channels: 1 } };
 const asset = { id: 1, name: "Sound", kind: "sound", packageId: 1, packageName: "Fixture", originalFolder: "", files: [matchingFile, alternateFile], tags: [], folderIds: [] };
@@ -79,6 +80,8 @@ class Harness {
   populationCancelError: Error | null = null;
   analysisRequests: { resolve: (metadata: any) => void; reject: (error: unknown) => void }[] = [];
   component: () => Element = App;
+  libraryInfo: any = library;
+  packageInfoSaves: any[] = [];
   audioTags: any = { status: "ready", title: null, artist: null, album: null, genre: null, message: null };
   invoke = (command: string, args: any) => {
     if (command === "prepare_audio_analysis") return new Promise((resolve, reject) => this.prepareRequests.push({ args, resolve, reject }));
@@ -88,7 +91,8 @@ class Harness {
       return this.populationCancelError ? Promise.reject(this.populationCancelError) : Promise.resolve();
     }
     if (command === "query_catalog") return new Promise((resolve, reject) => this.requests.push({ args, resolve, reject }));
-    if (command === "get_library") return Promise.resolve(library);
+    if (command === "get_library") return Promise.resolve(this.libraryInfo);
+    if (command === "set_package_info") { this.packageInfoSaves.push(args); return Promise.resolve(); }
     if (command === "open_library") return Promise.resolve({ ...library, root: "/owned/reopened" });
     if (command === "catalog_filters") return Promise.resolve({ folders: ["ambience"], formats: ["MP3", "WAV", "OGG", "FLAC", "PNG", "OBJ"], tags: ["wind"] });
     if (command === "analyze_audio") return new Promise((resolve, reject) => this.analysisRequests.push({ resolve, reject }));
@@ -629,4 +633,25 @@ test("AudioPreview hides empty embedded tags and lists only populated ones", asy
       assert.deepEqual(labels.filter((label) => ["Titel", "Künstler", "Album", "Genre"].includes(label)), shown);
     } finally { preview.dispose(); }
   }
+});
+
+test("the origin tab hints at a missing licence, edits package info and then shows shop, licence and link", async () => {
+  const app = new Harness();
+  try {
+    await app.mount();
+    assert.match(app.text(app.tree), /Keine Lizenz hinterlegt/);
+    await app.click("Paketinfo bearbeiten…");
+    const dialog = app.find((node) => node.type === PackageInfoDialog);
+    assert.equal(dialog.props.pkg.id, 1);
+    const info = { store: "Kenney", url: "https://kenney.nl", license: "CC0", author: "", purchased: "", version: "", notes: "" };
+    app.libraryInfo = { ...library, packages: [{ ...library.packages[0], info: { ...library.packages[0].info, store: "Kenney", url: "https://kenney.nl", license: "CC0" } }] };
+    dialog.props.onSave(info); await app.settle();
+    assert.deepEqual(app.packageInfoSaves, [{ packageId: 1, info: { ...info, author: null, purchased: null, version: null, notes: null } }]);
+    assert.equal(app.elements(app.tree).some((node) => node.type === PackageInfoDialog), false, "The dialog closes after saving");
+    const text = app.text(app.tree);
+    assert.doesNotMatch(text, /Keine Lizenz hinterlegt/);
+    assert.match(text, /Shop\s+Kenney/);
+    assert.match(text, /Lizenz\s+CC0/);
+    assert.match(text, /https:\/\/kenney\.nl\s+Link kopieren/);
+  } finally { app.dispose(); }
 });

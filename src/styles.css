@@ -1325,6 +1325,9 @@ p {
   font-size: 11px;
 }
 .trash-menu button:hover { background: #ffffff09; }
+.trash-menu button.neutral { color: #d5dfe9; }
+.trash-dialog > p.package-info-name { margin: 6px 0 0; overflow-wrap: anywhere; }
+.annotation-editor textarea { width: 100%; min-width: 0; border: 1px solid #354252; border-radius: 5px; background: #19232f; color: #d5dfe9; font: inherit; font-size: 11px; padding: 9px; resize: vertical; }
 .trash-dialog {
   width: min(850px, calc(100vw - 32px));
   max-height: calc(100dvh - 48px);

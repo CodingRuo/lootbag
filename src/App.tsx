@@ -5,6 +5,8 @@ import { confirm, open } from "@tauri-apps/plugin-dialog";
 import type { ModelExportSelection } from "./ModelPreview";
 import { TrashDialog, type TrashEntry } from "./Trash";
 import { FolderDialog, folderPath, type ProjectFolder } from "./ProjectFolders";
+import { PackageInfoDialog } from "./PackageInfoDialog";
+import { savePackageInfo, type PackageInfo } from "./packageInfo.ts";
 import type { CatalogSelection } from "./catalogSelection";
 import { errorMessage } from "./errorMessage.ts";
 import { native, number, type Asset, type AssetPackage, type LibraryInfo, type Notice } from "./ui.tsx";
@@ -34,6 +36,8 @@ export default function App() {
         },
   );
   const [showFolderDialog, setShowFolderDialog] = useState(false);
+  const [infoPackageId, setInfoPackageId] = useState<number | null>(null);
+  const infoPackage = library?.packages.find((item) => item.id === infoPackageId);
   const [revision, setRevision] = useState(0);
   const [traitsPending, setTraitsPending] = useState(false);
   const [selected, setSelected] = useState<Asset | null>(null);
@@ -143,6 +147,7 @@ export default function App() {
     setModelSelection(null);
     setShowTrash(false);
     setShowFolderDialog(false);
+    setInfoPackageId(null);
     setFolderId(null);
     focusAssetId.current = null;
     focusFileId.current = null;
@@ -270,6 +275,20 @@ export default function App() {
     });
   }
 
+  function editPackageInfo(id: number) {
+    setNotice(null);
+    setInfoPackageId(id);
+  }
+
+  function saveInfo(id: number, form: Record<keyof PackageInfo, string>) {
+    void act("Paketinfo wird gespeichert …", async () => {
+      await savePackageInfo(invoke, id, form);
+      setLibrary(await invoke<LibraryInfo>("get_library"));
+      setInfoPackageId(null);
+      setNotice({ tone: "success", message: "Paketinfo gespeichert." });
+    });
+  }
+
   function createFolder(name: string, parentId: number | null) {
     void act("Projektordner wird angelegt …", async () => {
       await invoke<ProjectFolder>("create_folder", { name, parentId });
@@ -289,7 +308,7 @@ export default function App() {
       ) : (
         <div className="workspace">
           <Sidebar library={library} traitsPending={traitsPending} catalogType={query.workflow ?? query.kind ?? ""} chooseType={query.chooseType} openLibrary={openLibrary} referenceFolder={referenceFolder} packageId={packageId} folderId={folderId} projectFolders={projectFolders} actionsDisabled={actionsDisabled}
-            filterPackage={query.filterPackage} filterFolder={query.filterFolder} trashItem={trashItem} refreshSources={refreshSources}
+            filterPackage={query.filterPackage} filterFolder={query.filterFolder} trashItem={trashItem} editPackageInfo={editPackageInfo} refreshSources={refreshSources}
             setNotice={setNotice} setShowFolderDialog={setShowFolderDialog} setShowTrash={setShowTrash} trashGeneration={trashGeneration} />
           <Catalog library={library} query={query} audio={audio} selected={selected} setSelected={setSelected} selection={selection} setSelection={setSelection}
             setSelectedFileId={setSelectedFileId} setModelSelection={setModelSelection} filteredPackage={filteredPackage} filteredFolderPath={filteredFolderPath}
@@ -297,12 +316,16 @@ export default function App() {
             trashItem={trashItem} relinkSource={relinkSource} importPackage={imports.importPackage} />
           <Inspector library={library} query={query} selected={selected} file={file} selectedPackage={selectedPackage} projectFolders={projectFolders}
             modelSelection={modelSelection} setModelSelection={setModelSelection} setSelectedFileId={setSelectedFileId} actionsDisabled={actionsDisabled}
-            act={act} setLibrary={setLibrary} setRevision={setRevision} setNotice={setNotice} trashItem={trashItem} relinkSource={relinkSource} />
+            act={act} setLibrary={setLibrary} setRevision={setRevision} setNotice={setNotice} trashItem={trashItem} relinkSource={relinkSource} editPackageInfo={editPackageInfo} />
         </div>
       )}
       {library && showFolderDialog && (
         <FolderDialog folders={projectFolders} parentId={folderId} disabled={actionsDisabled} notice={notice}
           onCreate={createFolder} onClose={() => setShowFolderDialog(false)} />
+      )}
+      {infoPackage && (
+        <PackageInfoDialog key={infoPackage.id} pkg={infoPackage} disabled={actionsDisabled} notice={notice}
+          onSave={(form) => saveInfo(infoPackage.id, form)} onClose={() => setInfoPackageId(null)} />
       )}
       {library && showTrash && (
         <TrashDialog root={library.root} revision={revision} disabled={actionsDisabled} notice={notice}

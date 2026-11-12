@@ -12,11 +12,12 @@ export type TrashEntry = {
   parentTrashed: boolean;
 };
 
-export function TrashActions({ children, label, disabled, onTrash, className = "" }: {
+export function TrashActions({ children, label, disabled, onTrash, onEditInfo, className = "" }: {
   children: ReactNode;
   label: string;
   disabled: boolean;
   onTrash: () => void;
+  onEditInfo?: () => void;
   className?: string;
 }) {
   const id = useId();
@@ -26,7 +27,7 @@ export function TrashActions({ children, label, disabled, onTrash, className = "
   function position(x: number, y: number) {
     if (!menu.current) return;
     menu.current.style.left = `${Math.max(8, Math.min(x, window.innerWidth - 232))}px`;
-    menu.current.style.top = `${Math.max(8, Math.min(y, window.innerHeight - 64))}px`;
+    menu.current.style.top = `${Math.max(8, Math.min(y, window.innerHeight - 104))}px`;
   }
 
   return (
@@ -52,6 +53,10 @@ export function TrashActions({ children, label, disabled, onTrash, className = "
             button.current?.focus();
           }
         }}>
+        {onEditInfo && <button role="menuitem" className="neutral" disabled={disabled} onClick={() => {
+          menu.current?.hidePopover();
+          onEditInfo();
+        }}>Paketinfo bearbeiten…</button>}
         <button role="menuitem" disabled={disabled} onClick={() => {
           menu.current?.hidePopover();
           button.current?.focus();
