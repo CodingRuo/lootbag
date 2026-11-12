@@ -61,7 +61,6 @@ export default function GifPreview({ file }: { file: { id: number; originalFilen
       <button className="button outlined" aria-pressed={animated} onClick={() => setAnimated(true)}>Animation anzeigen</button>
       <button className="button outlined" aria-pressed={!animated} onClick={() => setAnimated(false)}>Erstes Bild</button>
     </div>
-    <p className="detail-hint">{animated ? "Die GIF-Datei wird mit ihrem eigenen Timing und ihrer Wiederholung angezeigt. Beim Wechsel kann sie neu starten." : "Statische Vorschau des ersten Bildes. Katalog und Material-/Modelltexturen verwenden ebenfalls dieses Bild."}</p>
     {image && <>
       <p className="detail-hint">{image.naturalWidth} × {image.naturalHeight} Pixel{frames !== null ? ` · ${frames} ${frames === 1 ? "Bild" : "Bilder"}` : ""} · Transparenz auf Schachbrett</p>
       <div className="visual-controls">

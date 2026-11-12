@@ -106,8 +106,6 @@ export default function SpriteSequencePreview({ group, visible, onReady }: {
     </div>
     {!frames.length && !error && <p className="detail-hint" role="status">Sprite-Bilder werden geladen und geprüft …</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
-    {group.members.some((member) => /\.gif$/i.test(member.file.originalFilename)) && <p className="detail-hint">GIF-Dateien verwenden in dieser Sequenz ihr erstes Bild.</p>}
-    {group.members.some((member) => /\.(ase|aseprite)$/i.test(member.file.originalFilename)) && <p className="detail-hint">Ausgewählte Aseprite-Dateien verwenden hier ihr erstes vollständiges Bild.</p>}
     {image && <section className="sequence-controls" aria-label="Sprite-Animation">
       <div className="sequence-toolbar">
         <button className="button outlined" disabled={!visible || !validFps} onClick={() => setPlaying((current) => !current)}>{playing ? "Animation pausieren" : "Animation abspielen"}</button>

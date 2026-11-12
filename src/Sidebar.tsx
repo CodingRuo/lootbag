@@ -1,10 +1,12 @@
 import type { RefObject } from "react";
 import { TrashActions } from "./Trash";
 import { folderPath, type ProjectFolder } from "./ProjectFolders";
-import { Icon, number, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { CATALOG_TYPES, Icon, number, type CatalogType, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
-// Library heading, package and project folder filters, trash entry and storage location.
-export default function Sidebar({ library, packageId, folderId, projectFolders, actionsDisabled, filterPackage, filterFolder, trashItem, refreshSources, setNotice, setShowFolderDialog, setShowTrash, trashGeneration }: {
+// Library heading, asset type, package and project folder filters, trash, library actions and storage location.
+export default function Sidebar({ library, catalogType, chooseType, packageId, folderId, projectFolders, actionsDisabled, filterPackage, filterFolder, trashItem, refreshSources, setNotice, setShowFolderDialog, setShowTrash, trashGeneration, openLibrary, referenceFolder }: {
+  catalogType: CatalogType;
+  chooseType: (value: CatalogType) => void;
   library: LibraryInfo;
   packageId: number | null;
   folderId: number | null;
@@ -18,7 +20,10 @@ export default function Sidebar({ library, packageId, folderId, projectFolders, 
   setShowFolderDialog: Setter<boolean>;
   setShowTrash: Setter<boolean>;
   trashGeneration: RefObject<number>;
+  openLibrary: () => void;
+  referenceFolder: () => void;
 }) {
+  const allAssets = catalogType === "" && packageId === null && folderId === null;
   return (
     <aside className="sidebar" aria-label="Bibliothek, Pakete und Projektordner">
       <div className="library-heading">
@@ -30,15 +35,20 @@ export default function Sidebar({ library, packageId, folderId, projectFolders, 
         </span>
       </div>
       <div className="sidebar-navigation">
-        <button
-          className={`package-item all-sounds ${packageId === null && folderId === null ? "active" : ""}`}
-          aria-pressed={packageId === null && folderId === null}
-          onClick={() => filterPackage(null)}
-        >
-          <Icon name="library" />
-          <span>Alle Assets</span>
-          <span className="count">{number.format(library.assetCount)}</span>
-        </button>
+        <div className="package-heading">
+          <h3>TYPEN</h3>
+        </div>
+        <nav className="packages asset-types" aria-label="Asset-Typen">
+          {CATALOG_TYPES.map((item) => {
+            const active = item.value === "" ? allAssets : catalogType === item.value;
+            const count = item.value === "" ? library.assetCount : library.kindCounts[item.value];
+            return <button key={item.value || "all"} data-type={item.value} className={`package-item ${active ? "active" : ""}`} aria-pressed={active}
+              aria-label={`${item.label} · ${number.format(count)}`}
+              onClick={() => { if (item.value === "") filterPackage(null); chooseType(item.value); }}>
+              <Icon name={item.icon} /><span>{item.label}</span><span className="count">{number.format(count)}</span>
+            </button>;
+          })}
+        </nav>
         <div className="package-heading">
           <h3>PAKETE</h3>
           <span>{number.format(library.packages.length)}</span>
@@ -92,13 +102,17 @@ export default function Sidebar({ library, packageId, folderId, projectFolders, 
       </div>
       <div className="sidebar-footer">
         <button className="package-item trash-link" onClick={() => { trashGeneration.current++; setNotice(null); setShowTrash(true); }} disabled={actionsDisabled}>
-          <Icon name="folder" /><span>Interner Papierkorb</span>
+          <Icon name="folder" /><span>Papierkorb</span>
         </button>
         <div className="storage">
           <Icon name="library" />
           <div>
             <strong>Speicherort</strong>
-            <p title={library.root}>{library.root}</p>
+            <p title={library.root}>{library.name}</p>
+            <div className="storage-actions">
+              <button className="text-button" onClick={openLibrary} disabled={actionsDisabled}>Bibliothek öffnen</button>
+              <button className="text-button" onClick={referenceFolder} disabled={actionsDisabled}>Externen Ordner einbinden</button>
+            </div>
           </div>
         </div>
       </div>

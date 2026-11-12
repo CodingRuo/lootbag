@@ -88,7 +88,60 @@ struct DerivedMember {
     frame_index: Option<u64>,
 }
 
+/// Active catalog entries per sidebar type; each count matches the unfiltered catalog total for that type.
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KindCounts {
+    pub sound: i64,
+    pub image: i64,
+    pub model: i64,
+    pub material: i64,
+    pub sprite_sequence: i64,
+}
+
 impl Library {
+    pub fn kind_counts(&self) -> Result<KindCounts> {
+        let kinds = [AssetKind::Sound, AssetKind::Image, AssetKind::Model];
+        let cases = kinds
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                format!(
+                    "WHEN f.format IN ('{}') THEN {index}",
+                    kind.formats().join("','")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut statement = self
+            .connection
+            .prepare(&format!("SELECT CASE {cases} END AS kind, COUNT(DISTINCT f.asset_id) FROM active_asset_files f GROUP BY kind"))
+            .map_err(|error| format!("Typenzählung nicht lesbar: {error}"))?;
+        let mut counts = KindCounts {
+            material: self
+                .derived_image_groups(ImageWorkflow::Material, None)?
+                .len() as i64,
+            sprite_sequence: self
+                .derived_image_groups(ImageWorkflow::SpriteSequence, None)?
+                .len() as i64,
+            ..Default::default()
+        };
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|error| format!("Typenzählung nicht lesbar: {error}"))?;
+        for row in rows {
+            match row.map_err(|error| format!("Typenzählung nicht lesbar: {error}"))? {
+                (Some(0), count) => counts.sound = count,
+                (Some(1), count) => counts.image = count,
+                (Some(2), count) => counts.model = count,
+                _ => {}
+            }
+        }
+        Ok(counts)
+    }
+
     pub(super) fn query_image_groups(&self, query: CatalogQuery) -> Result<CatalogPage> {
         let workflow = query.workflow.ok_or("Bild-Arbeitsablauf fehlt")?;
         let mut groups = self.derived_image_groups(workflow, query.package_id)?;

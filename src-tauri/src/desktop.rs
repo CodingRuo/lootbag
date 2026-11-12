@@ -1,7 +1,7 @@
 use crate::library::{
     AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform, BulkAction, BulkResult,
     BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, EmbeddedAudioTags, EmptiedTrash,
-    ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress, Library,
+    ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress, KindCounts, Library,
     ModelResources, ProjectFolder, Result, TrashEntry, ZipEstimate,
 };
 use std::{
@@ -416,6 +416,7 @@ struct LibraryInfo {
     packages: Vec<AssetPackage>,
     folders: Vec<ProjectFolder>,
     asset_count: i64,
+    kind_counts: KindCounts,
 }
 
 fn info(library: &Library) -> Result<LibraryInfo> {
@@ -429,6 +430,7 @@ fn info(library: &Library) -> Result<LibraryInfo> {
             .to_string_lossy()
             .into_owned(),
         asset_count: packages.iter().map(|package| package.asset_count).sum(),
+        kind_counts: library.kind_counts()?,
         packages,
         folders: library.folders()?,
     })

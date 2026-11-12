@@ -55,7 +55,7 @@ export default function AnnotationEditor({
         />
       </label>
       <p className="detail-hint">
-        Tags mit Komma trennen. Die Originaldateien bleiben unverändert.
+        Tags mit Komma trennen.
       </p>
       <button
         className="button outlined"

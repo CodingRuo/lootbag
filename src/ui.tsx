@@ -46,7 +46,19 @@ export type LibraryInfo = {
   packages: AssetPackage[];
   folders: ProjectFolder[];
   assetCount: number;
+  kindCounts: KindCounts;
 };
+export type KindCounts = { sound: number; image: number; model: number; material: number; spriteSequence: number };
+// Sidebar asset types: "" is every asset; material and spriteSequence are grouped image workflows.
+export type CatalogType = "" | keyof KindCounts;
+export const CATALOG_TYPES: { value: CatalogType; label: string; icon: keyof typeof icons }[] = [
+  { value: "", label: "Alle Assets", icon: "library" },
+  { value: "sound", label: "Sounds", icon: "sound" },
+  { value: "image", label: "Bilder", icon: "image" },
+  { value: "spriteSequence", label: "Sprite-Sequenzen", icon: "sprite" },
+  { value: "material", label: "Materialien", icon: "material" },
+  { value: "model", label: "3D-Modelle", icon: "model" },
+];
 export type CatalogPage = {
   items: Asset[];
   total: number;
@@ -82,7 +94,7 @@ export type Notice = { tone: "error" | "success"; message: string };
 export type Setter<T> = Dispatch<SetStateAction<T>>;
 export type Act = (label: string, operation: (isCurrent: () => boolean) => Promise<void>) => Promise<void>;
 
-export const PAGE_SIZE = 40;
+export const PAGE_SIZE = 100;
 export const native = isTauri();
 export const number = new Intl.NumberFormat("de-DE");
 const icons = {
@@ -102,6 +114,10 @@ const icons = {
   ),
   image: <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8" cy="8" r="1.5" /><path d="m3 17 6-6 4 4 3-3 5 5" /></>,
   model: <><path d="m12 3 9 5v8l-9 5-9-5V8Z" /><path d="m3 8 9 5 9-5M12 13v8" /></>,
+  material: <><path d="m12 3 9 4.5-9 4.5-9-4.5Z" /><path d="m3 12 9 4.5 9-4.5M3 16.5 12 21l9-4.5" /></>,
+  sprite: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14M15 5v14" /></>,
+  play: <path d="M7 4.5v15l12-7.5Z" />,
+  pause: <path d="M8 5v14M16 5v14" />,
   grid: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
   list: <path d="M3 5h2m4 0h12M3 12h2m4 0h12M3 19h2m4 0h12" />,
   filter: <><path d="M3 6h18M3 12h18M3 18h18" /><path d="M8 3v6m8 0v6m-8 0v6" /></>,

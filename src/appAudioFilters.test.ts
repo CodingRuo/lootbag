@@ -50,11 +50,11 @@ const { default: AudioPreview } = await import(new URL("AudioPreview.tsx", sourc
 const regions = new Set(await Promise.all(["Header", "Onboarding", "Sidebar", "Catalog", "Inspector"]
   .map(async (name) => (await import(new URL(`${name}.tsx`, sourceRoot).href)).default)));
 
-const library = { root: "/owned/library", name: "Owned library", packages: [{ id: 1, name: "Fixture", relativePath: "fixture", assetCount: 41, sourceKind: "managed", available: true, externalRoot: null, tags: [] }], folders: [], assetCount: 41 };
+const library = { root: "/owned/library", name: "Owned library", packages: [{ id: 1, name: "Fixture", relativePath: "fixture", assetCount: 41, sourceKind: "managed", available: true, externalRoot: null, tags: [] }], folders: [], assetCount: 41, kindCounts: { sound: 41, image: 0, model: 0, material: 0, spriteSequence: 0 } };
 const matchingFile = { id: 11, originalFilename: "match.mp3", relativePath: "match.mp3", originalFolder: "", format: "MP3", kind: "sound", sizeBytes: 50, audio: { status: "ready", durationSeconds: 1, sampleRate: 44100, channels: 2, codec: "mp3", error: null }, available: true };
 const alternateFile = { ...matchingFile, id: 12, originalFilename: "alternate.wav", format: "WAV", audio: { ...matchingFile.audio, durationSeconds: 9, channels: 1 } };
 const asset = { id: 1, name: "Sound", kind: "sound", packageId: 1, packageName: "Fixture", originalFolder: "", files: [matchingFile, alternateFile], tags: [], folderIds: [] };
-const page = (items = [asset], total = 41, offset = 0) => ({ items, total, offset, limit: 40 });
+const page = (items = [asset], total = 141, offset = 0) => ({ items, total, offset, limit: 100 });
 
 class Harness {
   private slots: any[] = [];
@@ -150,6 +150,7 @@ class Harness {
   }
   button(label: string) { return this.find((node) => node.type === "button" && this.text(node) === label); }
   async change(label: string, value: string) { this.control(label).props.onChange({ target: { value } }); await this.settle(); }
+  async chooseType(value: string) { this.find((node) => node.type === "button" && node.props["data-type"] === value).props.onClick(); await this.settle(); }
   async click(label: string) { this.button(label).props.onClick(); await this.settle(); }
   async mount() { await this.settle(); await this.runTimers(); this.requests[0].resolve(page()); await this.settle(); }
   dispose() { for (const slot of this.slots) slot?.cleanup?.(); }
@@ -162,9 +163,9 @@ test("saved audio criteria select Sounds, reset paging, and reach the desktop qu
   try {
     await app.mount();
     app.control("Nächste Seite").props.onClick(); await app.settle(); await app.runTimers();
-    app.requests[1].resolve(page([asset], 41, 40)); await app.settle();
+    app.requests[1].resolve(page([asset], 141, 100)); await app.settle();
     await app.change("Nach Audiokanälen filtern", "stereo");
-    assert.equal(app.control("Nach Asset-Kategorie filtern").props.value, "sound");
+    assert.equal(app.find((node) => node.props["data-type"] === "sound").props["aria-pressed"], true);
     await app.runTimers();
     assert.deepEqual(app.latestRequest?.args.audioCriteria, { minDurationSeconds: null, maxDurationSeconds: null, channels: "stereo", analysis: "any" });
     assert.equal(app.latestRequest?.args.query.offset, 0);
@@ -217,12 +218,13 @@ test("audio-filtered inspection defaults to the qualifying variant and allows a 
     variants.props.onChange({ target: { value: String(alternateFile.id) } }); await app.settle();
     assert.equal(app.find((node) => node.type === AudioPreview).props.file.id, alternateFile.id);
     assert.match(app.text(app.tree), /Andere Variante.*Audiofilter/);
-    await app.click("Diese Seite auswählen");
+    assert.equal(app.elements(app.tree).some((node) => node.props["aria-label"] === "Katalogauswahl"), false, "Bulk bar stays hidden without a selection");
+    app.control("Sound auswählen · alle Varianten").props.onClick({ shiftKey: false }); await app.settle();
     assert.match(app.text(app.tree), /1\s+ausgewählt/);
     await app.change("Assets durchsuchen", "wind"); await app.runTimers();
     app.latestRequest!.resolve(page()); await app.settle();
     assert.equal(app.find((node) => node.type === AudioPreview).props.file.id, matchingFile.id);
-    assert.match(app.text(app.tree), /0\s+ausgewählt/);
+    assert.doesNotMatch(app.text(app.tree), /ausgewählt/);
   } finally { app.dispose(); }
 });
 
@@ -230,13 +232,13 @@ test("non-sound categories, clear filters, package and library changes visibly r
   const app = new Harness();
   try {
     await app.mount();
-    await app.change("Nach Asset-Kategorie filtern", "material");
+    await app.chooseType("material");
     await app.change("Nach Audiokanälen filtern", "multi"); await app.runTimers();
     assert.equal(app.latestRequest?.args.query.kind, "sound");
     assert.equal(app.latestRequest?.args.query.workflow, null);
     for (const category of ["image", "model", "material", "spriteSequence", ""]) {
       await app.change("Nach Audiokanälen filtern", "stereo");
-      await app.change("Nach Asset-Kategorie filtern", category); await app.runTimers();
+      await app.chooseType(category); await app.runTimers();
       assert.equal(app.control("Nach Audiokanälen filtern").props.value, "any");
       assert.equal(app.latestRequest?.args.audioCriteria, null);
     }
@@ -251,11 +253,12 @@ test("non-sound categories, clear filters, package and library changes visibly r
     await app.change("Nach Audiokanälen filtern", "mono");
     app.control("Fixture · 41 Assets").props.onClick(); await app.settle(); await app.runTimers();
     assert.equal(app.latestRequest?.args.query.packageId, 1);
+    assert.equal(app.latestRequest?.args.query.kind, "sound", "Choosing a package keeps the asset type");
     assert.equal(app.latestRequest?.args.audioCriteria, null);
     await app.change("Nach Audiokanälen filtern", "mono");
     app.find((node) => node.type === "button" && app.text(node).trim() === "Bibliothek öffnen").props.onClick();
     await app.settle(); await app.runTimers();
-    assert.match(app.text(app.tree), /\/owned\/reopened/);
+    assert.ok(app.find((node) => node.props.title === "/owned/reopened"), "Storage shows the reopened library path as tooltip");
     assert.equal(app.latestRequest?.args.query.packageId, null);
     assert.equal(app.latestRequest?.args.audioCriteria, null);
     assert.equal(app.control("Nach Audiokanälen filtern").props.value, "any");
@@ -344,7 +347,7 @@ test("entering audio criteria from a visual category clears its format, while ex
   try {
     await app.mount();
     for (const category of ["image", "model", "material", "spriteSequence"]) {
-      await app.change("Nach Asset-Kategorie filtern", category);
+      await app.chooseType(category);
       await app.change("Nach Dateityp filtern", category === "model" ? "OBJ" : "PNG");
       await app.change("Nach Audiokanälen filtern", "stereo"); await app.runTimers();
       assert.equal(app.latestRequest.args.query.kind, "sound");
@@ -364,7 +367,7 @@ test("sound format filters chosen in All Assets compose with newly activated aud
   try {
     await app.mount();
     for (const format of ["WAV", "MP3", "OGG", "FLAC"]) {
-      await app.change("Nach Asset-Kategorie filtern", "");
+      await app.chooseType("");
       await app.change("Nach Dateityp filtern", format);
       await app.change("Nach Audiokanälen filtern", "stereo"); await app.runTimers();
       assert.equal(app.latestRequest.args.query.kind, "sound");
@@ -381,9 +384,9 @@ test("sound analysis explicitly prepares every matching file variant with the cu
   try {
     await app.mount();
     assert.equal(app.prepareRequests.length, 0, "Opening a library must never start a scan");
-    await app.change("Nach Asset-Kategorie filtern", "sound");
+    await app.chooseType("sound");
     app.control("Fixture · 41 Assets").props.onClick(); await app.settle();
-    await app.change("Nach Asset-Kategorie filtern", "sound");
+    await app.chooseType("sound");
     await app.change("Assets durchsuchen", "wind");
     await app.change("Nach Originalordner filtern", "ambience");
     await app.change("Nach Dateityp filtern", "WAV");
@@ -391,12 +394,12 @@ test("sound analysis explicitly prepares every matching file variant with the cu
     await app.change("Nach Audioanalysestatus filtern", "notAnalysed");
     await app.runTimers(); app.latestRequest!.resolve(page()); await app.settle();
     app.control("Nächste Seite").props.onClick(); await app.settle(); await app.runTimers();
-    app.latestRequest!.resolve(page([asset], 41, 40)); await app.settle();
+    app.latestRequest!.resolve(page([asset], 141, 100)); await app.settle();
     const catalogRequests = app.requests.length;
     await app.click("Analyse vorbereiten");
     assert.match(app.text(app.tree), /Suchbereich wird geprüft/);
     assert.deepEqual(app.prepareRequests[0].args.query, {
-      text: "wind", packageId: 1, folderId: null, originalFolder: "ambience", format: "WAV", kind: "sound", workflow: null, tag: "wind", offset: 0, limit: 40,
+      text: "wind", packageId: 1, folderId: null, originalFolder: "ambience", format: "WAV", kind: "sound", workflow: null, tag: "wind", offset: 0, limit: 100,
     });
     assert.equal(app.prepareRequests[0].args.audioCriteria.analysis, "notAnalysed");
     const requestId = app.prepareRequests[0].args.requestId;
@@ -406,7 +409,7 @@ test("sound analysis explicitly prepares every matching file variant with the cu
     assert.match(app.text(app.tree), /alle Katalogseiten/);
     assert.match(app.text(app.tree), /Audiofilter: nicht analysiert/);
     assert.equal(app.populationRequests.length, 0, "Preparation is reviewable and cannot start work");
-    await app.click("Diese Seite auswählen");
+    app.control("Sound auswählen · alle Varianten").props.onClick({ shiftKey: false }); await app.settle();
     assert.match(app.text(app.tree), /87\s+passende Dateivarianten/, "Selection is unrelated to the frozen search scope");
     assert.equal(app.populationCancellations.length, 0);
     await app.click("Vorbereitung verwerfen");
@@ -420,7 +423,7 @@ test("sound analysis explicitly prepares every matching file variant with the cu
 test("a prepared sound job reports progress and retains partial measurements on stop until explicit refresh", async () => {
   const app = new Harness();
   try {
-    await app.mount(); await app.change("Nach Asset-Kategorie filtern", "sound"); await app.runTimers();
+    await app.mount(); await app.chooseType("sound"); await app.runTimers();
     app.latestRequest!.resolve(page()); await app.settle();
     await app.click("Analyse vorbereiten");
     const requestId = app.prepareRequests[0].args.requestId;
@@ -458,7 +461,7 @@ test("a prepared sound job reports progress and retains partial measurements on 
 test("obsolete sound preparations cannot publish after search replacement or library change", async () => {
   const app = new Harness();
   try {
-    await app.mount(); await app.change("Nach Asset-Kategorie filtern", "sound");
+    await app.mount(); await app.chooseType("sound");
     await app.click("Analyse vorbereiten"); const old = app.prepareRequests[0];
     await app.change("Assets durchsuchen", "new scope");
     assert.ok(app.populationCancellations.includes(old.args.requestId));
@@ -471,7 +474,7 @@ test("obsolete sound preparations cannot publish after search replacement or lib
     await app.click("Analyse vorbereiten"); const beforeRoot = app.prepareRequests[2];
     app.find((node) => node.type === "button" && app.text(node).trim() === "Bibliothek öffnen").props.onClick(); await app.settle();
     assert.ok(app.populationCancellations.includes(beforeRoot.args.requestId));
-    await app.change("Nach Asset-Kategorie filtern", "sound");
+    await app.chooseType("sound");
     await app.click("Analyse vorbereiten"); const afterRoot = app.prepareRequests[3];
     afterRoot.resolve({ requestId: afterRoot.args.requestId, total: 4 }); await app.settle();
     beforeRoot.reject(new Error("Obsolete preparation failure")); await app.settle();
@@ -484,7 +487,7 @@ test("a changed search cancels sound work and discards its late progress, succes
   for (const completion of ["success", "failure"]) {
     const app = new Harness();
     try {
-      await app.mount(); await app.change("Nach Asset-Kategorie filtern", "sound");
+      await app.mount(); await app.chooseType("sound");
       await app.click("Analyse vorbereiten"); const prepared = app.prepareRequests[0];
       prepared.resolve({ requestId: prepared.args.requestId, total: 9 }); await app.settle();
       await app.click("Analyse starten"); const running = app.populationRequests[0];
@@ -509,13 +512,13 @@ test("a changed search cancels sound work and discards its late progress, succes
 test("paging and inspector variant changes preserve the complete prepared sound job", async () => {
   const app = new Harness();
   try {
-    await app.mount(); await app.change("Nach Asset-Kategorie filtern", "sound"); await app.runTimers();
+    await app.mount(); await app.chooseType("sound"); await app.runTimers();
     app.latestRequest!.resolve(page()); await app.settle();
     await app.click("Analyse vorbereiten"); const prepared = app.prepareRequests[0];
     prepared.resolve({ requestId: prepared.args.requestId, total: 82 }); await app.settle();
     app.find((node) => node.type === "select" && node.props.value === alternateFile.id).props.onChange({ target: { value: String(matchingFile.id) } }); await app.settle();
     app.control("Nächste Seite").props.onClick(); await app.settle(); await app.runTimers();
-    app.latestRequest!.resolve(page([asset], 41, 40)); await app.settle();
+    app.latestRequest!.resolve(page([asset], 141, 100)); await app.settle();
     assert.match(app.text(app.tree), /82\s+passende Dateivarianten/);
     assert.deepEqual(app.populationCancellations, []);
     await app.click("Analyse starten");
@@ -530,7 +533,7 @@ test("empty and rejected sound scopes are visible and cannot start a run", async
   try {
     await app.mount();
     assert.equal(app.elements(app.tree).some((node) => node.props["aria-label"] === "Sounds im Suchbereich analysieren"), false);
-    await app.change("Nach Asset-Kategorie filtern", "sound");
+    await app.chooseType("sound");
     await app.click("Analyse vorbereiten");
     app.prepareRequests[0].resolve({ requestId: app.prepareRequests[0].args.requestId, total: 0 }); await app.settle();
     assert.equal(app.button("Analyse starten").props.disabled, true);
@@ -552,7 +555,7 @@ test("empty and rejected sound scopes are visible and cannot start a run", async
 test("failed sound cancellation stays retryable and failed runs preserve a refreshable partial summary", async () => {
   const app = new Harness();
   try {
-    await app.mount(); await app.change("Nach Asset-Kategorie filtern", "sound"); await app.runTimers();
+    await app.mount(); await app.chooseType("sound"); await app.runTimers();
     app.latestRequest!.resolve(page()); await app.settle();
     await app.click("Analyse vorbereiten"); const prepared = app.prepareRequests[0];
     prepared.resolve({ requestId: prepared.args.requestId, total: 5 }); await app.settle();
@@ -577,7 +580,7 @@ test("failed sound cancellation stays retryable and failed runs preserve a refre
 
 test("unmount cancels pending sound work and never publishes late boundary replies", async () => {
   const app = new Harness();
-  await app.mount(); await app.change("Nach Asset-Kategorie filtern", "sound");
+  await app.mount(); await app.chooseType("sound");
   await app.click("Analyse vorbereiten"); const prepared = app.prepareRequests[0];
   prepared.resolve({ requestId: prepared.args.requestId, total: 3 }); await app.settle();
   await app.click("Analyse starten"); const running = app.populationRequests[0];

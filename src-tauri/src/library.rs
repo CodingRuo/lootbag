@@ -10,7 +10,7 @@ mod image_groups;
 #[path = "sprite_export.rs"]
 mod sprite_export;
 pub use image_groups::{
-    ImageGroup, ImageGroupMember, ImageGroupSummary, ImageWorkflow, MaterialRole,
+    ImageGroup, ImageGroupMember, ImageGroupSummary, ImageWorkflow, KindCounts, MaterialRole,
 };
 pub(crate) use sprite_export::SpritePayload;
 #[path = "audio.rs"]
@@ -2004,6 +2004,62 @@ mod tests {
         assert_eq!(grouped.items[0].id, original.id);
         assert_eq!(grouped.items[0].files[0].id, original.files[0].id);
         assert_eq!(library.query(CatalogQuery::default()).unwrap().total, 4);
+    }
+
+    #[test]
+    fn kind_counts_match_catalog_totals_per_type() {
+        let workspace = Workspace::new();
+        let source = workspace.path("Mixed");
+        fs::create_dir_all(&source).unwrap();
+        for name in [
+            "Rock_Base_Color.png",
+            "Rock_Normal.png",
+            "Walk_01.png",
+            "Walk_02.png",
+            "Hit.wav",
+            "Hit.mp3",
+            "Crate.obj",
+        ] {
+            fs::write(source.join(name), name.as_bytes()).unwrap();
+        }
+        let mut library = Library::create(&workspace.path("library")).unwrap();
+        library.import_folder(&source).unwrap();
+        let counts = library.kind_counts().unwrap();
+        for (kind, workflow, expected) in [
+            (Some(AssetKind::Sound), None, counts.sound),
+            (Some(AssetKind::Image), None, counts.image),
+            (Some(AssetKind::Model), None, counts.model),
+            (
+                Some(AssetKind::Image),
+                Some(ImageWorkflow::Material),
+                counts.material,
+            ),
+            (
+                Some(AssetKind::Image),
+                Some(ImageWorkflow::SpriteSequence),
+                counts.sprite_sequence,
+            ),
+        ] {
+            let total = library
+                .query(CatalogQuery {
+                    kind,
+                    workflow,
+                    ..Default::default()
+                })
+                .unwrap()
+                .total;
+            assert_eq!(total, expected, "{kind:?} {workflow:?}");
+        }
+        assert_eq!(
+            (
+                counts.sound,
+                counts.image,
+                counts.model,
+                counts.material,
+                counts.sprite_sequence
+            ),
+            (1, 4, 1, 1, 1)
+        );
     }
 
     #[test]

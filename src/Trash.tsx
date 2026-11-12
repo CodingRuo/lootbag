@@ -104,13 +104,13 @@ export function TrashDialog({ root, revision, disabled, notice, onClose, onResto
   return (
     <dialog ref={dialog} className="trash-dialog" aria-labelledby="trash-title" onCancel={onClose} onClose={onClose}>
       <div className="trash-heading">
-        <h2 id="trash-title">Interner Papierkorb</h2>
+        <h2 id="trash-title">Papierkorb</h2>
         <div className="trash-row-actions">
           <button className="button outlined" disabled={disabled || loading || !entries.length} onClick={() => onEmpty(entries)}>Papierkorb leeren</button>
           <button className="button outlined" onClick={onClose}>Schließen</button>
         </div>
       </div>
-      <p className="detail-hint">Gelöschte Katalogeinträge können wiederhergestellt werden. Importierte Dateien bleiben gespeichert und belegen weiterhin Speicherplatz. Externe Originale und Quellarchive bleiben erhalten. „Papierkorb leeren“ löscht alle Einträge endgültig: importierte Paketdaten werden von der Festplatte entfernt, externe Pakete verlieren nur ihre Katalogeinträge.</p>
+      <p className="detail-hint">Einträge lassen sich wiederherstellen; „Papierkorb leeren“ löscht endgültig.</p>
       {notice && <p role={notice.tone === "error" ? "alert" : "status"} className={notice.tone === "error" ? "inline-error" : "detail-hint"}>{notice.message}</p>}
       {error ? <p role="alert" className="inline-error">{error}</p> : loading && !entries.length
         ? <p role="status">Papierkorb wird geladen …</p> : entries.length ? <>

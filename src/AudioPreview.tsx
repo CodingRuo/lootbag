@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { repeatAudioLoop, resolveAudioLoop, seekAudio, type AudioLoop } from "./audioAudition";
 import { errorMessage } from "./errorMessage.ts";
+import { Icon } from "./ui.tsx";
 
 type AudioWaveform = {
   durationSeconds: number;
@@ -32,7 +33,9 @@ type AudioFile = {
   audio: AudioMetadata | null;
 };
 
-const number = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 3 });
+const number = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 2 });
+// Loop fields show two decimals, rounded down so the end never exceeds the real duration.
+const seconds = (value: number) => (Math.floor(value * 100) / 100).toFixed(2);
 
 function time(value: number | null) {
   if (value === null || !Number.isFinite(value)) return "—";
@@ -235,7 +238,7 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
         onLoadedMetadata={() => {
           syncTime();
           const length = player.current?.duration;
-          if (length && Number.isFinite(length)) setLoopEnd(length.toString());
+          if (length && Number.isFinite(length)) setLoopEnd(seconds(length));
           // With metadata preload, play() must be allowed to request the remaining audio data.
           setReady(true);
         }}
@@ -266,6 +269,7 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
             disabled={!ready || playbackError !== null}
             aria-label={playing ? "Sound pausieren" : "Sound abspielen"}
           >
+            <Icon name={playing ? "pause" : "play"} />
             {playing ? "Pause" : "Abspielen"}
           </button>
           <output aria-label="Wiedergabezeit">
@@ -314,6 +318,14 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
           }}>Abbrechen</button>
         </div>}
         {waveformError && <p className="inline-error" role="status">Wellenform: {waveformError}</p>}
+        <dl className="audio-facts" aria-label="Audioeigenschaften">
+          <div><dt>Dauer</dt><dd>{metadata?.durationSeconds != null ? `${number.format(metadata.durationSeconds)} s` : "—"}</dd></div>
+          <div><dt>Samplerate</dt><dd>{metadata?.sampleRate != null ? `${number.format(metadata.sampleRate)} Hz` : "—"}</dd></div>
+          <div><dt>Kanäle</dt><dd>{metadata?.channels != null ? metadata.channels === 1 ? "Mono" : metadata.channels === 2 ? "Stereo" : number.format(metadata.channels) : "—"}</dd></div>
+          <div><dt>Codec</dt><dd>{metadata?.codec ?? "—"}</dd></div>
+        </dl>
+        {analysisLoading && <p className="detail-hint" role="status">Eigenschaften werden gelesen …</p>}
+        {metadataError && <p className="inline-error" role="alert">Analysefehler: {metadataError}</p>}
         <label>
           <span>Abspielposition</span>
           <input
@@ -343,8 +355,9 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
             }}
           />
         </label>
-        <fieldset className="audio-loop" disabled={!auditionReady}>
-          <legend>Loop-Vorschau</legend>
+        <details className="audio-loop">
+          <summary>Loop-Vorschau</summary>
+          <fieldset disabled={!auditionReady}>
           <div className="audio-loop-times">
             <label><span>Anfang (Sekunden)</span><input type="number" min="0" max={duration ?? 0} step="0.01" value={loopStart} onChange={(event) => setLoopStart(event.target.value)} /></label>
             <label><span>Ende (Sekunden)</span><input type="number" min="0" max={duration ?? 0} step="0.01" value={loopEnd} onChange={(event) => setLoopEnd(event.target.value)} /></label>
@@ -353,30 +366,18 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
             <button className="button outlined compact" onClick={() => applyLoop(true)}>Bereich wiederholen</button>
             <button className="button subtle compact" onClick={() => {
               if (duration === null) return;
-              setLoopStart("0"); setLoopEnd(duration.toString());
+              setLoopStart("0"); setLoopEnd(seconds(duration));
               applyLoop(true, { start: 0, end: duration });
             }}>Ganzer Sound</button>
             {loop && <button className="button subtle compact" onClick={() => applyLoop(false)}>Loop aus</button>}
           </div>
-          <p className="detail-hint" role="status">{loop ? `Loop aktiv: ${number.format(loop.start)}–${number.format(loop.end)} s` : "Loop aus. Anfang und Ende festlegen oder den ganzen Sound wiederholen."}</p>
+          {loop && <p className="detail-hint" role="status">Loop aktiv: {number.format(loop.start)}–{number.format(loop.end)} s</p>}
           {loopError && <p className="inline-error" role="alert">{loopError}</p>}
-        </fieldset>
+          </fieldset>
+        </details>
       </div>
-      <p className="detail-hint" role="status">
-        {loading ? "Vorschau wird geladen …" : playing ? "Sound wird abgespielt." : ready ? "Vorschau bereit." : playbackError ? "Vorschau nicht verfügbar." : "Audiodaten werden geladen …"}
-      </p>
+      {(loading || (!ready && !playbackError)) && <p className="detail-hint" role="status">{loading ? "Vorschau wird geladen …" : "Audiodaten werden geladen …"}</p>}
       {playbackError && <p className="inline-error" role="alert">{playbackError}</p>}
-      <div className="audio-properties">
-        <h3>Audioeigenschaften</h3>
-        <dl>
-          <div><dt>Dauer</dt><dd>{metadata?.durationSeconds != null ? `${number.format(metadata.durationSeconds)} s` : "Nicht verfügbar"}</dd></div>
-          <div><dt>Original-Samplerate</dt><dd>{metadata?.sampleRate != null ? `${number.format(metadata.sampleRate)} Hz` : "Nicht verfügbar"}</dd></div>
-          <div><dt>Kanäle</dt><dd>{metadata?.channels != null ? metadata.channels === 1 ? "Mono (1)" : metadata.channels === 2 ? "Stereo (2)" : number.format(metadata.channels) : "Nicht verfügbar"}</dd></div>
-          <div><dt>Audiocodec</dt><dd>{metadata?.codec ?? "Nicht verfügbar"}</dd></div>
-        </dl>
-        {analysisLoading && <p className="detail-hint" role="status">Eigenschaften werden gelesen …</p>}
-        {metadataError && <p className="inline-error" role="alert">Analysefehler: {metadataError}</p>}
-      </div>
       <div className="audio-properties">
         <h3>Eingebettete Audio-Tags</h3>
         {embeddedTags && <dl>

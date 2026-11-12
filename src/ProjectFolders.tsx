@@ -92,7 +92,7 @@ export function FolderMembershipEditor({ folders, folderIds, disabled, onAdd, on
         </label>
         <button className="button outlined" type="submit" disabled={disabled || folderId === null}>Hinzufügen</button>
       </form> : !folders.length && <p className="detail-hint">Lege zuerst einen Projektordner in der Seitenleiste an.</p>}
-      <p className="detail-hint">Ein Asset kann in mehreren Ordnern liegen. Entfernen löst nur die Verknüpfung.</p>
+      <p className="detail-hint">Entfernen löst nur die Verknüpfung.</p>
     </section>
   );
 }

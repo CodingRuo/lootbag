@@ -169,8 +169,6 @@ export default function MaterialPreview({ group, onReady, visible }: {
     <div ref={viewport} className="model-viewport material-viewport" />
     {loading && <p className="detail-hint" role="status">Material-Maps werden geladen …</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
-    {group.members.some((member) => /\.gif$/i.test(member.file.originalFilename)) && <p className="detail-hint">GIF-Material-Maps zeigen das erste Bild der Animation.</p>}
-    {group.members.some((member) => /\.(ase|aseprite)$/i.test(member.file.originalFilename)) && <p className="detail-hint">Aseprite-Material-Maps zeigen das erste vollständige Bild der Timeline.</p>}
     {group.resources.errors.length > 0 && <p className="detail-hint" role="status">Nicht verfügbare Material-Maps: {group.resources.errors.join(" · ")}</p>}
     {!loading && !error && <div className="visual-buttons camera-controls">
       <button className="button outlined" aria-label="Material nach links drehen" onClick={() => runtime.current?.orbit.rotateLeft(Math.PI / 8)}>←</button>
@@ -205,8 +203,8 @@ export default function MaterialPreview({ group, onReady, visible }: {
           </label>;
         })}
       </div>
-      <p className="detail-hint">Fehlende Maps verwenden neutrale Werte. Nur ausgewählte Originaldateien werden exportiert.</p>
+      <p className="detail-hint">Fehlende Maps verwenden neutrale Werte.</p>
     </details>
-    <p className="detail-hint">Ziehen oder Shift + Pfeiltasten drehen · Mausrad oder Kameratasten zoomen. Normal-Konvention und Kachelung gelten nur für die Vorschau.</p>
+    <p className="detail-hint">Ziehen oder Shift + Pfeiltasten drehen · Mausrad zoomt.</p>
   </>;
 }

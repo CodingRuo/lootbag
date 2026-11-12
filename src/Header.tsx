@@ -1,8 +1,8 @@
 import type { ImportProgress } from "./useImportQueue.ts";
 import { Icon, bytes, number, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
-// Drop hint, top bar with library actions, and the notice/import progress banners.
-export default function Header({ library, actionsDisabled, busy, notice, setNotice, dropHover, importActive, importProgress, cancelling, cancelImport, referenceFolder, openLibrary, importPackage }: {
+// Drop hint, top bar with the import action, and the notice/import progress banners.
+export default function Header({ library, actionsDisabled, busy, notice, setNotice, dropHover, importActive, importProgress, cancelling, cancelImport, importPackage }: {
   library: LibraryInfo | null;
   actionsDisabled: boolean;
   busy: string | null;
@@ -13,8 +13,6 @@ export default function Header({ library, actionsDisabled, busy, notice, setNoti
   importProgress: ImportProgress | null;
   cancelling: boolean;
   cancelImport: () => Promise<void>;
-  referenceFolder: () => void;
-  openLibrary: () => void;
   importPackage: () => void;
 }) {
   return (
@@ -36,18 +34,6 @@ export default function Header({ library, actionsDisabled, busy, notice, setNoti
         </div>
         {library ? (
           <div className="topbar-actions">
-            <button className="button subtle" onClick={referenceFolder} disabled={actionsDisabled}>
-              <Icon name="folder" />
-              Externen Ordner einbinden
-            </button>
-            <button
-              className="button subtle"
-              onClick={openLibrary}
-              disabled={actionsDisabled}
-            >
-              <Icon name="folder" />
-              Bibliothek öffnen
-            </button>
             <button
               className="button primary"
               onClick={importPackage}

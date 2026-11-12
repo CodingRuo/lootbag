@@ -11,15 +11,17 @@ import { folderPath, type ProjectFolder } from "./ProjectFolders";
 import { catalogSelection, nextCatalogIndex, type CatalogSelection, type SelectionMode } from "./catalogSelection";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import type { useAudioAnalysis } from "./useAudioAnalysis.ts";
-import { EMPTY_AUDIO_FILTERS, Icon, PAGE_SIZE, bytes, number, type Act, type Asset, type AssetKind, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, number, type Act, type Asset, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type BulkAction = { kind: "addTags"; tags: string[] } | { kind: "addToFolder"; folderId: number } | { kind: "trash" };
 type BulkResult = { assetCount: number; fileCount: number };
 
 // Larger models are only parsed on demand in the inspector; BLEND thumbnails have their own 64 MiB cap.
 const MAX_MODEL_THUMBNAIL_BYTES = 32 * 1024 * 1024;
+// Zero-width spaces after _ and - let long asset names wrap at word joints instead of mid-word.
+const wrapName = (name: string) => name.replace(/[_-]/g, "$&\u200b");
 
-// Catalog column: search, category/filter/view tools, audio analysis, bulk actions, results and paging.
+// Catalog column: search, filter/view tools, audio analysis, bulk actions, results and paging.
 export default function Catalog({ library, query, audio, selected, setSelected, selection, setSelection, setSelectedFileId, setModelSelection, filteredPackage, filteredFolderPath, projectFolders, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, relinkSource, importPackage }: {
   library: LibraryInfo;
   query: CatalogQuery;
@@ -42,8 +44,8 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   relinkSource: (sourcePackage: AssetPackage) => void;
   importPackage: () => void;
 }) {
-  const { text, setText, packageId, folderId, originalFolder, setOriginalFolder, format, setFormat, kind, setKind, workflow, setWorkflow, tag, setTag,
-    audioFilters, setAudioFilters, offset, setOffset, filters, page, queryLoading, queryError, audioFilterCount, audioFilterError,
+  const { text, setText, packageId, folderId, originalFolder, setOriginalFolder, format, setFormat, kind, workflow, tag, setTag,
+    audioFilters, offset, setOffset, filters, page, queryLoading, queryError, audioFilterCount, audioFilterError,
     audioResultsStale, setAudioResultsStale, changeAudioFilters, clearFilters, filterPackage } = query;
   const { audioAnalysis, prepareAudioAnalysis, startAudioAnalysis, stopAudioAnalysis, discardAudioAnalysis } = audio;
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -105,7 +107,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
     void act("Sammelaktion wird gespeichert …", async () => {
       if (action.kind === "trash") {
         const names = chosen.slice(0, 6).map((asset) => `• ${asset.imageGroup?.name ?? asset.name}`).join("\n");
-        const proceed = await confirm(`${chosen.length} ausgewählte Katalogeinträge mit allen Formatvarianten in den internen Papierkorb verschieben?\n\n${names}${chosen.length > 6 ? `\n… und ${chosen.length - 6} weitere` : ""}\n\nMaterialien und Sprite-Sequenzen umfassen alle zugehörigen Maps bzw. Frames. Dateien und Projektzuordnungen bleiben für die Wiederherstellung erhalten.`,
+        const proceed = await confirm(`${chosen.length} ausgewählte Katalogeinträge mit allen Formatvarianten in den Papierkorb verschieben?\n\n${names}${chosen.length > 6 ? `\n… und ${chosen.length - 6} weitere` : ""}\n\nMaterialien und Sprite-Sequenzen umfassen alle Maps bzw. Frames.`,
           { title: "Auswahl in Papierkorb verschieben?", kind: "warning", okLabel: "Verschieben", cancelLabel: "Abbrechen" });
         if (!proceed) return;
       }
@@ -119,7 +121,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
       setRevision((value) => value + 1);
       if (action.kind === "trash") setSelection({ keys: [], anchor: null });
       if (action.kind === "addTags") setBulkTags("");
-      setNotice({ tone: "success", message: `${number.format(result.assetCount)} Assets${action.kind === "trash" ? ` mit ${number.format(result.fileCount)} Dateien im internen Papierkorb. Wiederherstellung über die Seitenleiste möglich; Speicher bleibt belegt.` : action.kind === "addTags" ? ": Tags ergänzt. Vorhandene Namen und Tags bleiben erhalten." : " dem Projektordner hinzugefügt. Vorhandene Zuordnungen bleiben erhalten."}` });
+      setNotice({ tone: "success", message: `${number.format(result.assetCount)} Assets${action.kind === "trash" ? ` mit ${number.format(result.fileCount)} Dateien in den Papierkorb verschoben.` : action.kind === "addTags" ? ": Tags ergänzt." : " dem Projektordner hinzugefügt."}` });
     });
   }
 
@@ -127,12 +129,9 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
     <main className="catalog" aria-label="Asset-Katalog">
       <div className="catalog-heading">
         <div>
-          <p className="eyebrow">ASSET-KATALOG</p>
-          <h1 title={filteredFolderPath ?? filteredPackage?.name}>
-            {filteredFolderPath ?? filteredPackage?.name ?? "Alle Assets"}
-          </h1>
+          <p className="eyebrow" title={filteredFolderPath ?? filteredPackage?.name}>{filteredFolderPath ?? filteredPackage?.name ?? "ASSET-KATALOG"}</p>
+          <h1>{CATALOG_TYPES.find((item) => item.value === (workflow ?? kind ?? ""))?.label}</h1>
         </div>
-        <span className="format-badge">{kind === "sound" ? "SOUNDS" : kind === "image" ? "BILDER" : kind === "model" ? "3D" : "ASSETS"}</span>
       </div>
       <div className="search-box">
         <Icon name="search" />
@@ -148,23 +147,6 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
         />
       </div>
       <div className="catalog-tools">
-        <label className="category-control">
-          <span className="visually-hidden">Kategorie</span>
-          <select aria-label="Nach Asset-Kategorie filtern" value={workflow ?? kind ?? ""} onChange={(event) => {
-            const value = event.target.value;
-            const grouped = value === "material" || value === "spriteSequence";
-            setWorkflow(grouped ? value : null); setKind(grouped ? "image" : value as AssetKind || null);
-            if (value !== "sound") setAudioFilters(EMPTY_AUDIO_FILTERS);
-            setFormat(null); setOffset(0); setSelected(null); setSelectedFileId(null); setModelSelection(null);
-          }}>
-            <option value="">Alle Assets</option>
-            <option value="sound">Sounds</option>
-            <option value="image">Bilder</option>
-            <option value="material">Materialien</option>
-            <option value="spriteSequence">Sprite-Sequenzen</option>
-            <option value="model">3D-Modelle</option>
-          </select>
-        </label>
         <button className={`button outlined filter-toggle ${activeFilterCount ? "active" : ""}`} aria-expanded={filtersOpen}
           aria-controls="catalog-filter-panel" onClick={() => setFiltersOpen((current) => !current)}>
           <Icon name="filter" />Filter{activeFilterCount > 0 && <span className="filter-count">{activeFilterCount}</span>}
@@ -237,7 +219,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
         </div>
         <section className="audio-filter-section" aria-label="Gespeicherte Audioanalyse">
           <h3>Gespeicherte Audioanalyse</h3>
-          <p className="detail-hint">Neue Importe sind zunächst nicht analysiert. Die Vorschau liest Eigenschaften. Unbekannte Werte sind keine Nullwerte und passen nicht auf Dauer- oder Kanalgrenzen. Gespeicherte Werte können bei geänderten Quelldateien veraltet sein.</p>
+          <p className="detail-hint">Unbekannte Werte passen auf keine Dauer- oder Kanalgrenze.</p>
           <div className="catalog-filters">
             <label>Dauer ab (Sekunden)
               <input type="number" min="0" step="any" aria-label="Minimale Audiodauer in Sekunden" value={audioFilters.minDurationSeconds} onChange={(event) => changeAudioFilters({ ...audioFilters, minDurationSeconds: event.target.value })} />
@@ -288,14 +270,14 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
       {kind === "sound" && <details className="audio-analysis" aria-label="Sounds im Suchbereich analysieren" open={audioAnalysis !== null}>
         <summary>Sounds im Suchbereich analysieren</summary>
         <p className="detail-hint">{audioAnalysisScopeLabel}</p>
-        <p className="detail-hint">Alle passenden Sound-Dateivarianten, über alle Katalogseiten. Gespeicherte Dauer-, Kanal- und Statusfilter gelten für die Startliste. Entferne Dauer- und Kanalgrenzen und wähle „Jeder Status“ oder „Nicht analysiert“, um unanalysierte Sounds einzubeziehen.</p>
+        <p className="detail-hint">Umfasst alle passenden Sounds über alle Katalogseiten.</p>
         {audioAnalysis?.phase === "preparing" && <p role="status">Suchbereich wird geprüft …</p>}
         {audioAnalysis?.phase === "prepared" && <p role="status"><strong>{number.format(audioAnalysis.total)} passende Dateivarianten</strong> · Startliste festgehalten.{audioAnalysis.total === 0 && " Keine passenden Sounds. Ändere den Suchbereich oder die gespeicherten Audiofilter."}</p>}
         {audioAnalysis?.progress && <>
           <p role="status">{`${audioAnalysis.phase === "completed" ? audioAnalysis.progress.cancelled ? "Abgebrochen" : "Analyse abgeschlossen" : "Sound-Analyse"} · ${number.format(audioAnalysis.progress.processed)} von ${number.format(audioAnalysis.progress.total)} Dateivarianten`}</p>
           <progress max={audioAnalysis.progress.total || 1} value={audioAnalysis.progress.processed} aria-label="Fortschritt der Sound-Analyse" />
           <p className="detail-hint">{`${number.format(audioAnalysis.progress.ready)} analysiert · ${number.format(audioAnalysis.progress.errors)} Analysefehler · ${number.format(audioAnalysis.progress.skipped)} übersprungen`}</p>
-          <p className="detail-hint">Bereits gespeicherte Analysen bleiben erhalten. Unverfügbare oder geänderte Quelldateien werden übersprungen. Aktualisiere die Liste ausdrücklich, um gespeicherte Werte in den Treffern zu sehen.</p>
+          <p className="detail-hint">Bereits gespeicherte Analysen bleiben erhalten.</p>
         </>}
         {audioAnalysis?.message && <p className="inline-error" role="alert">{audioAnalysis.message}</p>}
         <div className="audio-analysis-actions">
@@ -312,19 +294,18 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
             ? "Katalog wird durchsucht …"
             : `${number.format(page?.total ?? 0)} ${(page?.total ?? 0) === 1 ? "Asset" : "Assets"}${text ? " gefunden" : " im Katalog"}`}
         </span>
-        {(activeFilterCount > 0 || kind !== null) ? <button className="text-button" onClick={() => {
-          clearFilters(); setOffset(0);
+        {activeFilterCount > 0 ? <button className="text-button" onClick={() => {
+          clearFilters(true); setOffset(0);
         }}>Filter zurücksetzen</button> : <span>Nach Name</span>}
       </div>
-      {page?.items.length ? <section className="bulk-toolbar" aria-label="Katalogauswahl">
+      {selectedAssets.length ? <section className="bulk-toolbar" aria-label="Katalogauswahl">
         <div className="selection-summary">
           <strong role="status">{selectedAssets.length} ausgewählt</strong>
           <button className="text-button" disabled={actionsDisabled || queryLoading} onClick={() => setSelection({ keys: visibleKeys, anchor: visibleKeys[0] ?? null })}>Diese Seite auswählen</button>
-          <button className="text-button" disabled={!selectedAssets.length || actionsDisabled} onClick={() => setSelection({ keys: [], anchor: null })}>Auswahl aufheben</button>
+          <button className="text-button" disabled={actionsDisabled} onClick={() => setSelection({ keys: [], anchor: null })}>Auswahl aufheben</button>
         </div>
         <details className="bulk-controls">
           <summary>Sammelaktionen</summary>
-          <p id="selection-help" className="detail-hint">Auswahl nur auf dieser Seite. ⌘/Strg-Klick ergänzt, Umschalt wählt einen Bereich. Tags und Ordner betreffen alle ausgewählten Assets; Materialien und Sprite-Sequenzen umfassen alle Maps bzw. Frames. Papierkorb umfasst alle Formatvarianten.</p>
           <form onSubmit={(event) => { event.preventDefault(); bulkChange({ kind: "addTags", tags: bulkTags.split(",").map((value) => value.trim()).filter(Boolean) }); }}>
             <label>Tags ergänzen<input value={bulkTags} onChange={(event) => setBulkTags(event.target.value)} disabled={bulkDisabled} placeholder="z. B. salzburg, ambience" /></label>
             <button className="button outlined" disabled={bulkDisabled || !bulkTags.trim()}>Tags ergänzen</button>
@@ -358,10 +339,12 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
         </div>
       ) : page?.items.length ? (
         <div className="catalog-scroll" aria-busy={queryLoading}>
-          <div className={`asset-grid ${catalogView}`} role="list" aria-label={catalogView === "cards" ? "Asset-Karten" : "Asset-Liste"}>
+          <div className={`asset-grid ${catalogView} ${selectedAssets.length ? "has-selection" : ""}`} role="list" aria-label={catalogView === "cards" ? "Asset-Karten" : "Asset-Liste"}>
             {page.items.map((asset, index) => {
               const firstFile = asset.files.find((item) => item.id === asset.imageGroup?.fileId) ?? asset.files[0];
               const folders = Array.from(new Set(asset.files.map((item) => item.originalFolder || "Paketwurzel"))).join(", ");
+              const name = asset.imageGroup?.name ?? asset.name;
+              const showFilename = !asset.imageGroup && firstFile.originalFilename.replace(/\.[^.]+$/, "") !== name;
               const checked = selection.keys.includes(assetKey(asset));
               return <div role="listitem" key={assetKey(asset)} className={`asset-item ${assetKey(selected) === assetKey(asset) ? "selected" : ""} ${checked ? "bulk-selected" : ""}`}>
                 <input type="checkbox" className="asset-checkbox" checked={checked} onChange={() => {}} disabled={actionsDisabled || queryLoading}
@@ -369,7 +352,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                   onClick={(event) => chooseAsset(asset, event.shiftKey ? (event.metaKey || event.ctrlKey ? "addRange" : "range") : "toggle")} />
                 <TrashActions label={`Datei ${firstFile.originalFilename}`} disabled={actionsDisabled}
                   onTrash={() => trashItem("file", firstFile.id, firstFile.originalFilename)}>
-                  <button className="asset-select" disabled={queryLoading}
+                  <button className="asset-select" disabled={queryLoading} title={`${name}\n${firstFile.originalFilename}\n${asset.packageName} · ${folders}`}
                     onClick={(event) => chooseAsset(asset, event.shiftKey ? (event.metaKey || event.ctrlKey ? "addRange" : "range") : event.metaKey || event.ctrlKey ? "toggle" : "single")}
                     onKeyDown={(event) => {
                       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
@@ -388,13 +371,11 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                     aria-pressed={assetKey(selected) === assetKey(asset)}>
                     <span className={`asset-poster ${asset.kind === "image" ? "transparency-background" : ""}`}>
                       {asset.kind === "image" ? <ImageThumbnail key={`${library.root}:${firstFile.id}:${firstFile.available}`} fileId={firstFile.id} available={firstFile.available} filename={firstFile.originalFilename} /> : asset.kind === "model" && (firstFile.format === "BLEND" || firstFile.sizeBytes <= MAX_MODEL_THUMBNAIL_BYTES) ? <ModelThumbnail queue={modelThumbnails} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available={firstFile.available} fallback={<Icon name="model" />} /> : <Icon name={asset.kind} />}
-                      <span className="asset-format">{asset.imageGroup ? asset.imageGroup.workflow === "material" ? "MATERIAL" : "SPRITES" : firstFile.format}</span>
                     </span>
                     <span className="asset-card-copy">
-                      <strong>{asset.imageGroup?.name ?? asset.name}</strong>
-                      <span className="asset-filename">{firstFile.originalFilename}</span>
-                      <span className="asset-context" title={`${asset.packageName} · ${folders}`}>{asset.packageName} · {folders}</span>
-                      <span className="asset-facts">{asset.imageGroup ? `${asset.imageGroup.fileCount} ${asset.imageGroup.workflow === "material" ? "Maps" : "Frames"}` : <>{bytes(firstFile.sizeBytes)}{asset.files.length > 1 && ` · ${asset.files.length} Varianten`}</>}</span>
+                      <strong>{wrapName(name)}</strong>
+                      {showFilename && <span className="asset-filename">{firstFile.originalFilename}</span>}
+                      <span className="asset-facts">{asset.imageGroup ? `${asset.imageGroup.fileCount} ${asset.imageGroup.workflow === "material" ? "Maps" : "Frames"}` : `${firstFile.format}${asset.files.length > 1 ? ` +${asset.files.length - 1}` : ""} · ${bytes(firstFile.sizeBytes)}`}</span>
                       {asset.imageGroup?.errors.length ? <span className="unavailable">Zuordnung prüfen</span> : null}
                       {!firstFile.available && <span className="unavailable">Nicht verfügbar</span>}
                     </span>
@@ -416,7 +397,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
           </h2>
           <p>
             {library.assetCount === 0
-              ? "Importiere einen Ordner oder ein ZIP-Paket mit Sounds, Bildern oder 3D-Modellen. Die ursprüngliche Struktur und Begleitdateien bleiben erhalten."
+              ? "Importiere einen Ordner oder ein ZIP-Paket."
               : "Versuche einen anderen Suchbegriff oder passe die Filter an."}
           </p>
           {library.assetCount === 0 ? (

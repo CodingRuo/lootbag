@@ -4,7 +4,7 @@ import { assetKey, type ImageWorkflow } from "./imageWorkflows";
 import type { CatalogSelection } from "./catalogSelection";
 import type { ModelExportSelection } from "./ModelPreview";
 import { errorMessage } from "./errorMessage.ts";
-import { EMPTY_AUDIO_FILTERS, PAGE_SIZE, type Asset, type AssetKind, type AudioFilters, type CatalogPage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { EMPTY_AUDIO_FILTERS, PAGE_SIZE, type Asset, type AssetKind, type AudioFilters, type CatalogPage, type CatalogType, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type CatalogFilters = {
   folders: string[];
@@ -148,10 +148,13 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
     }
   }
 
-  function clearFilters() {
+  // The asset type is navigation, so package, folder and "Filter zurücksetzen" keep it (keepType).
+  function clearFilters(keepType = false) {
     setAudioFilters(EMPTY_AUDIO_FILTERS);
-    setKind(null);
-    setWorkflow(null);
+    if (!keepType) {
+      setKind(null);
+      setWorkflow(null);
+    }
     setOriginalFolder(null);
     setFormat(null);
     setTag(null);
@@ -160,21 +163,29 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
   function filterFolder(id: number) {
     setPackageId(null);
     setFolderId(id);
-    clearFilters();
+    clearFilters(true);
     setOffset(0);
   }
 
   function filterPackage(id: number | null) {
     setFolderId(null);
     setPackageId(id);
-    clearFilters();
+    clearFilters(true);
     setOffset(0);
+  }
+
+  function chooseType(value: CatalogType) {
+    const grouped = value === "material" || value === "spriteSequence";
+    setWorkflow(grouped ? value : null);
+    setKind(grouped ? "image" : value as AssetKind || null);
+    if (value !== "sound") setAudioFilters(EMPTY_AUDIO_FILTERS);
+    setFormat(null); setOffset(0); setSelected(null); setSelectedFileId(null); setModelSelection(null);
   }
 
   return {
     text, setText, packageId, setPackageId, folderId, setFolderId, originalFolder, setOriginalFolder, format, setFormat,
     kind, setKind, workflow, setWorkflow, tag, setTag, audioFilters, setAudioFilters, offset, setOffset, filters,
     page, setPage, queryLoading, queryError, focusAssetId, focusFileId, audioFilterCount, audioCriteria, audioFilterError,
-    audioResultsStale, setAudioResultsStale, changeAudioFilters, clearFilters, filterFolder, filterPackage,
+    audioResultsStale, setAudioResultsStale, changeAudioFilters, clearFilters, filterFolder, filterPackage, chooseType,
   };
 }

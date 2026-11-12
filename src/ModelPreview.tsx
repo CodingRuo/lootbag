@@ -24,8 +24,6 @@ export default function ModelPreview({ file, onReady, visible = true }: {
   const [loading, setLoading] = useState(true);
   const [errors, setErrors] = useState<string[]>([]);
   const [textureReplacements, setTextureReplacements] = useState<string[]>([]);
-  const [gifTextures, setGifTextures] = useState(false);
-  const [asepriteTextures, setAsepriteTextures] = useState(false);
   const [stats, setStats] = useState<{ meshes: number; vertices: number; triangles: number; bones: number } | null>(null);
   const [clips, setClips] = useState<{ name: string; duration: number }[]>([]);
   const [animationState, setAnimationState] = useState<ModelAnimation["state"] | null>(null);
@@ -59,8 +57,6 @@ export default function ModelPreview({ file, onReady, visible = true }: {
     setLoading(true);
     setErrors([]);
     setTextureReplacements([]);
-    setGifTextures(false);
-    setAsepriteTextures(false);
     setStats(null);
     setClips([]);
     setAnimationState(null);
@@ -75,8 +71,6 @@ export default function ModelPreview({ file, onReady, visible = true }: {
         const { model, clips: modelClips, stats: totals, warnings, replacements, resourcePaths } = loadedModel;
         setErrors(warnings);
         setTextureReplacements(replacements);
-        setGifTextures(loadedModel.staticGifTextures);
-        setAsepriteTextures(loadedModel.staticAsepriteTextures);
         const host = viewport.current;
         if (!host) return;
         renderer = new WebGLRenderer({ antialias: true });
@@ -180,14 +174,12 @@ export default function ModelPreview({ file, onReady, visible = true }: {
   return <>
     <div ref={viewport} className="model-viewport" />
     {loading && <p className="detail-hint" role="status">Modell und Ressourcen werden geladen …</p>}
-    {gifTextures && <p className="detail-hint">GIF-Modelltexturen zeigen das erste Bild der Animation.</p>}
-    {asepriteTextures && <p className="detail-hint">Aseprite-Modelltexturen zeigen das erste vollständige Bild der Timeline.</p>}
     {errors.length > 0 && <div className="inline-error" role="alert"><p>{stats ? "Modellvorschau mit fehlenden Ressourcen. Vollständiger Export nicht verfügbar." : "Die Modellvorschau ist unvollständig oder nicht verfügbar."}</p>
       <ul>{errors.slice(0, 8).map((error) => <li key={error}>{error}</li>)}</ul>{errors.length > 8 && <p>Weitere {errors.length - 8} Ressourcenfehler.</p>}</div>}
     {textureReplacements.length > 0 && <div className="inline-error" role="status"><p>Texturersatz nur für die Vorschau:</p>
       <ul>{textureReplacements.slice(0, 8).map((replacement) => <li key={replacement}>{replacement}</li>)}</ul>
       {textureReplacements.length > 8 && <p>Weitere {textureReplacements.length - 8} Ersatztexturen.</p>}
-      <p>Der vollständige Export ist gesperrt, weil die Originaldatei weiterhin PSD referenziert. Die Quelldateien bleiben unverändert.</p>
+      <p>Vollständiger Export gesperrt: das Modell referenziert PSD-Dateien.</p>
     </div>}
     {stats && <>
       <p className="detail-hint">{stats.meshes} Meshes · {stats.vertices.toLocaleString("de-DE")} Vertices · {stats.triangles.toLocaleString("de-DE")} Dreiecke{stats.bones > 0 && ` · ${stats.bones} Bones`}</p>
@@ -203,7 +195,7 @@ export default function ModelPreview({ file, onReady, visible = true }: {
       </div>
       <p className="detail-hint">Ziehen dreht · Mausrad zoomt · Pfeiltasten verschieben, mit Shift drehen sie.</p>
       {animationError && <p className="inline-error" role="alert">Animationsvorschau nicht verfügbar: {animationError}</p>}
-      {!animationState && !animationError && <p className="detail-hint">Keine eingebetteten Animations-Clips. Dieses Modell ist statisch.</p>}
+      {!animationState && !animationError && <p className="detail-hint">Keine Animations-Clips.</p>}
       {animationState && <section className="model-animation" aria-label="3D-Animation">
         <div className="model-animation-fields">
           <label>Animations-Clip
@@ -228,7 +220,6 @@ export default function ModelPreview({ file, onReady, visible = true }: {
           <input type="range" min="0" max={animationState.duration} step="0.01" value={animationState.time}
             onChange={(event) => changeAnimation((animation) => animation.seek(Number(event.target.value)))} />
         </label>
-        <p className="detail-hint">Clips laufen auf dem mitgelieferten Modell oder Skelett. Retargeting auf andere Modelle wird nicht geprüft.</p>
       </section>}
     </>}
   </>;

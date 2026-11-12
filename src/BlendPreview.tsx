@@ -53,8 +53,7 @@ export default function BlendPreview({ file }: { file: { id: number; originalFil
     <div ref={viewport} className="image-viewport transparency-background" />
     {!image && !error && <p className="detail-hint" role="status">Gespeichertes Blender-Bild wird geprüft …</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
-    <p className="detail-hint">Gespeichertes Vorschaubild der Blender-Datei. Es kann älter als die Szene sein; keine interaktive 3D-Vorschau. Externe Texturen und verknüpfte Bibliotheken sind nicht aufgelöst.</p>
-    <p className="detail-hint">Unterstützt: unkomprimierte Blender-5.2-Dateien mit Little-Endian/64-Bit, bis 64 MiB; gespeicherte Bilder bis 2048 × 2048 Pixel.</p>
+    <p className="detail-hint">Gespeichertes Vorschaubild, keine 3D-Vorschau.</p>
     {image && <>
       <p className="detail-hint">{image.naturalWidth} × {image.naturalHeight} Pixel · Transparenz auf Schachbrett</p>
       <div className="visual-controls">

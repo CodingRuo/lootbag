@@ -55,8 +55,6 @@ export default function AsepritePreview({ file }: { file: { id: number; original
     </div>
     {!animation && !error && <p className="detail-hint" role="status">Aseprite-Layer und Frames werden geprüft …</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
-    <p className="detail-hint">Vollständige Bildkomposition aus flachen normalen RGBA-Layern. Die ganze Timeline läuft vorwärts mit den Originalzeiten; Tags werden hier nicht als einzelne Clips ausgewertet.</p>
-    <p className="detail-hint">Katalog, Material-Maps und Modelltexturen zeigen das erste vollständige Bild. Originaldateien bleiben unverändert.</p>
     {animation && current && <>
       <div className="visual-buttons">
         <button className="button outlined" disabled={count < 2 || Boolean(error)} onClick={() => setPlaying((value) => !value)}>{playing ? "Pausieren" : "Animation abspielen"}</button>

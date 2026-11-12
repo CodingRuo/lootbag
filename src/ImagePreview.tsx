@@ -181,10 +181,8 @@ function StaticImagePreview({ file }: { file: { id: number; originalFilename: st
         <div className="visual-buttons"><button className="button outlined" disabled={!validGrid || !validFps || count < 2} onClick={() => setPlaying((current) => !current)}>{playing ? "Pause" : "Animation abspielen"}</button>
           <button className="button outlined" disabled={!validGrid || count < 2} onClick={() => { setPlaying(false); setFrame((current) => (current + 1) % count); }}>Nächstes Bild</button></div>
         <p className="detail-hint" role="status">{crop ? `Bild ${frame % count + 1} / ${count} · ${crop.width} × ${crop.height} Pixel pro Bild · Ursprung (${crop.x}, ${crop.y})` : "Kein gültiger Bildausschnitt · vollständiges Bild als Vorschau"}</p>
-        <p className="detail-hint">Die Vorschau verändert die Originaldatei nicht.</p>
         <div className="visual-buttons"><button className="button outlined" disabled={!snapshot || !validGrid || !validFps} onClick={() => void exportSheet("frames")}>PNG-Bilder exportieren</button><button className="button outlined" disabled={!snapshot || !validGrid || !validFps} onClick={() => void exportSheet("atlas")}>Atlas exportieren</button><button className="button outlined" disabled={!snapshot || !validGrid || !validFps} onClick={() => void exportSheet("packed")}>Gepackten Atlas exportieren</button></div>
-        <p className="detail-hint">Der gepackte Atlas entfernt transparente Ränder und behält Frame-Größe, Versatz und Bildrate. Ein Pixel Außenrand wiederholt die Randpixel.</p>
-        <p className="detail-hint">PNG-Ausgabe mit Koordinaten, Bildrate und Herkunft in einem neuen Ordner. Maximal 256 Bilder und 8 MiPixel.</p></fieldset>
+        <p className="detail-hint">Export in einen neuen Ordner, maximal 256 Bilder und 8 MiPixel.</p></fieldset>
         {exporting && <><p className="detail-hint" role="status">Sprite-Export wird vorbereitet …</p><button className="button outlined" onClick={() => {
           if (exportJob.current) cancelExport(exportJob.current, "Abbruch angefordert. Ein bereits gespeicherter Export bleibt erhalten.");
         }}>Export abbrechen</button></>}

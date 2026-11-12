@@ -53,7 +53,7 @@ export default function VariantEditor({
   return (
     <details className="variant-editor" onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary>Variantenzuordnung korrigieren</summary>
-      <p className="detail-hint">Die ausgewählte Datei bleibt an ihrem Originalort. Beim Abspalten werden Name, Tags und Ordnerverknüpfungen übernommen.</p>
+      <p className="detail-hint">Name, Tags und Ordner werden übernommen.</p>
       <button className="button outlined" disabled={disabled || fileCount < 2} onClick={onSplit}>
         Als eigenes Asset abspalten
       </button>
@@ -80,7 +80,7 @@ export default function VariantEditor({
       <button className="button outlined" disabled={disabled || loading || error !== null || targetId === null} onClick={() => { if (targetId !== null) onAssign(targetId); }}>
         Ausgewählte Datei zuordnen
       </button>
-      <p className="detail-hint">Tags und Ordnerverknüpfungen werden vereinigt. Ein gespeicherter Name der letzten Datei wird auf ein automatisch benanntes Ziel übernommen; zwei verschiedene gespeicherte Namen müssen zuerst angeglichen werden.</p>
+      <p className="detail-hint">Tags und Ordner werden zusammengeführt.</p>
     </details>
   );
 }

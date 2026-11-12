@@ -171,7 +171,7 @@ export default function App() {
       setText("");
       setOffset(0);
       setRevision((value) => value + 1);
-      setNotice({ tone: "success", message: `${referenced.name} extern eingebunden · ${number.format(referenced.assetCount)} Assets. Die Dateien bleiben im Quellordner.` });
+      setNotice({ tone: "success", message: `${referenced.name} extern eingebunden · ${number.format(referenced.assetCount)} Assets.` });
     });
   }
 
@@ -189,7 +189,7 @@ export default function App() {
       await invoke<AssetPackage>("relink_source", { packageId: sourcePackage.id, source });
       setLibrary(await invoke<LibraryInfo>("get_library"));
       setRevision((value) => value + 1);
-      setNotice({ tone: "success", message: `${sourcePackage.name} neu verknüpft. Katalog und Annotationen bleiben erhalten.` });
+      setNotice({ tone: "success", message: `${sourcePackage.name} neu verknüpft.` });
     });
   }
 
@@ -202,11 +202,11 @@ export default function App() {
       focusAssetId.current = null;
       focusFileId.current = null;
       if (kind === "package" && packageId === id) setPackageId(null);
-      clearFilters();
+      clearFilters(true);
       setOffset(0);
       setLibrary(await invoke<LibraryInfo>("get_library"));
       setRevision((value) => value + 1);
-      setNotice({ tone: "success", message: `${name} im internen Papierkorb. Dateien bleiben gespeichert und belegen weiterhin Speicherplatz; Originale und Archive bleiben erhalten.` });
+      setNotice({ tone: "success", message: `${name} in den Papierkorb verschoben.` });
     });
   }
 
@@ -259,12 +259,12 @@ export default function App() {
     <div className={`app-shell ${library ? "editor-shell" : ""}`}>
       <Header library={library} actionsDisabled={actionsDisabled} busy={busy} notice={notice} setNotice={setNotice}
         dropHover={imports.dropHover} importActive={imports.importActive} importProgress={imports.importProgress} cancelling={imports.cancelling}
-        cancelImport={imports.cancelImport} referenceFolder={referenceFolder} openLibrary={openLibrary} importPackage={imports.importPackage} />
+        cancelImport={imports.cancelImport} importPackage={imports.importPackage} />
       {!library ? (
         <Onboarding actionsDisabled={actionsDisabled} createLibrary={createLibrary} openLibrary={openLibrary} />
       ) : (
         <div className="workspace">
-          <Sidebar library={library} packageId={packageId} folderId={folderId} projectFolders={projectFolders} actionsDisabled={actionsDisabled}
+          <Sidebar library={library} catalogType={query.workflow ?? query.kind ?? ""} chooseType={query.chooseType} openLibrary={openLibrary} referenceFolder={referenceFolder} packageId={packageId} folderId={folderId} projectFolders={projectFolders} actionsDisabled={actionsDisabled}
             filterPackage={query.filterPackage} filterFolder={query.filterFolder} trashItem={trashItem} refreshSources={refreshSources}
             setNotice={setNotice} setShowFolderDialog={setShowFolderDialog} setShowTrash={setShowTrash} trashGeneration={trashGeneration} />
           <Catalog library={library} query={query} audio={audio} selected={selected} setSelected={setSelected} selection={selection} setSelection={setSelection}

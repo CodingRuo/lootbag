@@ -126,8 +126,8 @@ export default function Inspector({ library, query, selected, file, selectedPack
       setLibrary(await invoke<LibraryInfo>("get_library"));
       setRevision((value) => value + 1);
       setNotice({ tone: "success", message: targetAssetId === null
-        ? `${chosen.originalFilename} als eigenes Asset abgespalten. Name, Tags und Ordnerverknüpfungen übernommen.`
-        : `${chosen.originalFilename} neu zugeordnet. Originalpfad, Tags und Ordnerverknüpfungen bleiben erhalten.` });
+        ? `${chosen.originalFilename} als eigenes Asset abgespalten.`
+        : `${chosen.originalFilename} neu zugeordnet.` });
     });
   }
 
@@ -166,8 +166,8 @@ export default function Inspector({ library, query, selected, file, selectedPack
               </label>
             </section>}
             {audioFilterCount > 0 && !queryLoading && !queryError && <p className="detail-hint" role="status">{file.id === selected.files[0]?.id
-              ? "Gefundene Variante anhand gespeicherter Analysewerte."
-              : "Andere Variante: Diese Auswahl für Vorschau und Export muss die aktiven Audiofilter nicht erfüllen."}</p>}
+              ? "Gefundene Variante laut gespeicherter Analyse."
+              : "Andere Variante: erfüllt die Audiofilter eventuell nicht."}</p>}
           </div>
           <div className="inspector-tabs" role="tablist" aria-label="Asset-Details" onKeyDown={(event) => {
             const current = (event.target as HTMLElement).getAttribute("data-inspector-tab") as InspectorTab | null;
@@ -279,7 +279,7 @@ export default function Inspector({ library, query, selected, file, selectedPack
                 {selectedPackage?.sourceKind === "external" && (
                   <>
                     <button className="text-button" onClick={() => relinkSource(selectedPackage)} disabled={actionsDisabled}>Quelle neu verknüpfen</button>
-                    <p className="detail-hint">Wähle den verschobenen Originalordner. Eine Kopie auf einem anderen Laufwerk bitte als neue Quelle einbinden.</p>
+                    <p className="detail-hint">Wähle den verschobenen Originalordner.</p>
                   </>
                 )}
               </section>
@@ -294,7 +294,7 @@ export default function Inspector({ library, query, selected, file, selectedPack
               <Icon name="download" />
               {file.format === "BLEND" ? "Blender-Original exportieren" : "In Projekt exportieren"}
             </button>
-            <p>{selected.imageGroup ? "Ausgewählte Originaldateien werden unverändert in einen neuen Paketordner kopiert." : file.format === "BLEND" ? "Nur die .blend-Originaldatei wird unverändert kopiert. Externe Texturen und verknüpfte Bibliotheken werden nicht mitgeliefert." : file.kind === "model" ? "Modell und Ressourcen werden unverändert in einen neuen Modellordner kopiert." : "Die Originaldatei wird unverändert kopiert."}</p>
+            <p>{selected.imageGroup ? "Kopiert die Originaldateien in einen neuen Ordner." : file.format === "BLEND" ? "Nur die .blend-Datei, ohne externe Texturen." : file.kind === "model" ? "Kopiert Modell und Ressourcen in einen neuen Ordner." : "Kopiert die Originaldatei unverändert."}</p>
           </div>
         </>
       ) : (
@@ -303,10 +303,7 @@ export default function Inspector({ library, query, selected, file, selectedPack
             <Icon name="sound" />
           </span>
           <h2>Ein Asset, alle Details.</h2>
-          <p>
-            Wähle ein Asset im Katalog aus, um es anzusehen oder anzuhören
-            und seine Herkunft zu sehen.
-          </p>
+          <p>Wähle ein Asset im Katalog aus.</p>
         </div>
       )}
     </aside>
