@@ -4,7 +4,11 @@ use super::imports::{
     available_space, checked_zip_path, create_safe_directories, open_zip, required_space,
 };
 use super::*;
-use std::io::Read;
+use std::{
+    collections::{hash_map::Entry, HashMap, HashSet},
+    io::Read,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use zip::ZipArchive;
 
 const IDENTITY_PREFIX: &str = "zip:";
@@ -72,6 +76,66 @@ fn extract(root: &Path, entry: &mut dyn Read, size: u64, target: &Path) -> Resul
     result
 }
 
+/// Whether `target` already holds the entry with this size and CRC; a link or folder there is refused.
+fn cached(target: &Path, size: u64, crc: &str) -> Result<bool> {
+    match fs::symlink_metadata(target) {
+        Ok(m) if m.file_type().is_symlink() || m.is_dir() => {
+            Err("ZIP-Cache wurde durch eine Verknüpfung ersetzt".into())
+        }
+        Ok(m) if m.len() == size => {
+            let Ok(mut file) = fs::File::open(target) else {
+                return Ok(false);
+            };
+            let mut hasher = crc32fast::Hasher::new();
+            let mut buffer = vec![0; 1 << 16];
+            loop {
+                match file.read(&mut buffer) {
+                    Ok(0) => return Ok(crc_text(hasher.finalize()) == crc),
+                    Ok(read) => hasher.update(&buffer[..read]),
+                    Err(_) => return Ok(false),
+                }
+            }
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Removes `target` below `<library>/.cache`, but never through a link that could lead outside.
+fn remove_cache_dir(root: &Path, target: &Path) {
+    let Ok(inside) = target.strip_prefix(root) else {
+        return;
+    };
+    let mut path = root.to_owned();
+    for part in inside.components() {
+        path.push(part);
+        if !fs::symlink_metadata(&path).is_ok_and(|m| !m.file_type().is_symlink()) {
+            return;
+        }
+    }
+    if let (Ok(cache), Ok(canonical)) = (root.join(".cache").canonical(), target.canonical()) {
+        if canonical.starts_with(cache) {
+            let _ = fs::remove_dir_all(target);
+        }
+    }
+}
+
+/// Archives opened during one backfill batch, by source identity, so each directory is parsed once.
+pub(super) type OpenArchives = HashMap<String, ZipArchive<fs::File>>;
+
+#[cfg(test)]
+thread_local!(static ARCHIVE_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
+/// Fails reads once `cancel` is set, so a long entry stops between chunks.
+pub(super) struct Cancellable<'a, R>(pub &'a AtomicBool, pub R);
+impl<R: Read> Read for Cancellable<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.0.load(Ordering::Relaxed) {
+            return Err(io::Error::other("abgebrochen"));
+        }
+        self.1.read(buffer)
+    }
+}
+
 fn dir_size(path: &Path) -> u64 {
     let Ok(entries) = fs::read_dir(path) else {
         return 0;
@@ -98,6 +162,7 @@ impl Library {
         let identity = archive_identity(&source)?;
         let mut archive = open_zip(&source)?;
         let mut files = Vec::new();
+        let mut names = HashSet::new();
         for index in 0..archive.len() {
             let entry = archive
                 .by_index_raw(index)
@@ -111,6 +176,14 @@ impl Library {
             }
             if entry.is_dir() {
                 continue;
+            }
+            // Such entries would share one cache file on case-insensitive disks.
+            // shortcut: lowercase only, so NFC/NFD spellings of one name (e.g. "ä") still pass; normalize once a Unicode crate is in the tree.
+            if !names.insert(path_text(&path)?.to_lowercase()) {
+                return Err(format!(
+                    "ZIP enthält Dateinamen, die sich nur in Groß-/Kleinschreibung unterscheiden: {}",
+                    entry.name()
+                ));
             }
             let Some(format) = assets::candidate_format(&path) else {
                 continue;
@@ -142,7 +215,7 @@ impl Library {
             != Some(location.root_identity.as_str())
         {
             if let Ok(cache) = cache_path(&self.root, &location.prefix) {
-                let _ = fs::remove_dir_all(cache);
+                remove_cache_dir(&self.root, &cache);
             }
             return Err(
                 "ZIP-Datei wurde verschoben oder verändert. Bitte ZIP neu verknüpfen".into(),
@@ -153,6 +226,8 @@ impl Library {
 
     fn open_package_zip(&self, location: &ReferencedLocation) -> Result<ZipArchive<fs::File>> {
         self.check_package_zip(location)?;
+        #[cfg(test)]
+        ARCHIVE_OPENS.with(|opens| opens.set(opens.get() + 1));
         open_zip(Path::new(&location.root))
     }
 
@@ -188,16 +263,10 @@ impl Library {
     ) -> Result<PathBuf> {
         let target = cache_path(&self.root, relative)?;
         self.check_package_zip(location)?;
-        let cached = Path::new(".cache").join(relative);
-        create_safe_directories(&self.root, cached.parent().unwrap_or(Path::new("")))?;
-        match fs::symlink_metadata(&target) {
-            Ok(m) if m.is_file() && i64::try_from(m.len()).ok() == Some(location.size) => {
-                return Ok(target)
-            }
-            Ok(m) if m.file_type().is_symlink() || m.is_dir() => {
-                return Err("ZIP-Cache wurde durch eine Verknüpfung ersetzt".into())
-            }
-            _ => {}
+        let cache = Path::new(".cache").join(relative);
+        create_safe_directories(&self.root, cache.parent().unwrap_or(Path::new("")))?;
+        if cached(&target, location.size as u64, &location.identity)? {
+            return Ok(target);
         }
         let mut archive = open_zip(Path::new(&location.root))?;
         let index = Self::zip_entry_index(&mut archive, relative, location)?;
@@ -208,27 +277,34 @@ impl Library {
         Ok(target)
     }
 
-    /// Streams one catalogued entry to `read` without touching the cache.
+    /// Streams one catalogued entry to `read` without touching the cache, reusing `archives`.
     pub(super) fn read_zip<T>(
         &self,
+        archives: &mut OpenArchives,
         relative: &str,
         location: &ReferencedLocation,
+        cancel: &AtomicBool,
         read: impl FnOnce(&mut dyn Read) -> T,
     ) -> Result<T> {
-        let mut archive = self.open_package_zip(location)?;
-        let index = Self::zip_entry_index(&mut archive, relative, location)?;
-        let mut entry = archive
+        let archive = match archives.entry(location.root_identity.clone()) {
+            Entry::Occupied(open) => open.into_mut(),
+            Entry::Vacant(slot) => slot.insert(self.open_package_zip(location)?),
+        };
+        let index = Self::zip_entry_index(archive, relative, location)?;
+        let entry = archive
             .by_index(index)
             .map_err(|e| format!("ZIP-Eintrag nicht lesbar: {e}"))?;
-        Ok(read(&mut entry))
+        Ok(read(&mut Cancellable(cancel, entry)))
     }
 
     /// Extracts a catalogued entry to a temporary file for readers that need a seekable file.
     /// The outer error means the archive is unavailable; the inner one is a read failure.
     pub(super) fn with_zip_file<T>(
         &self,
+        archives: &mut OpenArchives,
         relative: &str,
         location: &ReferencedLocation,
+        cancel: &AtomicBool,
         read: impl FnOnce(&Path) -> Result<T>,
     ) -> Result<Result<T>> {
         create_safe_directories(&self.root, Path::new(".cache"))?;
@@ -237,7 +313,7 @@ impl Library {
             .join(".cache")
             .join(format!(".scan-{}", unique_suffix()));
         let size = location.size as u64;
-        let extracted = self.read_zip(relative, location, |entry| {
+        let extracted = self.read_zip(archives, relative, location, cancel, |entry| {
             extract(&self.root, entry, size, &target)
         })?;
         let result = extracted.and_then(|()| read(&target));
@@ -245,14 +321,16 @@ impl Library {
         Ok(result)
     }
 
-    /// Extracts the archive entries a model preview may need (`wanted` by archive path) into the cache.
+    /// Extracts the archive entries a model preview needs (`wanted` by archive path) into the
+    /// cache; returns their archive paths.
     pub(super) fn extract_zip_resources(
         &self,
         location: &ReferencedLocation,
         wanted: impl Fn(&Path) -> bool,
-    ) -> Result<()> {
+    ) -> Result<Vec<PathBuf>> {
         let mut archive = self.open_package_zip(location)?;
         let cache = Path::new(".cache").join(&location.prefix);
+        let mut found = Vec::new();
         for index in 0..archive.len() {
             if !archive
                 .name_for_index(index)
@@ -270,14 +348,14 @@ impl Library {
             let relative = cache.join(&path);
             create_safe_directories(&self.root, relative.parent().unwrap_or(Path::new("")))?;
             let target = self.root.join(&relative);
-            if fs::symlink_metadata(&target).is_ok_and(|m| m.is_file() && m.len() == entry.size()) {
-                continue;
-            }
             let size = entry.size();
             // A broken companion is reported by the preview as missing, like in a folder.
-            let _ = extract(&self.root, &mut entry, size, &target);
+            if !cached(&target, size, &crc_text(entry.crc32()))? {
+                let _ = extract(&self.root, &mut entry, size, &target);
+            }
+            found.push(path);
         }
-        Ok(())
+        Ok(found)
     }
 
     /// Drops the whole disposable cache when it outgrew its budget.
@@ -285,13 +363,13 @@ impl Library {
         let cache = self.root.join(".cache");
         if fs::symlink_metadata(&cache).is_ok_and(|m| m.is_dir()) && dir_size(&cache) > CACHE_LIMIT
         {
-            let _ = fs::remove_dir_all(&cache);
+            remove_cache_dir(&self.root, &cache);
         }
     }
 
     pub(super) fn remove_zip_cache(&self, prefix: &str) {
         if let Ok(cache) = cache_path(&self.root, prefix) {
-            let _ = fs::remove_dir_all(cache);
+            remove_cache_dir(&self.root, &cache);
         }
     }
 }
@@ -563,6 +641,42 @@ mod tests {
     }
 
     #[test]
+    fn an_obj_preview_extracts_only_the_resources_it_names() {
+        let workspace = Workspace::new();
+        let archive = workspace.0.join("props.zip");
+        write_zip(
+            &archive,
+            &[
+                ("Props/crate.obj", b"mtllib crate.mtl\nv 0 0 0\n"),
+                (
+                    "Props/crate.mtl",
+                    b"newmtl wood\nmap_Kd Textures/crate_wood.png\n",
+                ),
+                ("Props/Textures/crate_wood.png", b"wood"),
+                ("Props/Textures/barrel.png", b"barrel"),
+                ("Props/barrel.mtl", b"map_Kd barrel.png\n"),
+                ("Other/grass.png", b"grass"),
+                ("Other/data.bin", b"bin"),
+            ],
+        );
+        let root = workspace.0.join("library");
+        let mut library = Library::create(&root).unwrap();
+        library.reference_zip(&archive).unwrap();
+
+        library
+            .model_resources(file_id(&library, "crate.obj"))
+            .unwrap();
+
+        let cache = root.join(".cache");
+        let mut extracted: Vec<_> = files_below(&cache)
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        extracted.sort();
+        assert_eq!(extracted, ["crate.mtl", "crate.obj", "crate_wood.png"]);
+    }
+
+    #[test]
     fn hashes_and_model_traits_stream_zip_entries_without_caching_them() {
         let workspace = Workspace::new();
         let archive = workspace.0.join("pack.zip");
@@ -574,19 +688,24 @@ mod tests {
                 ("B/stomp.wav", b"same bytes"),
                 ("C/other.wav", b"diff bytes"),
                 ("rock.glb", &mesh),
+                ("stone.glb", &mesh),
             ],
         );
         let root = workspace.0.join("library");
         let mut library = Library::create(&root).unwrap();
         library.reference_zip(&archive).unwrap();
         let cancel = AtomicBool::new(false);
+        let opens = || ARCHIVE_OPENS.with(|opens| opens.replace(0));
+        opens();
 
         let (hashed, _) = library.hash_pending_files(&mut 0, 100, &cancel).unwrap();
+        assert_eq!(opens(), 1, "one archive directory parse per batch");
         let (inspected, _) = library
             .inspect_pending_models(&mut 0, 100, &cancel)
             .unwrap();
+        assert_eq!(opens(), 1);
 
-        assert_eq!((hashed, inspected), (3, 1));
+        assert_eq!((hashed, inspected), (5, 2));
         let items = library.query(CatalogQuery::default()).unwrap().items;
         let duplicates = |name: &str| items.iter().find(|a| a.name == name).unwrap().duplicates;
         assert_eq!(
@@ -610,6 +729,104 @@ mod tests {
                 .unwrap(),
             (0, 0)
         );
+    }
+
+    fn location(library: &Library, file_id: i64) -> (String, ReferencedLocation) {
+        library
+            .connection
+            .query_row(
+                "SELECT f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes FROM asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id JOIN external_sources s ON s.package_id = p.id JOIN external_files e ON e.file_id = f.id WHERE f.id = ?1",
+                [file_id],
+                |row| Ok((row.get(0)?, location_row(row, 1)?.unwrap())),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn a_cancelled_backfill_stops_inside_an_entry_and_leaves_nothing_behind() {
+        let workspace = Workspace::new();
+        let archive = workspace.0.join("pack.zip");
+        write_zip(&archive, &[("big.fbx", &vec![7; 3 << 20])]);
+        let root = workspace.0.join("library");
+        let mut library = Library::create(&root).unwrap();
+        library.reference_zip(&archive).unwrap();
+        let (relative, zip) = location(&library, file_id(&library, "big.fbx"));
+        let cancel = AtomicBool::new(true);
+        let mut archives = OpenArchives::new();
+
+        let read = library
+            .read_zip(&mut archives, &relative, &zip, &cancel, |entry| {
+                entry.read_to_end(&mut Vec::new())
+            })
+            .unwrap();
+        let extracted = library
+            .with_zip_file(&mut archives, &relative, &zip, &cancel, |_| Ok(()))
+            .unwrap();
+
+        assert!(read.is_err() && extracted.is_err());
+        assert!(files_below(&root.join(".cache")).is_empty());
+        assert_eq!(
+            library
+                .inspect_pending_models(&mut 0, 100, &cancel)
+                .unwrap(),
+            (0, 1),
+            "nothing recorded, still pending"
+        );
+    }
+
+    #[test]
+    fn case_colliding_entries_reject_the_zip_and_a_tampered_cache_is_extracted_again() {
+        let workspace = Workspace::new();
+        let mut library = Library::create(&workspace.0.join("library")).unwrap();
+        for entries in [
+            [("Hit.wav", b"one"), ("hit.WAV", b"two")],
+            [("Tex/leaf.png", b"one"), ("tex/Leaf.png", b"two")],
+        ] {
+            let archive = workspace.0.join("collide.zip");
+            write_zip(&archive, &entries.map(|(name, bytes)| (name, &bytes[..])));
+            let error = library.reference_zip(&archive).unwrap_err();
+            assert!(error.contains("Groß-/Kleinschreibung"), "{error}");
+        }
+        assert!(library.packages().unwrap().is_empty());
+
+        let archive = workspace.0.join("pack.zip");
+        write_zip(&archive, &[("hit.wav", b"hit audio")]);
+        library.reference_zip(&archive).unwrap();
+        let hit = file_id(&library, "hit.wav");
+        let cached = library.resolve_preview(hit).unwrap();
+        fs::write(&cached, b"HIT AUDIO").unwrap();
+        assert_eq!(
+            fs::read(library.resolve_preview(hit).unwrap()).unwrap(),
+            b"hit audio",
+            "same size, other CRC"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_cleanup_never_follows_a_link_out_of_the_library() {
+        for link in [".cache", ".cache/zip"] {
+            let workspace = Workspace::new();
+            let archive = workspace.0.join("pack.zip");
+            write_zip(&archive, &[("hit.wav", b"hit")]);
+            let root = workspace.0.join("library");
+            let mut library = Library::create(&root).unwrap();
+            let package = library.reference_zip(&archive).unwrap();
+            let outside = workspace.0.join("outside");
+            let kept = outside
+                .join(".cache")
+                .join(&package.relative_path)
+                .join("keep.txt");
+            fs::create_dir_all(kept.parent().unwrap()).unwrap();
+            fs::write(&kept, b"keep").unwrap();
+            fs::create_dir_all(root.join(link).parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(outside.join(link), root.join(link)).unwrap();
+
+            library.trash_package(package.id).unwrap();
+            library.empty_trash().unwrap();
+
+            assert!(kept.exists(), "deleted through {link}");
+        }
     }
 
     #[test]

@@ -349,11 +349,16 @@ impl Library {
             CREATE TABLE IF NOT EXISTS package_tags (package_id INTEGER NOT NULL REFERENCES packages(id) ON DELETE CASCADE, tag TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY(package_id, tag));
             CREATE TABLE IF NOT EXISTS audio_metadata (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, duration_seconds REAL, sample_rate INTEGER, channels INTEGER, codec TEXT, error TEXT);
             CREATE TABLE IF NOT EXISTS model_traits (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, has_mesh INTEGER, has_animation INTEGER, error TEXT);
-            CREATE TABLE IF NOT EXISTS file_hashes (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, size INTEGER, hash TEXT, error TEXT);
+            CREATE TABLE IF NOT EXISTS file_hashes (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, size INTEGER, hash TEXT, error TEXT, stamp TEXT);
             CREATE INDEX IF NOT EXISTS file_hashes_hash ON file_hashes(hash);
             CREATE INDEX IF NOT EXISTS asset_files_asset_id ON asset_files(asset_id);
             CREATE TABLE IF NOT EXISTS package_info (package_id INTEGER PRIMARY KEY REFERENCES packages(id) ON DELETE CASCADE, store TEXT, url TEXT, license TEXT, author TEXT, purchased TEXT, version TEXT, notes TEXT);")
             .map_err(|e| format!("Annotationen können nicht geöffnet werden: {e}"))?;
+        // Older hashes have no stamp; the next backfill drops and recomputes them.
+        connection
+            .execute_batch("SELECT stamp FROM file_hashes LIMIT 0")
+            .or_else(|_| connection.execute_batch("ALTER TABLE file_hashes ADD COLUMN stamp TEXT"))
+            .map_err(|e| format!("Duplikatsuche kann nicht geöffnet werden: {e}"))?;
         connection
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS trash (
@@ -6436,8 +6441,24 @@ mod tests {
         let replaced = library
             .save_search("fässer", r#"{"text":"barr nuk"}"#)
             .unwrap();
+        let full = library
+            .save_search("Alles", r#"{"text":"","kind":null,"workflow":"material","packageId":1,"folderId":null,"originalFolder":null,"format":"WAV","tag":null,"duplicates":true,"audioFilters":{"minDurationSeconds":"1","maxDurationSeconds":"","channels":"stereo","analysis":"notAnalysed"}}"#)
+            .unwrap();
+        library.delete_saved_search(full.id).unwrap();
         assert_eq!(replaced.id, first.id);
-        for (name, json) in [("", "{}"), ("x", "[]"), ("x", "nope")] {
+        for (name, json) in [
+            ("", "{}"),
+            ("x", "[]"),
+            ("x", "nope"),
+            ("x", r#"{"text":{}}"#),
+            ("x", r#"{"kind":"weapon"}"#),
+            ("x", r#"{"packageId":"1"}"#),
+            ("x", r#"{"unknown":1}"#),
+            (
+                "x",
+                r#"{"audioFilters":{"minDurationSeconds":"","maxDurationSeconds":"","channels":"5.1","analysis":"any"}}"#,
+            ),
+        ] {
             assert!(library.save_search(name, json).is_err());
         }
         drop(library);

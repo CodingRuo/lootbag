@@ -12,7 +12,7 @@ jobs:
         include:
           - os: macos-latest
             bundle: app
-            artifact: src-tauri/target/release/bundle/macos/*.app
+            artifact: Lootbag-macos.zip
           - os: windows-latest
             bundle: nsis
             artifact: src-tauri/target/release/bundle/nsis/*.exe
@@ -44,6 +44,10 @@ jobs:
 
       # Unsigned bundle; signing and notarization are not configured here.
       - run: pnpm tauri build --bundles ${{ matrix.bundle }}
+
+      # A zipped .app keeps its executable bits, which a plain directory upload drops.
+      - if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent src-tauri/target/release/bundle/macos/Lootbag.app Lootbag-macos.zip
 
       - uses: actions/upload-artifact@v4
         with:

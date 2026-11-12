@@ -11,7 +11,7 @@ use std::{
 };
 
 const MAX_MEMBERS: usize = 10_000;
-const MAX_SCAN_BYTES: u64 = 256 * 1024 * 1024;
+pub(super) const MAX_SCAN_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -332,31 +332,49 @@ fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     io::Write::write_all(&mut output, bytes).and_then(|()| output.sync_all())
 }
 
+/// User text as literal Markdown: significant characters escaped, line breaks as spaces.
+fn md(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\r' | '\n' => escaped.push(' '),
+            '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '#' | '+' | '-' | '.'
+            | '!' | '|' | '<' | '>' => {
+                escaped.push('\\');
+                escaped.push(c);
+            }
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
+
 /// One section per package with its credit line, licence, shop/link and the exported asset names.
-// shortcut: user text is written verbatim, not Markdown-escaped; escape if names with `*`/`_` render badly.
 fn credits_text(
     project: &str,
     credits: &BTreeMap<(String, i64), (&PackageInfo, Vec<&str>)>,
 ) -> String {
-    let mut text = format!("# Credits – {project}\n");
+    let mut text = format!("# Credits – {}\n", md(project));
     for ((package, _), (info, names)) in credits {
-        text.push_str(&format!("\n## {package}\n\n"));
+        text.push_str(&format!("\n## {}\n\n", md(package)));
         if let Some(author) = &info.author {
-            text.push_str(&format!("- Urheber: {author}\n"));
+            text.push_str(&format!("- Urheber: {}\n", md(author)));
         }
         match &info.license {
-            Some(license) => text.push_str(&format!("- Lizenz: {license}\n")),
+            Some(license) => text.push_str(&format!("- Lizenz: {}\n", md(license))),
             None => text.push_str("- Lizenz: nicht hinterlegt – bitte prüfen\n"),
         }
         match (&info.store, &info.url) {
-            (Some(store), Some(url)) => text.push_str(&format!("- Shop: {store} – {url}\n")),
-            (Some(store), None) => text.push_str(&format!("- Shop: {store}\n")),
-            (None, Some(url)) => text.push_str(&format!("- Link: {url}\n")),
+            (Some(store), Some(url)) => {
+                text.push_str(&format!("- Shop: {} – {}\n", md(store), md(url)))
+            }
+            (Some(store), None) => text.push_str(&format!("- Shop: {}\n", md(store))),
+            (None, Some(url)) => text.push_str(&format!("- Link: {}\n", md(url))),
             (None, None) => {}
         }
         text.push_str("- Assets:\n");
         for name in names {
-            text.push_str(&format!("  - {name}\n"));
+            text.push_str(&format!("  - {}\n", md(name)));
         }
     }
     text
@@ -497,7 +515,7 @@ fn texture_references(text: &[u8], mtl: bool) -> Vec<(String, String, String, Ve
 }
 
 /// Runs of name bytes directly before a ".", e.g. `texture_01_a` from `..\\textures\\texture_01_a.png`.
-fn mentioned_stems(text: &[u8]) -> HashSet<Vec<u8>> {
+pub(super) fn mentioned_stems(text: &[u8]) -> HashSet<Vec<u8>> {
     let mut stems = HashSet::new();
     for (dot, _) in text.iter().enumerate().filter(|(_, byte)| **byte == b'.') {
         let start = text[dot.saturating_sub(255)..dot]

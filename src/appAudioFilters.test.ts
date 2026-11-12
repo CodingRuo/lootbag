@@ -29,7 +29,7 @@ const mocks: Record<string, string> = {
     export const useId = () => "test-id";`,
   "react/jsx-runtime": `export const jsx = (type, props) => ({ type, props }); export const jsxs = jsx; export const Fragment = "fragment";`,
   "@tauri-apps/api/core": `export const isTauri = () => true; export const invoke = (...args) => globalThis.audioFilterHarness.invoke(...args); export const convertFileSrc = path => path; export class Channel {}`,
-  "@tauri-apps/api/event": `export const listen = async () => () => {};`,
+  "@tauri-apps/api/event": `export const listen = async (event, handler) => { (globalThis.audioFilterHarness.listeners[event] ??= []).push(handler); return () => {}; };`,
   "@tauri-apps/api/webview": `export const getCurrentWebview = () => ({ onDragDropEvent: async () => () => {} });`,
   "@tauri-apps/plugin-dialog": `export const open = async () => "/owned/reopened"; export const save = async () => null; export const confirm = async () => true;`,
 };
@@ -85,6 +85,7 @@ class Harness {
   libraryInfo: any = library;
   packageInfoSaves: any[] = [];
   savedSearches: any[] = [];
+  listeners: Record<string, ((event: any) => void)[]> = {};
   savedSearchCalls: [string, any][] = [];
   annotations: any[] = [];
   references: any[] = [];
@@ -774,5 +775,49 @@ test("a ZIP package shows its badge and archive entry, and ZIP einbinden referen
     assert.deepEqual(app.references, [{ source: "/owned/reopened" }]);
     await app.settle();
     assert.match(app.text(app.tree), /Forest als ZIP eingebunden/);
+  } finally { app.dispose(); }
+});
+
+test("finished duplicate and auto-tag passes refresh sound results unless a sound analysis is running", async () => {
+  const app = new Harness();
+  const finish = async (event: string) => {
+    for (const handler of app.listeners[event] ?? []) handler({ payload: { done: 3, remaining: 0 } });
+    await app.settle(); await app.runTimers();
+  };
+  try {
+    await app.mount(); await app.chooseType("sound"); await app.runTimers();
+    app.latestRequest!.resolve(page()); await app.settle();
+    let requests = app.requests.length;
+    await finish("file-hashes-progress");
+    assert.equal(app.requests.length, requests + 1);
+    assert.equal(app.latestRequest!.args.query.kind, "sound");
+    app.latestRequest!.resolve(page()); await app.settle();
+
+    await app.click("Analyse vorbereiten");
+    const requestId = app.prepareRequests[0].args.requestId;
+    app.prepareRequests[0].resolve({ requestId, total: 87 }); await app.settle();
+    await app.click("Analyse starten");
+    requests = app.requests.length;
+    await finish("auto-tags-progress");
+    assert.equal(app.requests.length, requests, "A running sound analysis is not discarded");
+    assert.deepEqual(app.populationCancellations, []);
+  } finally { app.dispose(); }
+});
+
+test("saved searches with malformed JSON or wrongly typed fields cannot break the catalog", async () => {
+  const app = new Harness();
+  app.savedSearches = [
+    { id: 5, name: "Kaputt", queryJson: "{nope" },
+    { id: 6, name: "Seltsam", queryJson: JSON.stringify({ text: {}, kind: "weapon", packageId: "1", folderId: 1.5, format: 3, duplicates: "yes",
+      audioFilters: { minDurationSeconds: 2, maxDurationSeconds: "9", channels: "5.1", analysis: "ready" } }) },
+  ];
+  try {
+    await app.mount();
+    app.find((node) => node.type === "button" && node.props.title === "Kaputt").props.onClick(); await app.settle();
+    assert.match(app.text(app.tree), /gespeicherte Suche „Kaputt“ ist nicht lesbar/);
+    app.find((node) => node.type === "button" && node.props.title === "Seltsam").props.onClick(); await app.settle(); await app.runTimers();
+    const { query, audioCriteria } = app.latestRequest!.args;
+    assert.deepEqual([query.text, query.kind, query.packageId, query.folderId, query.format, query.duplicates], ["", null, null, null, null, false]);
+    assert.deepEqual(audioCriteria, { minDurationSeconds: null, maxDurationSeconds: 9, channels: "any", analysis: "ready" });
   } finally { app.dispose(); }
 });

@@ -1,5 +1,9 @@
 //! Content hashes for finding the same file shipped in several packages.
-use super::{id_list, location_row, Library, Result};
+use super::{
+    id_list, location_row, modified_identity,
+    zip_sources::{is_zip, Cancellable, OpenArchives},
+    Library, ReferencedLocation, Result,
+};
 use rusqlite::params;
 use sha2::{Digest, Sha256};
 use std::{
@@ -44,10 +48,61 @@ fn hash(file: &mut dyn Read) -> io::Result<String> {
         .collect())
 }
 
+/// What a hash was taken from: the archive and CRC of a ZIP entry, else the file's modification time and size.
+fn zip_stamp(zip: &ReferencedLocation) -> String {
+    format!("{}|{}", zip.root_identity, zip.identity)
+}
+
+fn file_stamp(metadata: &fs::Metadata) -> Option<String> {
+    Some(format!(
+        "{}|{}",
+        modified_identity(metadata).ok()?,
+        metadata.len()
+    ))
+}
+
 impl Library {
+    /// Forgets hashes whose file changed since hashing; offline files keep theirs.
+    fn drop_stale_hashes(&self, cancel: &AtomicBool) -> Result<()> {
+        let failed = |e: rusqlite::Error| format!("Duplikatsuche fehlgeschlagen: {e}");
+        let hashed = self
+            .connection
+            .prepare("SELECT h.file_id, h.stamp, f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes
+                FROM file_hashes h JOIN asset_files f ON f.id = h.file_id JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id
+                LEFT JOIN external_sources s ON s.package_id = p.id LEFT JOIN external_files e ON e.file_id = f.id")
+            .map_err(failed)?
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, location_row(row, 3)?))
+            })
+            .map_err(failed)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(failed)?;
+        let transaction = self.connection.unchecked_transaction().map_err(failed)?;
+        for (id, stamp, relative, external) in hashed {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let current = match external {
+                Some(zip) if is_zip(&zip.root_identity) => Some(zip_stamp(&zip)),
+                external => self
+                    .locate(&relative, external)
+                    .ok()
+                    .and_then(|path| fs::metadata(path).ok())
+                    .and_then(|metadata| file_stamp(&metadata)),
+            };
+            if current.is_some() && current != stamp {
+                transaction
+                    .execute("DELETE FROM file_hashes WHERE file_id = ?1", [id])
+                    .map_err(failed)?;
+            }
+        }
+        transaction.commit().map_err(failed)
+    }
+
     /// Hashes up to `batch` files after the `after` cursor that share their size with another active
     /// file and have no current hash; returns (hashed, still pending after the cursor). Like
     /// `inspect_pending_models`, unavailable files get no row and are retried on a later run.
+    /// A run's first batch (`after` 0) first drops hashes of files changed since.
     pub fn hash_pending_files(
         &self,
         after: &mut i64,
@@ -55,6 +110,9 @@ impl Library {
         cancel: &AtomicBool,
     ) -> Result<(usize, usize)> {
         let failed = |e: rusqlite::Error| format!("Duplikatsuche fehlgeschlagen: {e}");
+        if *after == 0 {
+            self.drop_stale_hashes(cancel)?;
+        }
         // Empty files and unique sizes cannot be meaningful duplicates.
         let pending = "FROM active_asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id
             LEFT JOIN external_sources s ON s.package_id = p.id LEFT JOIN external_files e ON e.file_id = f.id
@@ -72,32 +130,42 @@ impl Library {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(failed)?;
         let mut results = Vec::new();
+        let mut archives = OpenArchives::new();
         for (id, size, relative, external) in files {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
-            *after = id;
             let hashed = match external {
                 // ZIP entries are streamed; an unavailable archive is retried like an offline folder.
-                Some(zip) if super::zip_sources::is_zip(&zip.root_identity) => {
-                    self.read_zip(&relative, &zip, hash).ok()
-                }
+                Some(zip) if is_zip(&zip.root_identity) => self
+                    .read_zip(&mut archives, &relative, &zip, cancel, hash)
+                    .ok()
+                    .map(|result| (zip_stamp(&zip), result)),
                 external => self
                     .locate(&relative, external)
                     .ok()
-                    .map(|path| fs::File::open(path).and_then(|mut file| hash(&mut file))),
+                    .and_then(|path| fs::File::open(path).ok())
+                    .and_then(|file| {
+                        let stamp = file_stamp(&file.metadata().ok()?)?;
+                        Some((stamp, hash(&mut Cancellable(cancel, file))))
+                    }),
             };
-            if let Some(result) = hashed {
-                results.push((id, size, result.map_err(|e| e.to_string())));
+            // A read stopped by `cancel` is neither a result nor past the cursor.
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            *after = id;
+            if let Some((stamp, result)) = hashed {
+                results.push((id, size, stamp, result.map_err(|e| e.to_string())));
             }
         }
         let transaction = self.connection.unchecked_transaction().map_err(failed)?;
-        for (id, size, result) in &results {
+        for (id, size, stamp, result) in &results {
             transaction
                 .execute(
-                    "INSERT OR REPLACE INTO file_hashes(file_id, size, hash, error)
-                    SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM asset_files WHERE id = ?1)",
-                    params![id, size, result.as_ref().ok(), result.as_ref().err()],
+                    "INSERT OR REPLACE INTO file_hashes(file_id, size, hash, error, stamp)
+                    SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM asset_files WHERE id = ?1)",
+                    params![id, size, result.as_ref().ok(), result.as_ref().err(), stamp],
                 )
                 .map_err(failed)?;
         }
@@ -260,6 +328,38 @@ mod tests {
         assert!(assets(&library, true).is_empty());
         assert_eq!(library.catalog_filters(None).unwrap().duplicates, 0);
         assert!(library.asset_duplicates(rock.id).unwrap().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_file_changed_in_place_is_hashed_again_and_leaves_its_duplicate_group() {
+        let root = workspace();
+        let mut library = Library::create(&root.join("library")).unwrap();
+        library
+            .import_folder(&pack(&root, "Pack A", &[("Rock.png", b"AAAAAAAAAA")]))
+            .unwrap();
+        library
+            .import_folder(&pack(&root, "Pack B", &[("Stone.png", b"AAAAAAAAAA")]))
+            .unwrap();
+        assert_eq!(hash_all(&library), 2);
+        assert_eq!(duplicates_of(&library, "Rock"), 1);
+        let stone = assets(&library, false)
+            .into_iter()
+            .find(|asset| asset.name == "Stone")
+            .unwrap();
+        let path = library.resolve_preview(stone.files[0].id).unwrap();
+        fs::write(&path, b"BBBBBBBBBB").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+
+        assert_eq!(hash_all(&library), 1, "only the changed file");
+        assert_eq!(duplicates_of(&library, "Rock"), 0);
+        assert_eq!(duplicates_of(&library, "Stone"), 0);
+        assert_eq!(hash_all(&library), 0, "its new stamp is current");
         let _ = fs::remove_dir_all(root);
     }
 

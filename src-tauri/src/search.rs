@@ -1,5 +1,5 @@
 //! Auto-tags derived from file and folder names, the FTS5 search index and saved searches.
-use super::{Library, Result};
+use super::{AssetKind, ImageWorkflow, Library, Result};
 use rusqlite::{params, Connection};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -164,6 +164,45 @@ pub struct SavedSearch {
     pub query_json: String,
 }
 
+/// The search state a saved search may hold: the frontend's fields with their types, nothing else.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[allow(dead_code)] // deserialized only to validate
+struct SavedQuery {
+    text: Option<String>,
+    kind: Option<AssetKind>,
+    workflow: Option<ImageWorkflow>,
+    package_id: Option<i64>,
+    folder_id: Option<i64>,
+    original_folder: Option<String>,
+    format: Option<String>,
+    tag: Option<String>,
+    duplicates: Option<bool>,
+    audio_filters: Option<SavedAudioFilters>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[allow(dead_code)]
+struct SavedAudioFilters {
+    min_duration_seconds: String,
+    max_duration_seconds: String,
+    channels: String,
+    analysis: String,
+}
+
+fn valid_saved_query(json: &str) -> bool {
+    serde_json::from_str::<SavedQuery>(json).is_ok_and(|query| {
+        query.audio_filters.is_none_or(|audio| {
+            matches!(audio.channels.as_str(), "any" | "mono" | "stereo" | "multi")
+                && matches!(
+                    audio.analysis.as_str(),
+                    "any" | "notAnalysed" | "ready" | "error"
+                )
+        })
+    })
+}
+
 impl Library {
     /// Derives auto-tags for up to `batch` assets after the `after` cursor that have none yet
     /// (no file reads); returns (processed, still pending after the cursor). User tags are untouched.
@@ -255,10 +294,7 @@ impl Library {
         if name.is_empty() || name.chars().count() > 100 {
             return Err("Der Name muss 1 bis 100 Zeichen enthalten".into());
         }
-        if query_json.len() > 10_000
-            || serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(query_json)
-                .is_err()
-        {
+        if query_json.len() > 10_000 || !valid_saved_query(query_json) {
             return Err("Ungültige Suche".into());
         }
         self.connection

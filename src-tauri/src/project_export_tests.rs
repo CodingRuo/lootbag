@@ -519,7 +519,7 @@ fn export_writes_credits_and_licence_fields_and_counts_packages_without_licence(
     assert_eq!(
         credits,
         "# Credits – Game\n\n## Other\n\n- Lizenz: nicht hinterlegt – bitte prüfen\n- Assets:\n  - Hit\n\n\
-         ## Pack\n\n- Urheber: Kenney Vleugels\n- Lizenz: CC0\n- Shop: Kenney – https://kenney.nl\n- Assets:\n  - Hit\n  - tree\n"
+         ## Pack\n\n- Urheber: Kenney Vleugels\n- Lizenz: CC0\n- Shop: Kenney – https://kenney\\.nl\n- Assets:\n  - Hit\n  - tree\n"
     );
     let manifest: Value =
         serde_json::from_slice(&fs::read(out.join("manifest.json")).unwrap()).unwrap();
@@ -547,4 +547,20 @@ fn export_writes_credits_and_licence_fields_and_counts_packages_without_licence(
         )
     );
     assert_eq!(entry(other.id)["license"], Value::Null);
+}
+
+#[test]
+fn credits_write_names_and_package_info_as_literal_markdown() {
+    let info = PackageInfo {
+        author: Some("![x](https://evil.example/p.png)\n# Owned".into()),
+        license: Some("<b>CC0</b> | *MIT*".into()),
+        ..Default::default()
+    };
+    let credits = BTreeMap::from([(("[Pack]_1".to_string(), 1), (&info, vec!["a`b\\c-1.0+"]))]);
+    assert_eq!(
+        credits_text("Game #1", &credits),
+        "# Credits – Game \\#1\n\n## \\[Pack\\]\\_1\n\n\
+         - Urheber: \\!\\[x\\]\\(https://evil\\.example/p\\.png\\) \\# Owned\n\
+         - Lizenz: \\<b\\>CC0\\</b\\> \\| \\*MIT\\*\n- Assets:\n  - a\\`b\\\\c\\-1\\.0\\+\n"
+    );
 }

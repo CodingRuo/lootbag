@@ -163,12 +163,24 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
     setSavedSearches((list) => list.filter((item) => item.id !== id));
   }
 
+  // Stored JSON is untrusted: unusable searches get a notice, fields of the wrong type their default.
   function applySavedSearch(saved: SavedSearch) {
-    const value = JSON.parse(saved.queryJson);
-    setText(value.text ?? ""); setKind(value.kind ?? null); setWorkflow(value.workflow ?? null);
-    setPackageId(value.packageId ?? null); setFolderId(value.folderId ?? null); setOriginalFolder(value.originalFolder ?? null);
-    setFormat(value.format ?? null); setTag(value.tag ?? null); setDuplicates(value.duplicates === true);
-    setAudioFilters({ ...EMPTY_AUDIO_FILTERS, ...value.audioFilters });
+    let value: unknown;
+    try { value = JSON.parse(saved.queryJson); } catch { value = null; }
+    if (!isRecord(value)) {
+      setNotice({ tone: "error", message: `Die gespeicherte Suche „${saved.name}“ ist nicht lesbar.` });
+      return;
+    }
+    const audio = isRecord(value.audioFilters) ? value.audioFilters : {};
+    setText(str(value.text) ?? ""); setKind(oneOf(value.kind, ["sound", "image", "model", "animation"] as const));
+    setWorkflow(oneOf(value.workflow, ["material", "spriteSequence"] as const));
+    setPackageId(id(value.packageId)); setFolderId(id(value.folderId)); setOriginalFolder(str(value.originalFolder));
+    setFormat(str(value.format)); setTag(str(value.tag)); setDuplicates(value.duplicates === true);
+    setAudioFilters({
+      minDurationSeconds: str(audio.minDurationSeconds) ?? "", maxDurationSeconds: str(audio.maxDurationSeconds) ?? "",
+      channels: oneOf(audio.channels, ["any", "mono", "stereo", "multi"] as const) ?? "any",
+      analysis: oneOf(audio.analysis, ["any", "notAnalysed", "ready", "error"] as const) ?? "any",
+    });
     setOffset(0); setSelected(null); setSelectedFileId(null); setModelSelection(null);
   }
 
@@ -228,3 +240,8 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
     savedSearches, searchJson, searchActive, saveSearch, deleteSavedSearch, applySavedSearch,
   };
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const str = (value: unknown) => typeof value === "string" ? value : null;
+const id = (value: unknown) => Number.isSafeInteger(value) ? value as number : null;
+const oneOf = <T extends string>(value: unknown, options: readonly T[]) => options.includes(value as T) ? value as T : null;

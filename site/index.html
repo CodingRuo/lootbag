@@ -254,9 +254,9 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
       <p class="label" data-i18n="libLabel">Bibliothek</p>
       <h2 data-i18n="libTitle">Hunderte Packs, ohne den Überblick zu verlieren.</h2>
       <div class="types">
-        <div class="type"><div class="ico"><svg><use href="#i-zip"/></svg></div><h3 data-i18n="fZip">ZIP ohne Entpacken</h3><p data-i18n="fZipText">Binde ein ZIP direkt ein. Lootbag liest nur das Inhaltsverzeichnis und entpackt eine Datei erst, wenn du sie ansiehst.</p></div>
+        <div class="type"><div class="ico"><svg><use href="#i-zip"/></svg></div><h3 data-i18n="fZip">ZIP ohne Entpacken</h3><p data-i18n="fZipText">Binde ein ZIP direkt ein. Lootbag liest das Inhaltsverzeichnis und entpackt einzelne Dateien nur bei Bedarf in einen Cache.</p></div>
         <div class="type"><div class="ico"><svg><use href="#i-copy"/></svg></div><h3 data-i18n="fDup">Duplikate über Packs hinweg</h3><p data-i18n="fDupText">Dasselbe Modell in drei Bundles? Lootbag vergleicht Dateiinhalte und zeigt, wo sonst noch eine Kopie liegt.</p></div>
-        <div class="type"><div class="ico"><svg><use href="#i-license"/></svg></div><h3 data-i18n="fLicense">Lizenzen pro Paket</h3><p data-i18n="fLicenseText">Shop, Lizenz, Urheber und Kaufdatum am Paket. Lizenzdateien im Paket werden dir gezeigt.</p></div>
+        <div class="type"><div class="ico"><svg><use href="#i-license"/></svg></div><h3 data-i18n="fLicense">Lizenzen pro Paket</h3><p data-i18n="fLicenseText">Shop, Lizenz, Urheber und Kaufdatum am Paket. Bei importierten Paketen zeigt Lootbag gefundene Lizenzdateien an.</p></div>
         <div class="type"><div class="ico"><svg><use href="#i-search"/></svg></div><h3 data-i18n="fSearch">Schnelle Suche</h3><p data-i18n-html="fSearchText"><code>barr nuk</code> findet <code>SM_Prop_Barrel_Nuke_01</code>. Tags entstehen automatisch aus Datei- und Ordnernamen, Suchen lassen sich speichern.</p></div>
       </div>
     </div>
@@ -377,9 +377,9 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: 
     tModel: "3D models", tModelText: "FBX, GLB, glTF, OBJ and Blender. With textures, camera and thumbnails in the grid.",
     tAnim: "Animations", tAnimText: "FBX files without a mesh are detected as animations and played on the skeleton. Pick a clip, scrub, change speed.",
     libLabel: "Library", libTitle: "Hundreds of packs, still in order.",
-    fZip: "ZIPs without unpacking", fZipText: "Link a ZIP directly. Lootbag reads only its table of contents and extracts a file when you look at it.",
+    fZip: "ZIPs without unpacking", fZipText: "Link a ZIP directly. Lootbag reads its table of contents and extracts single files into a cache only when needed.",
     fDup: "Duplicates across packs", fDupText: "Same model in three bundles? Lootbag compares file contents and shows where else a copy lives.",
-    fLicense: "Licences per pack", fLicenseText: "Store, licence, author and purchase date on each pack. Licence files inside the pack are pointed out.",
+    fLicense: "Licences per pack", fLicenseText: "Store, licence, author and purchase date on each pack. For imported packs, Lootbag points out licence files it finds.",
     fSearch: "Fast search", fSearchText: "<code>barr nuk</code> finds <code>SM_Prop_Barrel_Nuke_01</code>. Tags come from file and folder names, and searches can be saved.",
     projLabel: "Projects", projTitle: "From your stash into your game, originals untouched.",
     step1: "Step 1", step2: "Step 2", step3: "Step 3",

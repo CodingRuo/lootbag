@@ -324,21 +324,28 @@ impl Library {
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(failed)?;
         let mut results = Vec::new();
+        let mut archives = super::zip_sources::OpenArchives::new();
         for (id, format, relative, external) in files {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
-            *after = id;
             let inspected = match external {
                 // FBX parsing seeks, so a ZIP entry goes through a temporary file, not the cache.
                 Some(zip) if super::zip_sources::is_zip(&zip.root_identity) => self
-                    .with_zip_file(&relative, &zip, |path| inspect(path, &format))
+                    .with_zip_file(&mut archives, &relative, &zip, cancel, |path| {
+                        inspect(path, &format)
+                    })
                     .ok(),
                 external => self
                     .locate(&relative, external)
                     .ok()
                     .map(|path| inspect(&path, &format)),
             };
+            // An extraction stopped by `cancel` is neither a result nor past the cursor.
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            *after = id;
             if let Some(result) = inspected {
                 results.push((id, result));
             }
