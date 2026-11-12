@@ -1273,7 +1273,7 @@ p {
   flex: 0 0 auto;
   margin: auto;
 }
-.model-viewport { overflow: hidden; background: #202c3b; }
+.model-viewport { overflow: hidden; background: #202c3b; height: clamp(200px, calc(100dvh - 620px), 480px); }
 .model-viewport canvas { display: block; width: 100%; height: 100%; }
 .visual-controls, .sprite-controls { margin-top: 12px; }
 .visual-controls { display: grid; gap: 10px; }

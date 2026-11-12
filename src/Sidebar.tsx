@@ -45,6 +45,7 @@ export default function Sidebar({ library, traitsPending, catalogType, chooseTyp
             const count = item.value === "" ? library.assetCount : library.kindCounts[item.value];
             const detecting = item.value === "animation" && traitsPending;
             return <button key={item.value || "all"} data-type={item.value} className={`package-item ${active ? "active" : ""}`} aria-pressed={active}
+              title={item.value === "animation" ? "Reine Animationen ohne Mesh. Animierte Modelle stehen unter 3D-Modelle." : undefined}
               aria-label={`${item.label} · ${number.format(count)}${detecting ? " · werden erkannt" : ""}`}
               onClick={() => { if (item.value === "") filterPackage(null); chooseType(item.value); }}>
               <Icon name={item.icon} /><span>{item.label}</span><span className="count">{number.format(count)}{detecting && <span title="Animationen werden erkannt"> …</span>}</span>

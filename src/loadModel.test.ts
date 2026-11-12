@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Bone, BoxGeometry, DataTexture, Group, Mesh, MeshStandardMaterial, PerspectiveCamera, Texture, Vector3 } from "three";
+import { Bone, BoxGeometry, BufferAttribute, DataTexture, Group, Mesh, MeshStandardMaterial, PerspectiveCamera, Points, Texture, Vector3 } from "three";
 import { TGALoader } from "three/addons/loaders/TGALoader.js";
 import { disposeObjects, fitModelCamera, modelScene, modelTextureAvailable, modelTransportUrl, type LoadedModel } from "./loadModel.ts";
 
@@ -76,6 +76,10 @@ test("the shared scene keeps skeleton-only models visible and rejects a degenera
   };
   const view = modelScene(loaded);
   assert.ok(view.scene.children.some((child) => child.type === "SkeletonHelper"));
+  const joints = view.scene.children.find((child) => child instanceof Points)!;
+  model.updateMatrixWorld(true);
+  (joints.onBeforeRender as () => void)();
+  assert.deepEqual(new Vector3().fromBufferAttribute(joints.geometry.getAttribute("position") as BufferAttribute, 1).toArray(), [0, 2, 0]);
   const camera = new PerspectiveCamera(45, 192 / 144, 0.01, 1000);
   fitModelCamera(camera, model);
   assert.ok(camera.position.toArray().every(Number.isFinite));

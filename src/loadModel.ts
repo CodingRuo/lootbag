@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
-  Bone, Color, DataTexture, DirectionalLight, FileLoader, HemisphereLight, Line, LoadingManager,
-  Material, Mesh, Object3D, PerspectiveCamera, Points, Scene, SkeletonHelper, Texture, Vector3,
+  Bone, BufferAttribute, BufferGeometry, Color, DataTexture, DirectionalLight, FileLoader, HemisphereLight, Line, LoadingManager,
+  Material, Mesh, Object3D, PerspectiveCamera, Points, PointsMaterial, Scene, SkeletonHelper, Texture, Vector3,
   type AnimationClip,
 } from "three";
 import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
@@ -277,6 +277,7 @@ export function modelScene(loaded: LoadedModel) {
   scene.background = new Color("#202c3b");
   scene.add(loaded.model, new HemisphereLight(0xffffff, 0x7185a2, 2));
   let skeleton: SkeletonHelper | null = null;
+  let joints: Points<BufferGeometry, PointsMaterial> | null = null;
   if (!loaded.stats.meshes && loaded.stats.bones) {
     skeleton = new SkeletonHelper(loaded.model);
     skeleton.setColors(new Color("#ffc46e"), new Color("#ffffff"));
@@ -285,12 +286,24 @@ export function modelScene(loaded: LoadedModel) {
       throw new Error("Das Skelett enthält keine darstellbaren Gelenkabstände.");
     }
     skeleton.frustumCulled = false;
-    scene.add(skeleton);
+    const bones = skeleton.bones;
+    const positions = new BufferAttribute(new Float32Array(bones.length * 3), 3);
+    joints = new Points(new BufferGeometry().setAttribute("position", positions),
+      new PointsMaterial({ color: "#ffffff", size: 5, sizeAttenuation: false, depthTest: false, depthWrite: false }));
+    joints.frustumCulled = false;
+    joints.renderOrder = 1;
+    const joint = new Vector3();
+    // Runs at render time, after the mixer update and world-matrix pass, so joints follow the pose.
+    joints.onBeforeRender = () => {
+      bones.forEach((bone, index) => positions.setXYZ(index, ...joint.setFromMatrixPosition(bone.matrixWorld).toArray()));
+      positions.needsUpdate = true;
+    };
+    scene.add(skeleton, joints);
   }
   const light = new DirectionalLight(0xffffff, 3);
   light.position.set(3, 5, 4);
   scene.add(light);
-  return { scene, dispose: () => skeleton?.dispose() };
+  return { scene, dispose: () => { skeleton?.dispose(); joints?.geometry.dispose(); joints?.material.dispose(); } };
 }
 
 export function fitModelCamera(camera: PerspectiveCamera, model: Object3D) {

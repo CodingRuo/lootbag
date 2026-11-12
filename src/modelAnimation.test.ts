@@ -75,6 +75,13 @@ test("switching clips restores unanimated properties and resets the selected pos
   assert.equal(animation.state.selected, 1);
   assert.equal(animation.state.time, 0);
   assert.equal(animation.state.playing, false);
+  animation.play();
+  animation.select(0);
+  assert.equal(animation.state.time, 0);
+  assert.equal(animation.state.playing, true);
+  animation.update(1);
+  assert.equal(target.position.x, 2);
+  animation.select(1);
   animation.seek(0.5);
   assert.equal(target.scale.x, 1.5);
   animation.dispose();
@@ -98,6 +105,18 @@ test("invalid clip indices, times and speeds cannot corrupt the active pose", ()
   animation.dispose();
   assert.throws(() => new ModelAnimation(model, []), /Animation/);
   assert.throws(() => new ModelAnimation(model, [new AnimationClip("Invalid", 0, [])]), /Animation/);
+});
+
+test("invalid clips are skipped while valid ones stay playable", () => {
+  const { model, target, clips } = animatedModel();
+  clips[0].name = "Walk";
+  const animation = new ModelAnimation(model, [clips[0], new AnimationClip("Take 001", 0, [])]);
+  assert.equal(animation.skipped, 1);
+  assert.deepEqual(animation.clips.map((clip) => clip.name), ["Walk"]);
+  animation.play();
+  animation.update(1);
+  assert.equal(target.position.x, 2);
+  animation.dispose();
 });
 
 test("a skeleton without a mesh has finite camera bounds and visible animated bone lines", () => {

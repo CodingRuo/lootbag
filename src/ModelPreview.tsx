@@ -28,6 +28,7 @@ export default function ModelPreview({ file, onReady, visible = true }: {
   const [clips, setClips] = useState<{ name: string; duration: number }[]>([]);
   const [animationState, setAnimationState] = useState<ModelAnimation["state"] | null>(null);
   const [animationError, setAnimationError] = useState("");
+  const [skippedClips, setSkippedClips] = useState(0);
 
   useEffect(() => {
     isVisible.current = visible;
@@ -61,6 +62,7 @@ export default function ModelPreview({ file, onReady, visible = true }: {
     setClips([]);
     setAnimationState(null);
     setAnimationError("");
+    setSkippedClips(0);
     onReady(null);
     async function load() {
       try {
@@ -109,7 +111,8 @@ export default function ModelPreview({ file, onReady, visible = true }: {
             };
             player = { animation, start, stop, render, sync };
             playback.current = player;
-            setClips(modelClips.map((clip, index) => ({ name: clip.name || `Clip ${index + 1}`, duration: clip.duration })));
+            setSkippedClips(animation.skipped);
+            setClips(animation.clips.map((clip, index) => ({ name: clip.name || `Clip ${index + 1}`, duration: clip.duration })));
             // A bare skeleton shows nothing until it moves, so animation-only files start playing.
             if (!totals.meshes) { animation.play(); start(); }
             sync();
@@ -184,20 +187,8 @@ export default function ModelPreview({ file, onReady, visible = true }: {
       <p>Vollständiger Export gesperrt: das Modell referenziert PSD-Dateien.</p>
     </div>}
     {stats && <>
-      <p className="detail-hint">{stats.meshes} Meshes · {stats.vertices.toLocaleString("de-DE")} Vertices · {stats.triangles.toLocaleString("de-DE")} Dreiecke{stats.bones > 0 && ` · ${stats.bones} Bones`}</p>
-      <div className="visual-buttons camera-controls">
-        <button className="button outlined" aria-label="Modell nach links drehen" onClick={() => controls.current?.rotateLeft(Math.PI / 8)}>←</button>
-        <button className="button outlined" aria-label="Modell nach rechts drehen" onClick={() => controls.current?.rotateLeft(-Math.PI / 8)}>→</button>
-        <button className="button outlined" aria-label="Modell nach oben drehen" onClick={() => controls.current?.rotateUp(Math.PI / 8)}>↑</button>
-        <button className="button outlined" aria-label="Modell nach unten drehen" onClick={() => controls.current?.rotateUp(-Math.PI / 8)}>↓</button>
-        <button className="button outlined" aria-label="Modell vergrößern" onClick={() => controls.current?.dollyIn(1 / 1.2)}>+</button>
-        <button className="button outlined" aria-label="Modell verkleinern" onClick={() => controls.current?.dollyOut(1 / 1.2)}>−</button>
-        <button className="button outlined" onClick={() => fit.current?.()}>Einpassen</button>
-        <button className="button outlined" onClick={() => controls.current?.reset()}>Zurücksetzen</button>
-      </div>
-      <p className="detail-hint">Ziehen dreht · Mausrad zoomt · Pfeiltasten verschieben, mit Shift drehen sie.</p>
       {animationError && <p className="inline-error" role="alert">Animationsvorschau nicht verfügbar: {animationError}</p>}
-      {!animationState && !animationError && <p className="detail-hint">Keine Animations-Clips.</p>}
+      {skippedClips > 0 && <p className="inline-error" role="status">{skippedClips} {skippedClips === 1 ? "Clip" : "Clips"} übersprungen (leer)</p>}
       {animationState && <section className="model-animation" aria-label="3D-Animation">
         <div className="model-animation-fields">
           <label>Animations-Clip
@@ -216,13 +207,30 @@ export default function ModelPreview({ file, onReady, visible = true }: {
             {animationState.playing ? "Animation pausieren" : "Animation abspielen"}
           </button>
           <label><input type="checkbox" checked={animationState.loop} onChange={(event) => changeAnimation((animation) => animation.setLoop(event.target.checked))} /> Loop</label>
-          <output aria-label="Animations-Zeit">{animationState.time.toFixed(2)} / {animationState.duration.toFixed(2)} s</output>
+          <button className="button outlined" aria-label="Kamera einpassen" onClick={() => fit.current?.()}>Einpassen</button>
         </div>
-        <label className="model-animation-timeline">Animationsposition
+        <label className="model-animation-timeline"><span>Animationsposition
+            <output aria-label="Animations-Zeit">{animationState.time.toFixed(2)} / {animationState.duration.toFixed(2)} s</output></span>
           <input type="range" min="0" max={animationState.duration} step="0.01" value={animationState.time}
             onChange={(event) => changeAnimation((animation) => animation.seek(Number(event.target.value)))} />
         </label>
       </section>}
+      <details className="sprite-controls" open={!clips.length}>
+        <summary>Ansicht & Details</summary>
+        <div className="visual-buttons camera-controls">
+          <button className="button outlined" aria-label="Modell nach links drehen" onClick={() => controls.current?.rotateLeft(Math.PI / 8)}>←</button>
+          <button className="button outlined" aria-label="Modell nach rechts drehen" onClick={() => controls.current?.rotateLeft(-Math.PI / 8)}>→</button>
+          <button className="button outlined" aria-label="Modell nach oben drehen" onClick={() => controls.current?.rotateUp(Math.PI / 8)}>↑</button>
+          <button className="button outlined" aria-label="Modell nach unten drehen" onClick={() => controls.current?.rotateUp(-Math.PI / 8)}>↓</button>
+          <button className="button outlined" aria-label="Modell vergrößern" onClick={() => controls.current?.dollyIn(1 / 1.2)}>+</button>
+          <button className="button outlined" aria-label="Modell verkleinern" onClick={() => controls.current?.dollyOut(1 / 1.2)}>−</button>
+          <button className="button outlined" onClick={() => fit.current?.()}>Einpassen</button>
+          <button className="button outlined" onClick={() => controls.current?.reset()}>Zurücksetzen</button>
+        </div>
+        <p className="detail-hint">Ziehen dreht · Mausrad zoomt · Pfeiltasten verschieben, mit Shift drehen sie.</p>
+        <p className="detail-hint">{stats.meshes} Meshes · {stats.vertices.toLocaleString("de-DE")} Vertices · {stats.triangles.toLocaleString("de-DE")} Dreiecke{stats.bones > 0 && ` · ${stats.bones} Bones`}</p>
+        {!animationState && !animationError && <p className="detail-hint">Keine Animations-Clips.</p>}
+      </details>
     </>}
   </>;
 }

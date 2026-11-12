@@ -16,18 +16,19 @@ export class ModelAnimation {
   private action: AnimationAction;
   private clip: AnimationClip;
   readonly clips: AnimationClip[];
+  readonly skipped: number;
   private selected = 0;
   private loop = true;
   private speed = 1;
 
   constructor(root: Object3D, clips: AnimationClip[]) {
-    if (!clips.length || clips.some((clip) => !Number.isFinite(clip.duration) || clip.duration <= 0 || !clip.tracks.length)) {
-      throw new Error("Die Animation hat keine gültigen Tracks oder keine gültige Dauer.");
-    }
+    const valid = clips.filter((clip) => Number.isFinite(clip.duration) && clip.duration > 0 && clip.tracks.length > 0);
+    if (!valid.length) throw new Error("Die Animation hat keine gültigen Tracks oder keine gültige Dauer.");
     this.root = root;
     this.mixer = new AnimationMixer(root);
-    this.clips = clips;
-    this.clip = clips[0];
+    this.clips = valid;
+    this.skipped = clips.length - valid.length;
+    this.clip = valid[0];
     this.action = this.mixer.clipAction(this.clip).setLoop(LoopRepeat, Infinity).play();
     this.action.clampWhenFinished = true;
     this.action.paused = true;
@@ -43,6 +44,7 @@ export class ModelAnimation {
 
   select(index: number) {
     if (!Number.isInteger(index) || !this.clips[index]) throw new Error("Der Animations-Clip ist nicht verfügbar.");
+    const playing = this.state.playing;
     this.mixer.stopAllAction();
     this.selected = index;
     this.clip = this.clips[index];
@@ -50,7 +52,7 @@ export class ModelAnimation {
     this.action.clampWhenFinished = true;
     this.setLoop(this.loop);
     this.setSpeed(this.speed);
-    this.action.paused = true;
+    this.action.paused = !playing;
     this.mixer.update(0);
   }
 
