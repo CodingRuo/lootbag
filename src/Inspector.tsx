@@ -16,7 +16,7 @@ import { saveFolderMember, type FolderMember } from "./projectExport.ts";
 import { originFacts } from "./packageInfo.ts";
 import { nextInspectorTab, type InspectorTab } from "./inspectorTabs";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
-import { Icon, bytes, isAnimationOnly, type Act, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { Icon, bytes, isAnimationOnly, zipEntryPath, type Act, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type DuplicateCopy = { fileId: number; assetId: number; packageName: string; path: string };
 
@@ -340,8 +340,8 @@ export default function Inspector({ library, query, selected, setSelected, file,
                   )}
                   {selectedPackage?.sourceKind === "external" && (
                     <div>
-                      <dt>Externer Quellordner</dt>
-                      <dd className="source-path">{selectedPackage.externalRoot}</dd>
+                      <dt>{selectedPackage.zip ? "Aus ZIP" : "Externer Quellordner"}</dt>
+                      <dd className="source-path">{selectedPackage.zip ? zipEntryPath(selectedPackage, file) : selectedPackage.externalRoot}</dd>
                       <dd className={file.available ? "" : "unavailable"}>{file.available ? "Datei erreichbar" : "Datei nicht verfügbar"}</dd>
                     </div>
                   )}
@@ -349,7 +349,7 @@ export default function Inspector({ library, query, selected, setSelected, file,
                 {selectedPackage?.sourceKind === "external" && (
                   <>
                     <button className="text-button" onClick={() => relinkSource(selectedPackage)} disabled={actionsDisabled}>Quelle neu verknüpfen</button>
-                    <p className="detail-hint">Wähle den verschobenen Originalordner.</p>
+                    <p className="detail-hint">{selectedPackage.zip ? "Wähle das verschobene Original-ZIP." : "Wähle den verschobenen Originalordner."}</p>
                   </>
                 )}
               </section>

@@ -311,7 +311,7 @@ fn estimate_open_zip(
     })
 }
 
-fn open_zip(source: &Path) -> Result<ZipArchive<fs::File>> {
+pub(super) fn open_zip(source: &Path) -> Result<ZipArchive<fs::File>> {
     let file = fs::File::open(source)
         .map_err(|e| format!("ZIP-Datei nicht verfügbar oder nicht lokal lesbar: {e}"))?;
     open_zip_file(file)
@@ -328,7 +328,7 @@ fn open_zip_file(file: fs::File) -> Result<ZipArchive<fs::File>> {
         .map_err(|e| format!("ZIP-Datei ist beschädigt oder nicht unterstützt: {e}"))
 }
 
-fn checked_zip_path(entry: &zip::read::ZipFile<'_, fs::File>) -> Result<PathBuf> {
+pub(super) fn checked_zip_path(entry: &zip::read::ZipFile<'_, fs::File>) -> Result<PathBuf> {
     let path = entry.enclosed_name().ok_or("Unsicherer Dateipfad im ZIP")?;
     if path.as_os_str().is_empty()
         || entry.name().contains('\\')
@@ -348,7 +348,7 @@ fn checked_zip_path(entry: &zip::read::ZipFile<'_, fs::File>) -> Result<PathBuf>
     Ok(path)
 }
 
-fn create_safe_directories(staging: &Path, relative: &Path) -> Result<()> {
+pub(super) fn create_safe_directories(staging: &Path, relative: &Path) -> Result<()> {
     let mut path = staging.to_owned();
     for part in relative.components() {
         path.push(part);

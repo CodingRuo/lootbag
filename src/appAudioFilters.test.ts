@@ -87,6 +87,7 @@ class Harness {
   savedSearches: any[] = [];
   savedSearchCalls: [string, any][] = [];
   annotations: any[] = [];
+  references: any[] = [];
   audioTags: any = { status: "ready", title: null, artist: null, album: null, genre: null, message: null };
   invoke = (command: string, args: any) => {
     if (command === "prepare_audio_analysis") return new Promise((resolve, reject) => this.prepareRequests.push({ args, resolve, reject }));
@@ -102,6 +103,7 @@ class Harness {
       this.savedSearchCalls.push([command, args]);
       return Promise.resolve(command === "save_search" ? { id: 9, name: args.name.trim(), queryJson: args.queryJson } : undefined);
     }
+    if (command === "reference_zip") { this.references.push(args); return Promise.resolve({ ...library.packages[0], id: 2, name: "Forest", zip: true }); }
     if (command === "annotate_asset") { this.annotations.push(args); return Promise.resolve(); }
     if (command === "set_package_info") { this.packageInfoSaves.push(args); return Promise.resolve(); }
     if (command === "open_library") return Promise.resolve({ ...library, root: "/owned/reopened" });
@@ -756,5 +758,21 @@ test("inspector offers auto-tags the user does not have and adopts one into the 
     assert.equal(app.elements(app.tree).some((node) => node.props["aria-label"] === "Auto-Tag wind übernehmen"), false);
     app.control("Auto-Tag river übernehmen").props.onClick(); await app.settle();
     assert.deepEqual(app.annotations, [{ assetId: 1, name: "Sound", tags: ["Wind", "river"] }]);
+  } finally { app.dispose(); }
+});
+
+test("a ZIP package shows its badge and archive entry, and ZIP einbinden references the chosen archive", async () => {
+  const app = new Harness();
+  const zipPackage = { ...library.packages[0], relativePath: "zip/k1", sourceKind: "external", externalRoot: "/Downloads/Forest.zip", zip: true };
+  app.libraryInfo = { ...library, packages: [zipPackage] };
+  try {
+    await app.settle(); await app.runTimers();
+    app.requests[0].resolve(page([{ ...asset, files: [{ ...matchingFile, relativePath: "zip/k1/Sounds/match.mp3" }] }])); await app.settle();
+    assert.equal(app.text(app.find((node) => node.props.className === "package-zip-badge")), "ZIP");
+    assert.match(app.text(app.tree), /Aus ZIP\s+\/Downloads\/Forest\.zip\/Sounds\/match\.mp3/);
+    await app.click("ZIP einbinden");
+    assert.deepEqual(app.references, [{ source: "/owned/reopened" }]);
+    await app.settle();
+    assert.match(app.text(app.tree), /Forest als ZIP eingebunden/);
   } finally { app.dispose(); }
 });

@@ -819,6 +819,21 @@ async fn reference_folder(app: AppHandle, source: String) -> Result<AssetPackage
 }
 
 #[tauri::command]
+async fn reference_zip(app: AppHandle, source: String) -> Result<AssetPackage> {
+    let source = PathBuf::from(source);
+    selected_path(&app, &source)?;
+    let root = active_root(&app)?;
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        // Entries are served from the library's cache, so the archive itself needs no scope.
+        let package = Library::writable(&root)?.reference_zip(&source)?;
+        start_backfill(&app, root.clone());
+        Ok(package)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn relink_source(app: AppHandle, package_id: i64, source: String) -> Result<AssetPackage> {
     let source = PathBuf::from(source);
     selected_path(&app, &source)?;
@@ -1453,6 +1468,7 @@ pub fn run() {
             estimate_zip,
             cancel_import,
             reference_folder,
+            reference_zip,
             relink_source,
             query_catalog,
             catalog_filters,

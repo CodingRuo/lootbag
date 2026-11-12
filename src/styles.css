@@ -494,7 +494,7 @@ p {
   text-align: left;
   font-size: 11px;
 }
-.package-item > span:not(.count):not(.package-source-status) {
+.package-item > span:not(.count):not(.package-source-status):not(.package-zip-badge) {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -517,6 +517,15 @@ p {
   flex: 0 0 auto;
   font-size: 11px;
   color: #8ba3bb;
+}
+.package-zip-badge {
+  flex: 0 0 auto;
+  border: 1px solid #3a4a5c;
+  border-radius: 3px;
+  padding: 0 3px;
+  color: #8ba3bb;
+  font-size: 8px;
+  letter-spacing: 0.04em;
 }
 .check-sources {
   margin: 12px 11px 0;

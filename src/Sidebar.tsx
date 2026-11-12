@@ -29,7 +29,7 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
   setShowTrash: Setter<boolean>;
   trashGeneration: RefObject<number>;
   openLibrary: () => void;
-  referenceFolder: () => void;
+  referenceFolder: (zip?: boolean) => void;
 }) {
   const allAssets = catalogType === "" && packageId === null && folderId === null;
   return (
@@ -89,7 +89,7 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
                 <button
                   className={`package-item ${packageId === item.id ? "active" : ""}`}
                   aria-pressed={packageId === item.id}
-                  aria-label={`${item.name} · ${number.format(item.assetCount)} Assets${item.sourceKind === "external" ? ` · Externe Quelle ${item.available ? "erreichbar" : "offline"}` : ""}`}
+                  aria-label={`${item.name} · ${number.format(item.assetCount)} Assets${item.sourceKind === "external" ? ` · ${item.zip ? "ZIP" : "Externe Quelle"} ${item.available ? "erreichbar" : "offline"}` : ""}`}
                   title={`${item.name}${item.sourceKind === "external" ? ` · Externe Quelle ${item.available ? "erreichbar" : "offline"}` : ""}`}
                   onClick={() => filterPackage(item.id)}
                 >
@@ -98,6 +98,7 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
                   <span className="count">
                     {number.format(item.assetCount)}
                   </span>
+                  {item.zip && <span className="package-zip-badge" aria-hidden="true">ZIP</span>}
                   {item.sourceKind === "external" && <span className={`package-source-status ${item.available ? "" : "unavailable"}`} aria-hidden="true">↗</span>}
                 </button>
               </TrashActions>
@@ -139,7 +140,9 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
             <p title={library.root}>{library.name}</p>
             <div className="storage-actions">
               <button className="text-button" onClick={openLibrary} disabled={actionsDisabled}>Bibliothek öffnen</button>
-              <button className="text-button" onClick={referenceFolder} disabled={actionsDisabled}>Externen Ordner einbinden</button>
+              <button className="text-button" onClick={() => referenceFolder()} disabled={actionsDisabled}>Externen Ordner einbinden</button>
+              <button className="text-button" onClick={() => referenceFolder(true)} disabled={actionsDisabled}
+                title="Nutzt das Archiv an Ort und Stelle; Dateien werden erst bei Vorschau oder Export entpackt">ZIP einbinden</button>
             </div>
           </div>
         </div>

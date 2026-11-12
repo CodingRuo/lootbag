@@ -1,5 +1,6 @@
 use super::{
-    assets, modified_identity, path_text, unique_suffix, AssetKind, ExportOutcome, Library, Result,
+    assets, modified_identity, path_text, unique_suffix, zip_sources, AssetKind, ExportOutcome,
+    Library, ReferencedLocation, Result,
 };
 use rusqlite::OptionalExtension;
 use std::{
@@ -114,9 +115,9 @@ impl Library {
         image_members: Option<&[i64]>,
     ) -> Result<ModelResources> {
         let entry = self.resolve_preview(file_id)?;
-        let (format, prefix, external_root): (String, String, Option<String>) = self.connection.query_row(
-            "SELECT f.format, p.relative_path, s.root FROM active_asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id LEFT JOIN external_sources s ON s.package_id = p.id WHERE f.id = ?1",
-            [file_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        let (format, prefix, external_root, source_identity): (String, String, Option<String>, Option<String>) = self.connection.query_row(
+            "SELECT f.format, p.relative_path, s.root, s.identity FROM active_asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id LEFT JOIN external_sources s ON s.package_id = p.id WHERE f.id = ?1",
+            [file_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).map_err(|error| format!("Modelldatei nicht im aktiven Katalog: {error}"))?;
         let expected_kind = if image_members.is_some() {
             AssetKind::Image
@@ -126,9 +127,25 @@ impl Library {
         if AssetKind::for_format(&format) != Some(expected_kind) {
             return Err("Diese Asset-Datei passt nicht zum Vorschau-Arbeitsablauf".into());
         }
-        let package_root = external_root
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.root.join(&prefix));
+        // A ZIP package previews from its cache, which `resolve_preview` above created.
+        let zip = match (external_root.clone(), source_identity) {
+            (Some(root), Some(root_identity)) if zip_sources::is_zip(&root_identity) => {
+                Some(ReferencedLocation {
+                    root,
+                    root_identity,
+                    prefix: prefix.clone(),
+                    identity: String::new(),
+                    modified: String::new(),
+                    size: 0,
+                })
+            }
+            _ => None,
+        };
+        let package_root = match (&zip, external_root) {
+            (Some(_), _) => self.root.join(".cache").join(&prefix),
+            (None, Some(root)) => PathBuf::from(root),
+            (None, None) => self.root.join(&prefix),
+        };
         let root_metadata = fs::symlink_metadata(&package_root)
             .map_err(|error| format!("Modellpaket nicht verfügbar: {error}"))?;
         if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
@@ -191,6 +208,16 @@ impl Library {
         } else if snapshot.format == "BLEND" {
             snapshot.errors.push("Blender: Nur gespeichertes Vorschaubild und Originaldatei; externe Texturen und verknüpfte Bibliotheken sind nicht aufgelöst.".into());
         } else {
+            if let Some(location) = &zip {
+                // shortcut: extracts every texture/.bin/.mtl of the archive once; narrow to referenced names if packs get huge.
+                self.extract_zip_resources(location, |path| {
+                    is_resource(path)
+                        || snapshot
+                            .declared_paths
+                            .iter()
+                            .any(|declared| Path::new(declared) == path)
+                })?;
+            }
             enumerate_resources(&snapshot.package_root, Path::new(""), &mut candidates)?;
         }
         candidates.extend(snapshot.declared_paths.iter().cloned());
@@ -490,15 +517,7 @@ fn enumerate_resources(root: &Path, relative: &Path, paths: &mut BTreeSet<String
         };
         if kind.is_dir() {
             enumerate_resources(root, &path, paths)?;
-        } else if kind.is_file()
-            && (assets::candidate_format(&path).and_then(AssetKind::for_format)
-                == Some(AssetKind::Image)
-                || path.extension().is_some_and(|extension| {
-                    extension.eq_ignore_ascii_case("bin")
-                        || extension.eq_ignore_ascii_case("mtl")
-                        || extension.eq_ignore_ascii_case("tga")
-                }))
-        {
+        } else if kind.is_file() && is_resource(&path) {
             if let Ok(path) = path_text(&path) {
                 paths.insert(path);
             }
@@ -508,6 +527,18 @@ fn enumerate_resources(root: &Path, relative: &Path, paths: &mut BTreeSet<String
         }
     }
     Ok(())
+}
+
+/// Package files a model preview may load: images, glTF buffers and OBJ materials.
+fn is_resource(path: &Path) -> bool {
+    !assets::is_macos_metadata(path)
+        && (assets::candidate_format(path).and_then(AssetKind::for_format)
+            == Some(AssetKind::Image)
+            || path.extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("bin")
+                    || extension.eq_ignore_ascii_case("mtl")
+                    || extension.eq_ignore_ascii_case("tga")
+            }))
 }
 
 fn gltf_paths(input: &mut fs::File, entry_path: &str, format: &str) -> Result<Vec<String>> {

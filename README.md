@@ -53,6 +53,38 @@ require relinking after moving to another computer.
 Relinking validates the original source. Add a copied folder with different
 file identities as a new external source.
 
+## ZIP-Pakete ohne Entpacken
+
+`ZIP einbinden` (sidebar, next to `Externen Ordner einbinden`) registers a ZIP
+archive in place instead of extracting it. Only the archive directory is read:
+entry names, sizes and CRCs are catalogued with the same asset, variant and
+group rules as a folder import, and nothing is written to the library besides
+catalog rows. Absolute or `..` paths, backslashes, symlink/special entries and
+encrypted entries reject the whole archive. The package row shows a `ZIP`
+badge; `Herkunft` shows `Aus ZIP <archive>/<entry>`.
+
+The archive identity is its file identity plus size and modification time. A
+moved archive shows as offline and relinks like an external folder (choose the
+moved original ZIP); a rewritten archive or a copy is refused and must be
+added as a new ZIP.
+
+Previews, exports, audio analysis and model previews extract the needed entry
+on demand into `<library>/.cache/zip/<key>/<entry path>`, checking size and CRC
+and the free space first; later uses reuse that copy. A model preview also
+extracts the archive's images, `.bin` and `.mtl` files once so companions
+resolve as in a folder; model exports and project exports copy the same bytes.
+Duplicate hashing streams entries from the archive, and the model-trait pass
+reads each model through a temporary file that is deleted at once, so
+background jobs do not fill the cache. Unavailable archives are retried on the
+next run, unreadable entries store an error.
+
+The cache is disposable and never holds originals: it is dropped for a package
+whose archive changed, removed when the package is deleted from the trash (the
+archive itself is never touched), and deleted completely on library open when
+it exceeds 4 GiB. It can be deleted by hand while the app is closed and is not
+needed in backups. To turn a ZIP package into a managed one, import the same
+ZIP with `Paket importieren`.
+
 ## Images, sprites and models
 
 New imports and external references discover PNG/JPEG/WebP/TGA/GIF/Aseprite images and

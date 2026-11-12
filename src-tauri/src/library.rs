@@ -57,6 +57,8 @@ pub use bulk::{BulkAction, BulkResult, BulkSelection};
 pub use project_export::ProjectExportPlan;
 #[path = "package_info.rs"]
 mod package_info;
+#[path = "zip_sources.rs"]
+mod zip_sources;
 pub use package_info::{PackageInfo, PackageInfoDetails};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -70,6 +72,8 @@ pub struct AssetPackage {
     pub source_kind: String,
     pub available: bool,
     pub external_root: Option<String>,
+    /// External source that is a ZIP archive used in place.
+    pub zip: bool,
     pub tags: Vec<String>,
     pub info: PackageInfo,
 }
@@ -379,6 +383,7 @@ impl Library {
         search::create_schema(&connection)?;
         let mut library = Self { root, connection };
         library.remove_import_leftovers();
+        library.trim_zip_cache();
         let version: i64 = library
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -494,7 +499,7 @@ impl Library {
     fn migrate_external_identities(&mut self) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
-            let sources = self.connection.prepare("SELECT s.package_id, s.root, s.identity, p.relative_path FROM external_sources s JOIN packages p ON p.id = s.package_id WHERE s.identity NOT LIKE 'mac-volume:%'")
+            let sources = self.connection.prepare("SELECT s.package_id, s.root, s.identity, p.relative_path FROM external_sources s JOIN packages p ON p.id = s.package_id WHERE s.identity NOT LIKE 'mac-volume:%' AND s.identity NOT LIKE 'zip:%'")
                 .map_err(|e| format!("Externe Quellen nicht lesbar: {e}"))?
                 .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))
                 .map_err(|e| format!("Externe Quellen nicht lesbar: {e}"))?
@@ -607,6 +612,7 @@ impl Library {
             source_kind: "managed".into(),
             available: true,
             external_root: None,
+            zip: false,
             tags: Vec::new(),
             info: PackageInfo::default(),
         })
@@ -632,7 +638,19 @@ impl Library {
         )?;
         let mut files = Vec::new();
         discover_external(&source, Path::new(""), &mut files)?;
-        let relative_path = format!("external/{}", unique_suffix());
+        self.save_reference(name, source_path, identity, "external", files)
+    }
+
+    /// Catalogues an external folder or ZIP (`kind` names the catalog prefix) without copying.
+    fn save_reference(
+        &mut self,
+        name: String,
+        source_path: String,
+        identity: String,
+        kind: &str,
+        files: Vec<ReferencedFile>,
+    ) -> Result<AssetPackage> {
+        let relative_path = format!("{kind}/{}", unique_suffix());
         let transaction = self
             .connection
             .transaction()
@@ -682,6 +700,7 @@ impl Library {
             asset_count: groups.len() as i64,
             source_kind: "external".into(),
             available: true,
+            zip: kind == "zip",
             tags: Vec::new(),
             info: PackageInfo::default(),
         })
@@ -695,10 +714,37 @@ impl Library {
             return Err("Externe Quelle und Bibliothek dürfen nicht ineinander liegen".into());
         }
         let (identity, prefix): (String, String) = self.connection.query_row("SELECT s.identity, p.relative_path FROM external_sources s JOIN active_packages p ON p.id = s.package_id WHERE s.package_id = ?1", [package_id], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|e| format!("Externe Quelle nicht im Katalog: {e}"))?;
+        if zip_sources::is_zip(&identity) {
+            // Size and modification time are part of the identity, so every entry is unchanged.
+            if zip_sources::archive_identity(&source)? != identity {
+                return Err("Diese Datei ist nicht das ursprüngliche ZIP. Wähle das verschobene Original; eine geänderte Kopie bitte als neues ZIP einbinden".into());
+            }
+        } else {
+            self.verify_relinked_folder(package_id, &source, &identity, &prefix)?;
+        }
+        self.connection
+            .execute(
+                "UPDATE external_sources SET root = ?1 WHERE package_id = ?2",
+                params![path_text(&source)?, package_id],
+            )
+            .map_err(|e| format!("Quellpfad kann nicht gespeichert werden: {e}"))?;
+        self.packages()?
+            .into_iter()
+            .find(|package| package.id == package_id)
+            .ok_or_else(|| "Externe Quelle nicht im Katalog".into())
+    }
+
+    fn verify_relinked_folder(
+        &self,
+        package_id: i64,
+        source: &Path,
+        identity: &str,
+        prefix: &str,
+    ) -> Result<()> {
         let metadata =
-            fs::metadata(&source).map_err(|e| format!("Ersatzquelle nicht verfügbar: {e}"))?;
+            fs::metadata(source).map_err(|e| format!("Ersatzquelle nicht verfügbar: {e}"))?;
         // ponytail: filesystem identities support moves on the same volume; cross-volume copies need content verification before relinking.
-        if !metadata.is_dir() || file_identity(&source, &metadata)? != identity {
+        if !metadata.is_dir() || file_identity(source, &metadata)? != identity {
             return Err("Dieser Ordner ist nicht die ursprüngliche externe Quelle. Wähle den verschobenen Originalordner; eine Kopie bitte als neue Quelle einbinden".into());
         }
         let mut statement = self.connection.prepare("SELECT f.relative_path, e.identity, e.modified, f.size_bytes FROM asset_files f JOIN assets a ON a.id = f.asset_id JOIN external_files e ON e.file_id = f.id WHERE a.package_id = ?1").map_err(|e| format!("Quellkatalog nicht lesbar: {e}"))?;
@@ -716,11 +762,11 @@ impl Library {
             let (path, stored_identity, modified, size) =
                 file.map_err(|e| format!("Quellkatalog nicht lesbar: {e}"))?;
             let relative = Path::new(&path)
-                .strip_prefix(&prefix)
+                .strip_prefix(prefix)
                 .map_err(|_| "Ungültiger Dateipfad im Katalog")?;
             resolve_external(
-                &source,
-                &identity,
+                source,
+                identity,
                 relative,
                 &stored_identity,
                 &modified,
@@ -728,17 +774,7 @@ impl Library {
                 file_identity,
             )?;
         }
-        drop(statement);
-        self.connection
-            .execute(
-                "UPDATE external_sources SET root = ?1 WHERE package_id = ?2",
-                params![path_text(&source)?, package_id],
-            )
-            .map_err(|e| format!("Quellpfad kann nicht gespeichert werden: {e}"))?;
-        self.packages()?
-            .into_iter()
-            .find(|package| package.id == package_id)
-            .ok_or_else(|| "Externe Quelle nicht im Katalog".into())
+        Ok(())
     }
 
     pub fn packages(&self) -> Result<Vec<AssetPackage>> {
@@ -747,7 +783,11 @@ impl Library {
             .query_map([], |row| {
                 let external_root: Option<String> = row.get(5)?;
                 let identity: Option<String> = row.get(6)?;
+                let zip = identity.as_deref().is_some_and(zip_sources::is_zip);
                 let available = external_root.as_ref().is_none_or(|root| {
+                    if zip {
+                        return zip_sources::archive_identity(Path::new(root)).ok() == identity;
+                    }
                     fs::symlink_metadata(root).ok().is_some_and(|metadata| {
                         metadata.is_dir()
                             && !metadata.file_type().is_symlink()
@@ -769,6 +809,7 @@ impl Library {
                     .into(),
                     available,
                     external_root,
+                    zip,
                     tags: Vec::new(),
                     info: PackageInfo::default(),
                 })
@@ -1026,6 +1067,13 @@ impl Library {
             .map_err(failed)?
             .collect::<std::result::Result<_, _>>()
             .map_err(failed)?;
+        let zip_caches: Vec<String> = transaction
+            .prepare("SELECT p.relative_path FROM trash t JOIN packages p ON p.id = t.package_id JOIN external_sources s ON s.package_id = p.id WHERE s.identity LIKE 'zip:%'")
+            .map_err(failed)?
+            .query_map([], |row| row.get(0))
+            .map_err(failed)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(failed)?;
         transaction
             .execute_batch(
                 "CREATE TEMP TABLE doomed_packages AS SELECT package_id AS id FROM trash WHERE package_id IS NOT NULL;
@@ -1052,6 +1100,9 @@ impl Library {
             )
             .map_err(failed)?;
         transaction.commit().map_err(failed)?;
+        for prefix in &zip_caches {
+            self.remove_zip_cache(prefix);
+        }
         let disk_errors = managed
             .iter()
             .filter_map(|relative| {
@@ -1571,7 +1622,7 @@ impl Library {
                     AssetFile {
                         id: row.get(1)?,
                         original_filename: row.get(2)?,
-                        available: self.locate(&relative_path, external).is_ok(),
+                        available: self.available(&relative_path, external),
                         relative_path,
                         kind: AssetKind::for_format(&format)
                             .ok_or(rusqlite::Error::InvalidQuery)?,
@@ -1610,8 +1661,24 @@ impl Library {
         self.locate(&relative, external)
     }
 
+    /// Like `locate().is_ok()`, but a ZIP entry is only checked against its archive, not extracted.
+    fn available(&self, relative: &str, external: Option<ReferencedLocation>) -> bool {
+        match external {
+            Some(zip) if zip_sources::is_zip(&zip.root_identity) => {
+                zip_sources::archive_identity(Path::new(&zip.root))
+                    .ok()
+                    .as_ref()
+                    == Some(&zip.root_identity)
+            }
+            external => self.locate(relative, external).is_ok(),
+        }
+    }
+
     fn locate(&self, relative: &str, external: Option<ReferencedLocation>) -> Result<PathBuf> {
         if let Some(external) = external {
+            if zip_sources::is_zip(&external.root_identity) {
+                return self.locate_zip(relative, &external);
+            }
             let relative = Path::new(&relative)
                 .strip_prefix(&external.prefix)
                 .map_err(|_| "Ungültiger Dateipfad im Katalog")?;
@@ -7121,4 +7188,3 @@ mod tests {
 #[cfg(test)]
 #[path = "audio_population_tests.rs"]
 mod audio_population_tests;
-

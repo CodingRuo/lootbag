@@ -16,9 +16,13 @@ export type AssetPackage = {
   sourceKind: "managed" | "external";
   available: boolean;
   externalRoot: string | null;
+  // External source that is a ZIP archive used without extracting it.
+  zip: boolean;
   tags: string[];
   info: PackageInfo;
 };
+// "<archive>/<entry>" of a file in a ZIP package; catalog paths are "<package path>/<entry>".
+export const zipEntryPath = (source: AssetPackage, file: AssetFile) => `${source.externalRoot}/${file.relativePath.slice(source.relativePath.length + 1)}`;
 export type AssetKind = "sound" | "image" | "model";
 export type AssetFile = {
   id: number;

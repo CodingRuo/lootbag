@@ -21,6 +21,8 @@ import Inspector from "./Inspector";
 
 type EmptiedTrash = { packages: number; files: number; diskErrors: string[] };
 
+const ZIP_FILTER = [{ name: "ZIP-Archiv", extensions: ["zip"] }];
+
 export default function App() {
   const [library, setLibrary] = useState<LibraryInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(
@@ -195,11 +197,12 @@ export default function App() {
     });
   }
 
-  function referenceFolder() {
+  function referenceFolder(zip = false) {
     void act("Externe Quelle wird eingelesen …", async () => {
-      const source = await open({ directory: true, multiple: false, title: "Externen Asset-Ordner einbinden" });
+      const source = await open(zip ? { multiple: false, filters: ZIP_FILTER, title: "ZIP-Paket ohne Entpacken einbinden" }
+        : { directory: true, multiple: false, title: "Externen Asset-Ordner einbinden" });
       if (!source) return;
-      const referenced = await invoke<AssetPackage>("reference_folder", { source });
+      const referenced = await invoke<AssetPackage>(zip ? "reference_zip" : "reference_folder", { source });
       setLibrary(await invoke<LibraryInfo>("get_library"));
       setPackageId(referenced.id);
       setFolderId(null);
@@ -207,7 +210,7 @@ export default function App() {
       setText("");
       setOffset(0);
       setRevision((value) => value + 1);
-      setNotice({ tone: "success", message: `${referenced.name} extern eingebunden · ${number.format(referenced.assetCount)} Assets.` });
+      setNotice({ tone: "success", message: `${referenced.name} ${zip ? "als ZIP" : "extern"} eingebunden · ${number.format(referenced.assetCount)} Assets.` });
     });
   }
 
@@ -220,7 +223,8 @@ export default function App() {
 
   function relinkSource(sourcePackage: AssetPackage) {
     void act("Quelle wird neu verknüpft …", async () => {
-      const source = await open({ directory: true, multiple: false, title: "Verschobenen ursprünglichen Quellordner auswählen" });
+      const source = await open(sourcePackage.zip ? { multiple: false, filters: ZIP_FILTER, title: "Verschobenes ursprüngliches ZIP auswählen" }
+        : { directory: true, multiple: false, title: "Verschobenen ursprünglichen Quellordner auswählen" });
       if (!source) return;
       await invoke<AssetPackage>("relink_source", { packageId: sourcePackage.id, source });
       setLibrary(await invoke<LibraryInfo>("get_library"));

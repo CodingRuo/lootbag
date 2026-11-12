@@ -329,8 +329,18 @@ impl Library {
                 break;
             }
             *after = id;
-            if let Ok(path) = self.locate(&relative, external) {
-                results.push((id, inspect(&path, &format)));
+            let inspected = match external {
+                // FBX parsing seeks, so a ZIP entry goes through a temporary file, not the cache.
+                Some(zip) if super::zip_sources::is_zip(&zip.root_identity) => self
+                    .with_zip_file(&relative, &zip, |path| inspect(path, &format))
+                    .ok(),
+                external => self
+                    .locate(&relative, external)
+                    .ok()
+                    .map(|path| inspect(&path, &format)),
+            };
+            if let Some(result) = inspected {
+                results.push((id, result));
             }
         }
         let transaction = self.connection.unchecked_transaction().map_err(failed)?;

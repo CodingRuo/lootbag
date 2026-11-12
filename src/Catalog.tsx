@@ -219,7 +219,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
         {filteredPackage?.sourceKind === "external" && (
           <section className="source-controls" aria-label="Externe Quelle">
             <div>
-              <strong className={filteredPackage.available ? "" : "unavailable"}>Externe Quelle · {filteredPackage.available ? "erreichbar" : "nicht verfügbar"}</strong>
+              <strong className={filteredPackage.available ? "" : "unavailable"}>{filteredPackage.zip ? "ZIP-Quelle" : "Externe Quelle"} · {filteredPackage.available ? "erreichbar" : "nicht verfügbar"}</strong>
               <p>{filteredPackage.externalRoot}</p>
             </div>
             <button className="text-button" onClick={() => relinkSource(filteredPackage)} disabled={actionsDisabled}>Quelle neu verknüpfen</button>

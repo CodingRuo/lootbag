@@ -6,7 +6,6 @@ use std::{
     collections::HashMap,
     fs,
     io::{self, Read},
-    path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -29,8 +28,7 @@ pub(super) fn has_copy() -> String {
     format!("EXISTS (SELECT 1 FROM file_hashes h {COPIES} WHERE h.file_id = f.id)")
 }
 
-fn hash(path: &Path) -> io::Result<String> {
-    let mut file = fs::File::open(path)?;
+fn hash(file: &mut dyn Read) -> io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 1 << 20];
     loop {
@@ -79,8 +77,18 @@ impl Library {
                 break;
             }
             *after = id;
-            if let Ok(path) = self.locate(&relative, external) {
-                results.push((id, size, hash(&path).map_err(|e| e.to_string())));
+            let hashed = match external {
+                // ZIP entries are streamed; an unavailable archive is retried like an offline folder.
+                Some(zip) if super::zip_sources::is_zip(&zip.root_identity) => {
+                    self.read_zip(&relative, &zip, hash).ok()
+                }
+                external => self
+                    .locate(&relative, external)
+                    .ok()
+                    .map(|path| fs::File::open(path).and_then(|mut file| hash(&mut file))),
+            };
+            if let Some(result) = hashed {
+                results.push((id, size, result.map_err(|e| e.to_string())));
             }
         }
         let transaction = self.connection.unchecked_transaction().map_err(failed)?;
