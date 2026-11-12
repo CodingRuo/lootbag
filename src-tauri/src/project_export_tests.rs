@@ -260,7 +260,8 @@ fn fbx_and_obj_exports_include_referenced_textures_and_materials_only() {
     let workspace = Workspace::new();
     write(
         workspace.path("Kit/FBX/Crate.fbx"),
-        b"Kaydara\0..\\..\\Textures\\Crate_Wood.PSD\0",
+        // Also names the copied PNG and an unrelated "Old_Crate_Wood": the PSD still needs its note.
+        b"Kaydara\0..\\..\\Textures\\Crate_Wood.PSD\0Crate_Wood.png\0Old_Crate_Wood.tga\0",
     );
     write(workspace.path("Kit/Textures/Crate_Wood.png"), b"wood");
     write(workspace.path("Kit/Textures/Unused.png"), b"unused");

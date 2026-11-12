@@ -124,8 +124,13 @@ test("clips with unbindable tracks are skipped and a failing switch keeps the cu
   const broken = new AnimationClip("Broken", 1, [new VectorKeyframeTrack("not-a-track", [0, 1], [0, 0, 0, 1, 1, 1])]);
   const elsewhere = new AnimationClip("Elsewhere", 1, [new VectorKeyframeTrack("Missing.position", [0, 1], [0, 0, 0, 1, 1, 1])]);
   const grow = new AnimationClip("Grow", 1, [new VectorKeyframeTrack("Moving.scale", [0, 1], [1, 1, 1, 2, 2, 2])]);
-  const animation = new ModelAnimation(model, [broken, elsewhere, clips[0], grow]);
-  assert.equal(animation.skipped, 2);
+  // One bindable track must not hide a malformed one behind it.
+  const mixed = new AnimationClip("Mixed", 1, [
+    new VectorKeyframeTrack("Moving.position", [0, 1], [0, 0, 0, 1, 1, 1]),
+    new VectorKeyframeTrack("not-a-track", [0, 1], [0, 0, 0, 1, 1, 1]),
+  ]);
+  const animation = new ModelAnimation(model, [broken, elsewhere, mixed, clips[0], grow]);
+  assert.equal(animation.skipped, 3);
   assert.deepEqual(animation.clips.map((clip) => clip.name), ["Move", "Grow"]);
   animation.play();
   animation.update(0.5);

@@ -10,11 +10,12 @@ export function modelPreviewBounds(model: Object3D) {
   return box;
 }
 
-// A clip needs a duration, parsable track names (three.js throws on binding otherwise) and one track that targets this model.
+// A clip needs a duration, only parsable track names (three.js throws mid-binding otherwise) and one track that targets this model.
 function playable(root: Object3D, clip: AnimationClip) {
   if (!Number.isFinite(clip.duration) || clip.duration <= 0 || !clip.tracks.length) return false;
   try {
-    return clip.tracks.some((track) => PropertyBinding.findNode(root, PropertyBinding.parseTrackName(track.name).nodeName));
+    const nodes = clip.tracks.map((track) => PropertyBinding.parseTrackName(track.name).nodeName);
+    return nodes.some((node) => PropertyBinding.findNode(root, node));
   } catch {
     return false;
   }

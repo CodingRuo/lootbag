@@ -353,36 +353,44 @@ fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String
             .to_string_lossy()
             .into_owned()
     };
-    let find = |needle: &[u8]| {
-        lower.iter().zip(&texts).find_map(|(text, raw)| {
-            let at = text
-                .windows(needle.len())
-                .position(|window| window == needle)?;
-            Some((raw, at))
-        })
-    };
-    let mentioned = |path: &str| find(file_name(path).to_ascii_lowercase().as_bytes()).is_some();
+    let copied: HashSet<String> = included
+        .iter()
+        .map(|path| file_name(path).to_ascii_lowercase())
+        .collect();
     let mut notes = Vec::new();
     for path in &included {
-        // Only when no same-stem file is referenced by its exact name.
-        if included
-            .iter()
-            .any(|other| stem(other) == stem(path) && mentioned(other))
-        {
-            continue;
-        }
+        // Every reference "<stem>.<ext>" whose exact file is not copied gets a note, even if another
+        // extension of the same stem is referenced and copied too.
         let needle = [stem(path), b".".to_vec()].concat();
-        if let Some((raw, at)) = find(&needle) {
-            let end = at + needle.len();
-            let extension = raw[end..]
-                .iter()
-                .take_while(|byte| byte.is_ascii_alphanumeric())
-                .count();
-            notes.push(format!(
-                "Textur {} ersetzt durch {} – Referenz im Modell unverändert",
-                String::from_utf8_lossy(&raw[at..end + extension]),
-                file_name(path)
-            ));
+        for (text, raw) in lower.iter().zip(&texts) {
+            let mut from = 0;
+            while let Some(at) = text[from..]
+                .windows(needle.len())
+                .position(|window| window == needle.as_slice())
+                .map(|at| from + at)
+            {
+                let end = at + needle.len();
+                let extension = text[end..]
+                    .iter()
+                    .take_while(|byte| byte.is_ascii_alphanumeric())
+                    .count();
+                from = end;
+                // "wood." inside "darkwood.png" is another texture.
+                let joined =
+                    at > 0 && matches!(text[at - 1], b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-');
+                let referenced = String::from_utf8_lossy(&text[at..end + extension]).into_owned();
+                if joined || extension == 0 || copied.contains(&referenced) {
+                    continue;
+                }
+                let note = format!(
+                    "Textur {} ersetzt durch {} – Referenz im Modell unverändert",
+                    String::from_utf8_lossy(&raw[at..end + extension]),
+                    file_name(path)
+                );
+                if !notes.contains(&note) {
+                    notes.push(note);
+                }
+            }
         }
     }
     Ok((included.into_iter().map(str::to_owned).collect(), notes))
