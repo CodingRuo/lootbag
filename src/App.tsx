@@ -53,7 +53,7 @@ export default function App() {
   const renderedTrashScope = trashGeneration.current;
   const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
   const [modelSelection, setModelSelection] = useState<ModelExportSelection | null>(null);
-  const query = useCatalogQuery({ library, revision, setSelected, setSelection, setSelectedFileId, setModelSelection, setNotice });
+  const query = useCatalogQuery({ library, revision, refreshCatalog: () => refreshCatalog(), setSelected, setSelection, setSelectedFileId, setModelSelection, setNotice });
   const { setText, packageId, setPackageId, folderId, setFolderId, format, setOffset, setPage, focusAssetId, focusFileId, audioFilterCount, clearFilters } = query;
   const file = selected?.files.find((item) => item.id === selected?.imageGroup?.fileId)
     ?? selected?.files.find((item) => item.id === selectedFileId)

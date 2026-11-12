@@ -60,9 +60,9 @@ export default function Inspector({ library, query, selected, setSelected, file,
     // The check first drops hashes of changed files, which changes counts elsewhere too.
     invoke<{ copies: DuplicateCopy[]; dropped: number }>("asset_duplicates", { assetId: selected.id })
       .then((result) => {
-        if (!active) return;
-        setCopies(result.copies);
+        // A drop changes counts everywhere, so refresh even if the selection moved on meanwhile.
         if (result.dropped > 0) refreshCatalog();
+        if (active) setCopies(result.copies);
       })
       .catch(() => {});
     return () => { active = false; };

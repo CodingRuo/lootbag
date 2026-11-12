@@ -16,9 +16,10 @@ export type CatalogQuery = ReturnType<typeof useCatalogQuery>;
 export type SavedSearch = { id: number; name: string; queryJson: string };
 
 // Catalog query state, its debounced page loading and the filter choices for the active scope.
-export function useCatalogQuery({ library, revision, setSelected, setSelection, setSelectedFileId, setModelSelection, setNotice }: {
+export function useCatalogQuery({ library, revision, refreshCatalog, setSelected, setSelection, setSelectedFileId, setModelSelection, setNotice }: {
   library: LibraryInfo | null;
   revision: number;
+  refreshCatalog: () => void;
   setSelected: Setter<Asset | null>;
   setSelection: Setter<CatalogSelection>;
   setSelectedFileId: Setter<number | null>;
@@ -47,6 +48,13 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
       ? "Dauer: Minimum darf nicht größer als Maximum sein." : null;
   const [tag, setTag] = useState<string | null>(null);
   const [duplicates, setDuplicates] = useState(false);
+  // Whenever the Duplikate filter turns on (checkbox or saved search), first drop hashes of changed files.
+  useEffect(() => {
+    if (!duplicates || !library) return;
+    invoke<number>("verify_duplicates")
+      .then((dropped) => { if (dropped > 0) refreshCatalog(); })
+      .catch((error: unknown) => setNotice({ tone: "error", message: errorMessage(error) }));
+  }, [duplicates, library?.root]);
   const [filters, setFilters] = useState<CatalogFilters>({
     folders: [],
     formats: [],

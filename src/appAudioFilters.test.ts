@@ -718,6 +718,25 @@ test("turning the duplicate filter on verifies duplicates before querying and re
   }
 });
 
+test("a saved duplicate search verifies duplicates and switching the filter off stays off", async () => {
+  const app = new Harness();
+  const stored = { text: "", kind: null, workflow: null, packageId: null, folderId: null, originalFolder: null, format: null, tag: null, duplicates: true,
+    audioFilters: { minDurationSeconds: "", maxDurationSeconds: "", channels: "any", analysis: "any" } };
+  app.savedSearches = [{ id: 7, name: "Doppelte", queryJson: JSON.stringify(stored) }];
+  try {
+    await app.mount();
+    app.commands.length = 0;
+    app.find((node) => node.type === "button" && node.props.title === "Doppelte").props.onClick(); await app.settle(); await app.runTimers();
+    assert.ok(app.commands.includes("verify_duplicates"), "applying a saved duplicate search runs the check");
+    assert.equal(app.latestRequest?.args.query.duplicates, true);
+    const filter = () => app.elements(app.find((node) => node.props.className === "checkbox-filter")).find((node) => node.type === "input")!;
+    filter().props.onChange({ target: { checked: false } }); filter().props.onChange({ target: { checked: true } }); filter().props.onChange({ target: { checked: false } });
+    await app.settle(); await app.runTimers();
+    assert.equal(filter().props.checked, false, "the last choice wins");
+    assert.notEqual(app.latestRequest?.args.query.duplicates, true);
+  } finally { app.dispose(); }
+});
+
 test("a copy list check that dropped changed hashes refreshes the Sounds results and counts", async () => {
   const app = new Harness();
   app.droppedHashes = 1;
