@@ -1,4 +1,4 @@
-# GameAssetVerwaltung
+# Lootbag
 
 A dedicated game development asset library.
 

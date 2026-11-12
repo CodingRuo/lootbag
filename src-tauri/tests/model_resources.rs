@@ -1,4 +1,4 @@
-use game_asset_library::library::{AssetKind, CatalogQuery, ExportOutcome, Library};
+use lootbag::library::{AssetKind, CatalogQuery, ExportOutcome, Library};
 use std::{
     fs,
     path::{Path, PathBuf},

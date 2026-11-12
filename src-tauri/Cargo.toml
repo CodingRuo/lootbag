@@ -1,13 +1,14 @@
 [package]
-name = "game-asset-library"
+name = "lootbag"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
 
 [lib]
-name = "game_asset_library"
+name = "lootbag"
 
 [[bin]]
-name = "game-asset-library"
+name = "lootbag"
 path = "src/main.rs"
 required-features = ["desktop"]
 

@@ -94,27 +94,7 @@ p {
 .brand-mark {
   height: 40px;
   width: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  border-radius: 10px;
-  border: 1px solid #8f694048;
-  background: #edb05c0c;
-  color: var(--amber);
-}
-.brand-mark i {
-  height: 13px;
-  width: 3px;
-  background: currentColor;
-  border-radius: 2px;
-}
-.brand-mark i:nth-child(2),
-.brand-mark i:nth-child(4) {
-  height: 21px;
-}
-.brand-mark i:nth-child(3) {
-  height: 29px;
+  flex: none;
 }
 .topbar-actions {
   display: flex;
@@ -1395,10 +1375,7 @@ p {
 .editor-shell .brand { gap: 10px; }
 .editor-shell .brand strong { font-size: 13px; }
 .editor-shell .brand div > span { display: none; }
-.editor-shell .brand-mark { width: 28px; height: 28px; border-radius: 6px; gap: 2px; }
-.editor-shell .brand-mark i { width: 2px; height: 9px; }
-.editor-shell .brand-mark i:nth-child(2), .editor-shell .brand-mark i:nth-child(4) { height: 14px; }
-.editor-shell .brand-mark i:nth-child(3) { height: 19px; }
+.editor-shell .brand-mark { width: 28px; height: 28px; }
 .editor-shell .topbar-actions { gap: 8px; }
 .editor-shell .topbar .button { min-height: 32px; padding: 6px 10px; font-size: 11px; }
 .editor-shell .topbar .button svg { width: 16px; height: 16px; }

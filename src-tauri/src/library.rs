@@ -249,7 +249,7 @@ impl Library {
     }
 
     pub fn create_default(home: &Path) -> Result<Self> {
-        let root = home.join("Game Asset Library");
+        let root = home.join("Lootbag Library");
         if root.join("catalog.sqlite3").exists() {
             Self::open(&root)
         } else {
@@ -6269,10 +6269,10 @@ mod tests {
         let automatic = Library::create_default(&home).unwrap();
         assert_eq!(
             automatic.root(),
-            home.join("Game Asset Library").canonicalize().unwrap()
+            home.join("Lootbag Library").canonicalize().unwrap()
         );
         drop(automatic);
-        assert!(Library::open(&home.join("Game Asset Library")).is_ok());
+        assert!(Library::open(&home.join("Lootbag Library")).is_ok());
     }
     #[test]
     fn referencing_a_folder_catalogs_provenance_without_copying_or_reading_contents() {

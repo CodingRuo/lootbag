@@ -1,4 +1,4 @@
-# Game Asset Library
+# Lootbag
 
 A personal library of resources used to develop games.
 

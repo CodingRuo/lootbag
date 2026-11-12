@@ -20,15 +20,22 @@ export default function Header({ library, actionsDisabled, busy, notice, setNoti
       {dropHover && <div className="native-drop-hint" role="status">{library && !actionsDisabled ? "Ordner oder ZIP-Pakete hier zum Importieren ablegen" : library ? "Bitte den laufenden Vorgang abwarten" : "Bitte zuerst eine Bibliothek öffnen"}</div>}
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-            <i />
-            <i />
-          </span>
+          <svg className="brand-mark" viewBox="0 0 64 64" aria-hidden="true">
+            <rect width="64" height="64" rx="14" fill="#151b2a" />
+            <path d="M23 22c-2-4-2-8 1-10 2 2 3 3 4 2 1-2 3-3 4-3s3 1 4 3c1 1 2 0 4-2 3 2 3 6 1 10z" fill="#e6b456" />
+            <path d="M25 24h14c8 4 13 11 13 20 0 8-7 12-20 12S12 52 12 44c0-9 5-16 13-20z" fill="#e6b456" />
+            <rect x="22" y="20.5" width="20" height="4.5" rx="2.25" fill="#a8711c" />
+            <path d="M40 23c5 1 7 5 6 9" fill="none" stroke="#a8711c" strokeWidth="2.5" strokeLinecap="round" />
+            <circle cx="46" cy="33.5" r="2.2" fill="#a8711c" />
+            <g fill="#151b2a">
+              <rect x="24" y="34" width="7" height="7" rx="1.6" />
+              <rect x="33" y="34" width="7" height="7" rx="1.6" />
+              <rect x="24" y="43" width="7" height="7" rx="1.6" />
+              <rect x="33" y="43" width="7" height="7" rx="1.6" fill="#e6b456" stroke="#151b2a" strokeWidth="2" />
+            </g>
+          </svg>
           <div>
-            <strong>Game Asset Library</strong>
+            <strong>Lootbag</strong>
             <span>Deine Assets. Dein nächstes Spiel.</span>
           </div>
         </div>

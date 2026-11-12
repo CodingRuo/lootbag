@@ -1,4 +1,4 @@
-use game_asset_library::library::{AssetKind, CatalogQuery, ExportOutcome, ImageWorkflow, Library};
+use lootbag::library::{AssetKind, CatalogQuery, ExportOutcome, ImageWorkflow, Library};
 use std::{
     fs,
     io::Write,

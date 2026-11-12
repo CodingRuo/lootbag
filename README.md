@@ -1,6 +1,7 @@
-# Game Asset Library
+# Lootbag
 
-A local game development asset library for sounds, images and models on macOS.
+Lootbag is a local game development asset library for sounds, images and
+models on macOS. It is free software under the GPL-3.0-or-later.
 The current editor increment is implemented on `codex/asset-editor`.
 Source checks, native acceptance, and final review gates are recorded below.
 
@@ -24,8 +25,9 @@ pnpm tauri build --bundles app
 
 ## Library storage
 
-Choose a library folder or let the app create its default in your home
-directory. The app reopens the last library on the next launch while its
+Choose a library folder or let the app create its default `~/Lootbag Library`.
+Libraries created before the rename (`~/Game Asset Library`) open via
+`Bibliothek öffnen`. The app reopens the last library on the next launch while its
 folder and catalog still exist. Managed imports copy package contents into library storage,
 preserving original folders and companion files. Referenced sources retain
 their files at the external location. The catalog stores names, tags, and
@@ -351,3 +353,9 @@ Ticket comments distinguish source checks and build results from actual
 native UI and audio acceptance. Synthetic acceptance fixtures are kept
 outside the repository; existing personal collections are not used by
 automated checks.
+
+## License
+
+Lootbag is licensed under the GNU General Public License v3.0 or later
+(`GPL-3.0-or-later`). See [LICENSE](LICENSE). Contributions are welcome; see
+[CONTRIBUTING.md](CONTRIBUTING.md).

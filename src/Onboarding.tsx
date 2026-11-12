@@ -72,7 +72,7 @@ export default function Onboarding({ actionsDisabled, createLibrary, openLibrary
             <Icon name="arrow" />
           </button>
           <p className="storage-hint">
-            Im Benutzerordner unter „Game Asset Library“
+            Im Benutzerordner unter „Lootbag Library“
           </p>
           <button
             className="button outlined full"

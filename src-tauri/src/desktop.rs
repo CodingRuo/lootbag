@@ -1433,7 +1433,7 @@ pub fn run() {
             export_asset
         ])
         .run(tauri::generate_context!())
-        .expect("Game Asset Library could not start");
+        .expect("Lootbag could not start");
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use game_asset_library::library::{AudioStatus, CatalogQuery, Library};
+use lootbag::library::{AudioStatus, CatalogQuery, Library};
 use std::{
     fs,
     path::PathBuf,
