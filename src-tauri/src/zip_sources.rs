@@ -76,21 +76,41 @@ fn extract(root: &Path, entry: &mut dyn Read, size: u64, target: &Path) -> Resul
     result
 }
 
-/// Cache files whose CRC was checked (or written) this session, with the size, modification time
-/// and CRC they had then; a change to either is checked again.
+/// Cache files whose CRC was checked (or written) this session, by canonical path, with the size,
+/// modification time and CRC they had then; a change to either is checked again.
+// shortcut: bytes changed inside the cache with size and modification time restored are not noticed
+// until the entry is evicted (cache deletion, library switch); the cache is the app's own folder.
 type Verified = HashMap<PathBuf, (u64, Option<std::time::SystemTime>, String)>;
 static VERIFIED: std::sync::Mutex<Option<Verified>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 thread_local!(static CRC_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
 
+fn verified_key(target: &Path) -> PathBuf {
+    target.canonical().unwrap_or_else(|_| target.to_owned())
+}
+
 fn remember_verified(target: &Path, crc: &str) {
     if let (Ok(m), Ok(mut verified)) = (fs::symlink_metadata(target), VERIFIED.lock()) {
         verified.get_or_insert_with(HashMap::new).insert(
-            target.to_owned(),
+            verified_key(target),
             (m.len(), m.modified().ok(), crc.to_owned()),
         );
     }
+}
+
+/// Forgets verified cache files below `dir`, or all of them.
+fn forget_verified(dir: Option<&Path>) {
+    if let Ok(mut verified) = VERIFIED.lock() {
+        if let Some(verified) = verified.as_mut() {
+            verified.retain(|path, _| dir.is_some_and(|dir| !path.starts_with(dir)));
+        }
+    }
+}
+
+/// On library activation: entries of another library or an earlier session are not trusted.
+pub(crate) fn forget_verified_zip_cache() {
+    forget_verified(None);
 }
 
 /// Whether `target` already holds the entry with this size and CRC; a link or folder there is refused.
@@ -101,10 +121,9 @@ fn cached(target: &Path, size: u64, crc: &str) -> Result<bool> {
         }
         Ok(m) if m.len() == size => {
             let stamp = (m.len(), m.modified().ok(), crc.to_owned());
-            if VERIFIED
-                .lock()
-                .is_ok_and(|verified| verified.as_ref().and_then(|v| v.get(target)) == Some(&stamp))
-            {
+            if VERIFIED.lock().is_ok_and(|verified| {
+                verified.as_ref().and_then(|v| v.get(&verified_key(target))) == Some(&stamp)
+            }) {
                 return Ok(true);
             }
             #[cfg(test)]
@@ -153,6 +172,7 @@ fn remove_cache_dir(root: &Path, target: &Path) {
     // nothing else uses; only that renamed directory, still in the checked parent, is deleted.
     // shortcut: a parent swapped for a link between the checks and the rename can still redirect it;
     // single-user local app, whoever can swap folders in the library already owns its files.
+    forget_verified(Some(&canonical));
     let moved = parent.join(format!(".remove-{}", unique_suffix()));
     if fs::rename(&canonical, &moved).is_ok()
         && moved
@@ -816,7 +836,7 @@ mod tests {
         let opens = || ARCHIVE_OPENS.with(|opens| opens.replace(0));
         opens();
 
-        let (hashed, _) = library.hash_pending_files(&mut 0, 100, &cancel).unwrap();
+        let (hashed, ..) = library.hash_pending_files(&mut 0, 100, &cancel).unwrap();
         assert_eq!(opens(), 1, "one archive directory parse per batch");
         let (inspected, _) = library
             .inspect_pending_models(&mut 0, 100, &cancel)
@@ -839,7 +859,7 @@ mod tests {
         // Done files are not picked up again.
         assert_eq!(
             library.hash_pending_files(&mut 0, 100, &cancel).unwrap(),
-            (0, 0)
+            (0, 0, 0)
         );
         assert_eq!(
             library
@@ -897,8 +917,48 @@ mod tests {
         assert_eq!(hashes, 0);
     }
 
+    /// Tests that count CRC reads, since they share the process-wide verified map.
+    static VERIFIED_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn deleting_the_cache_or_switching_libraries_forgets_verified_entries() {
+        let _serial = VERIFIED_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let workspace = Workspace::new();
+        let archive = workspace.0.join("pack.zip");
+        write_zip(&archive, &[("hit.wav", b"hit audio")]);
+        let mut library = Library::create(&workspace.0.join("library")).unwrap();
+        let package = library.reference_zip(&archive).unwrap();
+        let hit = file_id(&library, "hit.wav");
+        let reads = || CRC_READS.with(|reads| reads.replace(0));
+        let cached = library.resolve_preview(hit).unwrap();
+        let stamp = fs::metadata(&cached).unwrap().modified().unwrap();
+        reads();
+
+        forget_verified_zip_cache();
+        library.resolve_preview(hit).unwrap();
+        assert_eq!(reads(), 1, "a library switch checks the cache again");
+
+        // Deleted with its cache directory, then put back with the same size and time but other bytes.
+        library.remove_zip_cache(&package.relative_path);
+        assert!(!cached.exists());
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"HIT AUDIO").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&cached)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+        assert_eq!(
+            fs::read(library.resolve_preview(hit).unwrap()).unwrap(),
+            b"hit audio"
+        );
+        assert_eq!(reads(), 1, "the deleted entry was forgotten");
+    }
+
     #[test]
     fn a_verified_cache_hit_is_not_read_again_until_it_changes() {
+        let _serial = VERIFIED_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let workspace = Workspace::new();
         let archive = workspace.0.join("pack.zip");
         write_zip(&archive, &[("hit.wav", b"hit audio")]);

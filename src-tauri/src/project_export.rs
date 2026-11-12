@@ -416,6 +416,7 @@ fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String
     // Raw texts keep the reference's spelling for notes; matching uses the lowercase copies.
     let mut texts = vec![read(&snapshot.entry_path)?];
     let mut lower = vec![texts[0].to_ascii_lowercase()];
+    let mut text_paths = vec![snapshot.entry_path.as_str()];
     let mut names = mentioned_stems(&lower[0]);
     let others = snapshot
         .resources
@@ -430,12 +431,14 @@ fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String
         if names.contains(&stem(mtl)) {
             texts.push(read(mtl)?);
             lower.push(texts.last().unwrap().to_ascii_lowercase());
+            text_paths.push(mtl);
             names.extend(mentioned_stems(lower.last().unwrap()));
         }
     }
     let qualified = lower
         .iter()
-        .flat_map(|text| mentioned_paths(text))
+        .zip(&text_paths)
+        .flat_map(|(text, path)| mentioned_paths(text, folder_of(path)))
         .collect();
     let included = stem_companions(&others, &names, &qualified);
     let file_name = |path: &str| {
@@ -523,23 +526,36 @@ pub(super) fn mentioned_stems(text: &[u8]) -> HashSet<Vec<u8>> {
     mentioned(text, b"/\\\":")
 }
 
-/// Folder-qualified references as lowercase "dir/stem", e.g. `textures/albedo` from `..\\Textures\\albedo.png`.
-pub(super) fn mentioned_paths(text: &[u8]) -> HashSet<String> {
+/// Folder-qualified references as lowercase package paths without extension, resolved against
+/// `folder` (the referencing file's package folder): `..\\Textures\\albedo.png` in `Models/` is
+/// `textures/albedo`. Absolute references and ones leaving the package are left out, so their stem
+/// matches by name alone.
+pub(super) fn mentioned_paths(text: &[u8], folder: &str) -> HashSet<String> {
+    let folder = folder.to_ascii_lowercase().replace('\\', "/");
     mentioned(&text.to_ascii_lowercase(), b"\":")
         .into_iter()
         .filter_map(|run| {
             let run = String::from_utf8_lossy(&run).replace('\\', "/");
-            let parts: Vec<_> = run
-                .split('/')
-                .filter(|part| !matches!(*part, "" | "." | ".."))
-                .collect();
-            (parts.len() > 1).then(|| parts.join("/"))
+            if !run.contains('/') || run.starts_with('/') {
+                return None;
+            }
+            let mut parts: Vec<&str> = folder.split('/').filter(|part| !part.is_empty()).collect();
+            for part in run.split('/') {
+                match part {
+                    "" | "." => {}
+                    ".." => {
+                        parts.pop()?;
+                    }
+                    part => parts.push(part),
+                }
+            }
+            Some(parts.join("/"))
         })
         .collect()
 }
 
 /// Of `paths`, those whose file stem is in `stems`. A stem the model also names with a folder
-/// (`qualified`, from `mentioned_paths`) takes only paths ending in that folder path, unless none does.
+/// (`qualified`, from `mentioned_paths`) takes only the paths named so, unless none exists.
 pub(super) fn stem_companions<'a>(
     paths: &[&'a str],
     stems: &HashSet<Vec<u8>>,
@@ -559,10 +575,7 @@ pub(super) fn stem_companions<'a>(
             .unwrap_or_default()
             .to_owned()
     };
-    let ends_in = |path: &str, reference: &str| {
-        let path = plain(path);
-        path == reference || path.ends_with(&format!("/{reference}"))
-    };
+    let named = |path: &str, reference: &str| plain(path) == reference;
     paths
         .iter()
         .copied()
@@ -576,12 +589,17 @@ pub(super) fn stem_companions<'a>(
                 .filter(|reference| reference.rsplit('/').next() == Some(name.as_str()))
                 .collect();
             references.is_empty()
-                || references.iter().any(|reference| ends_in(path, reference))
+                || references.iter().any(|reference| named(path, reference))
                 || !paths
                     .iter()
-                    .any(|other| references.iter().any(|reference| ends_in(other, reference)))
+                    .any(|other| references.iter().any(|reference| named(other, reference)))
         })
         .collect()
+}
+
+/// The package folder of a package-relative path, "" at the root.
+pub(super) fn folder_of(path: &str) -> &str {
+    path.rfind(['/', '\\']).map_or("", |end| &path[..end])
 }
 
 fn mentioned(text: &[u8], separators: &[u8]) -> HashSet<Vec<u8>> {

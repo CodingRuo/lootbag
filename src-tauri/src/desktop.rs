@@ -483,7 +483,12 @@ const LAST_LIBRARY: &str = "last-library";
 struct BackfillProgress {
     done: usize,
     remaining: usize,
+    /// Hashes dropped because their file changed; a run may finish with only these.
+    invalidated: usize,
 }
+
+/// One backfill batch: (processed, still pending, hashes dropped as stale).
+type Batch = (usize, usize, usize);
 
 /// Derives auto-tags from names, classifies not yet inspected model files of `root`, then hashes
 /// files that may be duplicates, on a worker thread that replaces an earlier run. Emits
@@ -497,14 +502,20 @@ fn start_backfill(app: &AppHandle, root: PathBuf) {
         let Ok(library) = Library::writable(&root) else {
             return;
         };
-        let run = |event: &str, step: &dyn Fn(&mut i64) -> Result<(usize, usize)>| {
-            let (mut after, mut done) = (0, 0);
+        let run = |event: &str, step: &dyn Fn(&mut i64) -> Result<Batch>| {
+            let (mut after, mut done, mut invalidated) = (0, 0, 0);
             while !cancelled.load(Ordering::Relaxed) {
                 match step(&mut after) {
-                    Ok((processed, remaining)) => {
+                    Ok((processed, remaining, dropped)) => {
                         done += processed;
+                        invalidated += dropped;
                         if !cancelled.load(Ordering::Relaxed) {
-                            let _ = app.emit(event, BackfillProgress { done, remaining });
+                            let progress = BackfillProgress {
+                                done,
+                                remaining,
+                                invalidated,
+                            };
+                            let _ = app.emit(event, progress);
                         }
                         if remaining == 0 {
                             break;
@@ -519,10 +530,14 @@ fn start_backfill(app: &AppHandle, root: PathBuf) {
             }
         };
         run("auto-tags-progress", &|after| {
-            library.tag_pending_assets(after, 500, &cancelled)
+            library
+                .tag_pending_assets(after, 500, &cancelled)
+                .map(|(done, remaining)| (done, remaining, 0))
         });
         run("model-traits-progress", &|after| {
-            library.inspect_pending_models(after, 200, &cancelled)
+            library
+                .inspect_pending_models(after, 200, &cancelled)
+                .map(|(done, remaining)| (done, remaining, 0))
         });
         run("file-hashes-progress", &|after| {
             library.hash_pending_files(after, 100, &cancelled)
@@ -546,6 +561,7 @@ fn activate(app: &AppHandle, library: &Library) -> Result<LibraryInfo> {
         let _ = allow_root(app, &source);
     }
     app.state::<Session>().set_root(library.root().to_owned())?;
+    crate::library::forget_verified_zip_cache();
     start_backfill(app, library.root().to_owned());
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = fs::create_dir_all(&dir).and_then(|()| {
@@ -857,8 +873,29 @@ async fn query_catalog(
     query: CatalogQuery,
     audio_criteria: Option<AudioCriteria>,
 ) -> Result<CatalogPage> {
-    let root = active_root(&app)?;
-    background(move || Library::writable(&root)?.query_with_audio(query, audio_criteria)).await
+    read_duplicates(&app, move |library| {
+        library.query_with_audio(query, audio_criteria)
+    })
+    .await
+}
+
+/// Runs a catalog read and, when it dropped hashes of changed files, a hashing run to replace them.
+async fn read_duplicates<T: Send + 'static>(
+    app: &AppHandle,
+    read: impl FnOnce(&Library) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let root = active_root(app)?;
+    let path = root.clone();
+    let (result, stale) = background(move || {
+        let library = Library::writable(&path)?;
+        let result = read(&library)?;
+        Ok((result, library.take_stale_hashes()))
+    })
+    .await?;
+    if stale && active_root(app)? == root {
+        start_backfill(app, root);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1049,8 +1086,7 @@ async fn delete_saved_search(app: AppHandle, id: i64) -> Result<()> {
 
 #[tauri::command]
 async fn asset_duplicates(app: AppHandle, asset_id: i64) -> Result<Vec<DuplicateCopy>> {
-    let root = active_root(&app)?;
-    background(move || Library::writable(&root)?.asset_duplicates(asset_id)).await
+    read_duplicates(&app, move |library| library.asset_duplicates(asset_id)).await
 }
 
 #[tauri::command]

@@ -463,6 +463,61 @@ fn a_texture_named_with_its_folder_exports_only_that_file() {
 }
 
 #[test]
+fn a_texture_reference_with_dot_dot_resolves_against_the_model_folder() {
+    let workspace = Workspace::new();
+    write(
+        workspace.path("Kit/Crate.fbx"),
+        b"Kaydara\0Models/../Textures/albedo.png\0",
+    );
+    write(workspace.path("Kit/Textures/albedo.png"), b"right");
+    write(workspace.path("Kit/Models/Textures/albedo.png"), b"wrong");
+    let mut library = Library::create(&workspace.path("library")).unwrap();
+    library.import_folder(&workspace.path("Kit")).unwrap();
+    let folder = library.create_folder("Props", None).unwrap();
+    library
+        .add_to_folder(folder.id, find(&library, "Crate", "Kit").id)
+        .unwrap();
+    let exports = workspace.path("exports");
+    fs::create_dir(&exports).unwrap();
+    library.export_project(folder.id, &exports).unwrap();
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(exports.join("Props/manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["assets"][0]["exportedFiles"],
+        json!(["Crate/Crate.fbx", "Crate/Textures/albedo.png"])
+    );
+}
+
+#[test]
+fn texture_paths_resolve_backslashes_and_never_leave_the_package() {
+    let resolved = |text: &[u8], folder: &str| {
+        let mut paths: Vec<_> = mentioned_paths(text, folder)
+            .into_iter()
+            .filter(|path| path.ends_with("/x"))
+            .collect();
+        paths.sort();
+        paths
+    };
+    assert_eq!(
+        resolved(b"\0..\\Textures\\X.png\0", "Models"),
+        ["textures/x"]
+    );
+    assert_eq!(resolved(b"\0./Sub/../T/x.png\0", "A/B"), ["a/b/t/x"]);
+    assert!(resolved(b"\0..\\..\\Textures\\x.png\0", "Models").is_empty());
+    assert!(resolved(b"\0C:\\Art\\x.png\0", "").is_empty());
+    // Escaping the package leaves only the stem: every same-named file is a candidate.
+    let paths = ["Textures/x.png", "Models/Textures/x.png"];
+    let stems = HashSet::from([b"x".to_vec()]);
+    let qualified = mentioned_paths(b"\0..\\..\\Textures\\x.png\0", "Models");
+    assert_eq!(stem_companions(&paths, &stems, &qualified), paths);
+    let qualified = mentioned_paths(b"\0..\\Textures\\x.png\0", "Models");
+    assert_eq!(
+        stem_companions(&paths, &stems, &qualified),
+        ["Textures/x.png"]
+    );
+}
+
+#[test]
 fn package_info_is_saved_listed_and_removed_with_the_package() {
     let workspace = Workspace::new();
     let mut library = fixture(&workspace);

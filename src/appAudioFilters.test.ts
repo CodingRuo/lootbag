@@ -684,7 +684,8 @@ test("duplicates show a card chip, filter the catalog and list selectable copies
     assert.match(app.text(app.tree), /Duplikate \(\s*3\s*\)/);
     assert.equal(app.find((node) => node.props.className === "filter-count").props.children, 1);
     app.latestRequest!.resolve(page([{ ...asset, duplicates: 1 }], 1)); await app.settle();
-    assert.match(app.text(app.tree), /Auch enthalten in:/);
+    assert.match(app.text(app.tree), /Gleicher Inhalt \(Stand der letzten Prüfung\):/);
+    assert.match(app.find((node) => String(node.props.className).includes("duplicate-chip")).props.title, /^Gleicher Inhalt \(Stand der letzten Prüfung\) in 1 weiteren Datei$/);
     const copy = app.find((node) => node.type === "button" && /Other Pack\s+·\s+sfx\/match\.mp3/.test(app.text(node)));
     copy.props.onClick(); await app.settle();
     assert.deepEqual(app.latestRequest?.args.query, { assetId: 2, offset: 0, limit: 1 });
@@ -801,6 +802,18 @@ test("finished duplicate and auto-tag passes refresh sound results unless a soun
     await finish("auto-tags-progress");
     assert.equal(app.requests.length, requests, "A running sound analysis is not discarded");
     assert.deepEqual(app.populationCancellations, []);
+  } finally { app.dispose(); }
+});
+
+test("a hashing run that only dropped changed files' hashes refreshes the catalog", async () => {
+  const app = new Harness();
+  try {
+    await app.mount(); await app.runTimers();
+    app.latestRequest!.resolve(page()); await app.settle();
+    const requests = app.requests.length;
+    for (const handler of app.listeners["file-hashes-progress"] ?? []) handler({ payload: { done: 0, remaining: 0, invalidated: 2 } });
+    await app.settle(); await app.runTimers();
+    assert.equal(app.requests.length, requests + 1);
   } finally { app.dispose(); }
 });
 

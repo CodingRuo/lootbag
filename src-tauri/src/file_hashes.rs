@@ -64,32 +64,41 @@ fn file_stamp(metadata: &fs::Metadata) -> Option<String> {
 
 impl Library {
     /// Forgets hashes whose file or archive changed since hashing, so duplicates leave them; offline
-    /// files keep theirs.
-    fn drop_stale_hashes(&self, cancel: &AtomicBool) -> Result<()> {
+    /// files keep theirs. With `assets`, only their files that have copies and those copies are
+    /// checked (one stat each). Returns how many were dropped.
+    fn drop_stale_hashes(&self, assets: Option<&[i64]>, cancel: &AtomicBool) -> Result<usize> {
         let failed = |e: rusqlite::Error| format!("Duplikatsuche fehlgeschlagen: {e}");
         let hashed = self
             .connection
-            .prepare("SELECT h.file_id, h.stamp, f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes
+            .prepare(&format!("SELECT h.file_id, h.stamp, f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes
                 FROM file_hashes h JOIN asset_files f ON f.id = h.file_id JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id
-                LEFT JOIN external_sources s ON s.package_id = p.id LEFT JOIN external_files e ON e.file_id = f.id")
+                LEFT JOIN external_sources s ON s.package_id = p.id LEFT JOIN external_files e ON e.file_id = f.id
+                WHERE ?1 IS NULL OR h.file_id IN (SELECT f.id FROM active_asset_files f JOIN file_hashes h ON h.file_id = f.id {COPIES}
+                    WHERE f.asset_id IN (SELECT value FROM json_each(?1))
+                    UNION SELECT o.id FROM active_asset_files f JOIN file_hashes h ON h.file_id = f.id {COPIES}
+                    WHERE f.asset_id IN (SELECT value FROM json_each(?1)))"))
             .map_err(failed)?
-            .query_map([], |row| {
+            .query_map([assets.map(id_list)], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, location_row(row, 3)?))
             })
             .map_err(failed)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(failed)?;
-        let transaction = self.connection.unchecked_transaction().map_err(failed)?;
+        let mut stale = Vec::new();
         for (id, stamp, relative, external) in hashed {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
             // `None` keeps the hash (offline, retried later); a source that is there but no longer the
-            // catalogued one yields a stamp that cannot match, so its hash is dropped.
+            // catalogued one, or whose metadata cannot be read, yields a stamp that cannot match.
             let current = match external {
-                Some(zip) if is_zip(&zip.root_identity) => archive_identity(Path::new(&zip.root))
-                    .ok()
-                    .map(|identity| format!("{identity}|{}", zip.identity)),
+                Some(zip) if is_zip(&zip.root_identity) => {
+                    match archive_identity(Path::new(&zip.root)) {
+                        Ok(identity) => Some(format!("{identity}|{}", zip.identity)),
+                        Err(_) if fs::symlink_metadata(&zip.root).is_ok() => Some(String::new()),
+                        Err(_) => None,
+                    }
+                }
                 Some(external) => {
                     let present = Path::new(&relative)
                         .strip_prefix(&external.prefix)
@@ -107,16 +116,46 @@ impl Library {
                     .and_then(|metadata| file_stamp(&metadata)),
             };
             if current.is_some() && current != stamp {
-                transaction
-                    .execute("DELETE FROM file_hashes WHERE file_id = ?1", [id])
-                    .map_err(failed)?;
+                stale.push(id);
             }
         }
-        transaction.commit().map_err(failed)
+        if !stale.is_empty() {
+            self.connection
+                .execute(
+                    "DELETE FROM file_hashes WHERE file_id IN (SELECT value FROM json_each(?1))",
+                    [id_list(&stale)],
+                )
+                .map_err(failed)?;
+        }
+        Ok(stale.len())
+    }
+
+    /// Drops stale hashes behind the duplicates of `assets` before they are read, so a result never
+    /// counts a file changed since hashing; remembers a drop for `take_stale_hashes`. Read-only
+    /// connections skip the check.
+    pub(super) fn drop_stale_copies(&self, assets: &[i64]) -> Result<usize> {
+        if assets.is_empty()
+            || self
+                .connection
+                .is_readonly(rusqlite::MAIN_DB)
+                .unwrap_or(true)
+        {
+            return Ok(0);
+        }
+        let dropped = self.drop_stale_hashes(Some(assets), &AtomicBool::new(false))?;
+        if dropped > 0 {
+            self.stale_hashes.set(true);
+        }
+        Ok(dropped)
+    }
+
+    /// Whether a read dropped stale hashes, which a hashing run should now replace.
+    pub fn take_stale_hashes(&self) -> bool {
+        self.stale_hashes.take()
     }
 
     /// Hashes up to `batch` files after the `after` cursor that share their size with another active
-    /// file and have no current hash; returns (hashed, still pending after the cursor). Like
+    /// file and have no current hash; returns (hashed, still pending after the cursor, dropped). Like
     /// `inspect_pending_models`, unavailable files get no row and are retried on a later run.
     /// A run's first batch (`after` 0) first drops hashes of files changed since.
     pub fn hash_pending_files(
@@ -124,11 +163,13 @@ impl Library {
         after: &mut i64,
         batch: usize,
         cancel: &AtomicBool,
-    ) -> Result<(usize, usize)> {
+    ) -> Result<(usize, usize, usize)> {
         let failed = |e: rusqlite::Error| format!("Duplikatsuche fehlgeschlagen: {e}");
-        if *after == 0 {
-            self.drop_stale_hashes(cancel)?;
-        }
+        let invalidated = if *after == 0 {
+            self.drop_stale_hashes(None, cancel)?
+        } else {
+            0
+        };
         // Empty files and unique sizes cannot be meaningful duplicates.
         let pending = "FROM active_asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id
             LEFT JOIN external_sources s ON s.package_id = p.id LEFT JOIN external_files e ON e.file_id = f.id
@@ -192,7 +233,7 @@ impl Library {
                 row.get(0)
             })
             .map_err(failed)?;
-        Ok((results.len(), remaining as usize))
+        Ok((results.len(), remaining as usize, invalidated))
     }
 
     /// Number of active files in other assets that share content with each asset, in one query.
@@ -211,6 +252,7 @@ impl Library {
     /// Active files in other assets with the same content as a file of `asset_id`.
     pub fn asset_duplicates(&self, asset_id: i64) -> Result<Vec<DuplicateCopy>> {
         let failed = |e: rusqlite::Error| format!("Duplikate nicht lesbar: {e}");
+        self.drop_stale_copies(&[asset_id])?;
         self.connection
             .prepare(&format!("SELECT DISTINCT o.id, o.asset_id, p.name, substr(o.relative_path, length(p.relative_path) + 2) AS path
                 FROM active_asset_files f JOIN file_hashes h ON h.file_id = f.id {COPIES}
@@ -380,6 +422,68 @@ mod tests {
     }
 
     #[test]
+    fn reads_drop_hashes_of_files_changed_since_hashing() {
+        let root = workspace();
+        let mut library = Library::create(&root.join("library")).unwrap();
+        library
+            .import_folder(&pack(&root, "Pack A", &[("Rock.png", b"AAAAAAAAAA")]))
+            .unwrap();
+        library
+            .import_folder(&pack(&root, "Pack B", &[("Stone.png", b"AAAAAAAAAA")]))
+            .unwrap();
+        assert_eq!(hash_all(&library), 2);
+        let rock = assets(&library, true)
+            .into_iter()
+            .find(|asset| asset.name == "Rock")
+            .unwrap();
+        assert!(!library.take_stale_hashes());
+        let stone = assets(&library, false)
+            .into_iter()
+            .find(|asset| asset.name == "Stone")
+            .unwrap();
+        // Edited without a hashing run: same content length, other bytes and time.
+        let path = library.resolve_preview(stone.files[0].id).unwrap();
+        fs::write(&path, b"BBBBBBBBBB").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+
+        assert!(library.asset_duplicates(rock.id).unwrap().is_empty());
+        assert!(library.take_stale_hashes(), "a hashing run is due");
+        assert!(assets(&library, true).is_empty(), "duplicate filter");
+        assert_eq!(duplicates_of(&library, "Rock"), 0, "page counts");
+        assert_eq!(hash_all(&library), 1, "the dropped file is hashed again");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_zip_whose_metadata_is_unreadable_drops_its_hashes_but_a_missing_one_keeps_them() {
+        let root = workspace();
+        let mut library = Library::create(&root.join("library")).unwrap();
+        let archive = root.join("pack.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        for name in ["A/step.wav", "B/stomp.wav"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, b"same bytes").unwrap();
+        }
+        zip.finish().unwrap();
+        library.reference_zip(&archive).unwrap();
+        assert_eq!(hash_all(&library), 2);
+        assert_eq!(duplicates_of(&library, "step"), 1);
+
+        let moved = root.join("moved.zip");
+        fs::rename(&archive, &moved).unwrap();
+        assert_eq!(duplicates_of(&library, "step"), 1, "offline: kept");
+        fs::create_dir(&archive).unwrap();
+        assert_eq!(duplicates_of(&library, "step"), 0, "present but unreadable");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn a_changed_external_file_leaves_its_duplicate_group() {
         let root = workspace();
         let mut library = Library::create(&root.join("library")).unwrap();
@@ -400,9 +504,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            hash_all(&library),
-            0,
-            "changed file is unavailable, not rehashed"
+            library
+                .hash_pending_files(&mut 0, 100, &AtomicBool::new(false))
+                .unwrap(),
+            (0, 0, 1),
+            "changed file is unavailable, not rehashed; its dropped hash is reported"
         );
         assert_eq!(duplicates_of(&library, "Hit"), 0, "stale hash dropped");
         let _ = fs::remove_dir_all(root);
@@ -419,7 +525,7 @@ mod tests {
         library.reference_folder(&external).unwrap();
         let moved = root.join("Moved");
         fs::rename(&external, &moved).unwrap();
-        let (hashed, remaining) = library
+        let (hashed, remaining, _) = library
             .hash_pending_files(&mut 0, 100, &AtomicBool::new(false))
             .unwrap();
         assert_eq!(

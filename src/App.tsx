@@ -129,8 +129,9 @@ export default function App() {
     // Duplicate counts, auto-tags and the filter change only once their pass has finished.
     const stops: (() => void)[] = [];
     for (const event of ["file-hashes-progress", "auto-tags-progress"]) {
-      listen<{ done: number; remaining: number }>(event, ({ payload }) => {
-        if (!active || !payload.done || payload.remaining !== 0) return;
+      // A hashing run may only drop hashes of changed files (`invalidated`), which changes duplicates too.
+      listen<{ done: number; remaining: number; invalidated?: number }>(event, ({ payload }) => {
+        if (!active || !(payload.done || payload.invalidated) || payload.remaining !== 0) return;
         if (audioBusy.current) refreshAfterAudio.current = true;
         else setRevision((value) => value + 1);
       }).then((stop) => { if (active) stops.push(stop); else stop(); }).catch(() => {});

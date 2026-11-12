@@ -328,7 +328,7 @@ export default function Inspector({ library, query, selected, setSelected, file,
                   )}
                   {copies.length > 0 && (
                     <div>
-                      <dt>Auch enthalten in:</dt>
+                      <dt>Gleicher Inhalt (Stand der letzten Prüfung):</dt>
                       <dd>
                         <ul className="duplicate-copies" aria-label="Identische Dateien in anderen Assets">
                           {copies.map((copy) => <li key={copy.fileId}>

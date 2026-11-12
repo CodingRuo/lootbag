@@ -445,7 +445,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                       <strong>{wrapName(name)}</strong>
                       {showFilename && <span className="asset-filename">{firstFile.originalFilename}</span>}
                       {catalogView === "cards" && role && <span className="role-chip" title="Rolle im Projekt">{role}</span>}
-                      {catalogView === "cards" && asset.duplicates > 0 && <span className="role-chip duplicate-chip" title={`Identisch in ${asset.duplicates} weiteren ${asset.duplicates === 1 ? "Datei" : "Dateien"}`}>{asset.duplicates + 1}×</span>}
+                      {catalogView === "cards" && asset.duplicates > 0 && <span className="role-chip duplicate-chip" title={`Gleicher Inhalt (Stand der letzten Prüfung) in ${asset.duplicates} weiteren ${asset.duplicates === 1 ? "Datei" : "Dateien"}`}>{asset.duplicates + 1}×</span>}
                       {catalogView === "cards" && facts}
                       {asset.imageGroup?.errors.length ? <span className="unavailable">Zuordnung prüfen</span> : null}
                       {!firstFile.available && <span className="unavailable">Nicht verfügbar</span>}

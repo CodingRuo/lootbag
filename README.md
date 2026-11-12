@@ -391,8 +391,12 @@ file; unique sizes and empty files are skipped, offline files are retried on
 the next run, read errors are stored. Files with equal size and hash in
 different assets count as duplicates. Cards show a `2×` chip, `Filter` →
 `Duplikate (n)` lists only assets with a copy, and the inspector's `Herkunft`
-tab lists `Auch enthalten in:` with package and path; clicking a copy opens it.
-Nothing is deleted automatically – use the trash to remove copies you do not
+tab lists `Gleicher Inhalt (Stand der letzten Prüfung):` with package and path;
+clicking a copy opens it. A hash belongs to the file's size and modification
+time (for ZIP entries: the archive's identity); before counts, the filter or the
+copy list are shown, the files involved are checked against that and changed
+ones leave their group until the next hashing run, which starts right away. An
+edit that keeps both size and modification time is not noticed. Nothing is deleted automatically – use the trash to remove copies you do not
 need. On a 6,968-file test library (2.5 GB) 3,439 candidates (370 MB) hash in
 about 2 s and form 513 groups.
 

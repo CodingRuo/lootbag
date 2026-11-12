@@ -1,4 +1,6 @@
-use super::project_export::{mentioned_paths, mentioned_stems, stem_companions, MAX_SCAN_BYTES};
+use super::project_export::{
+    folder_of, mentioned_paths, mentioned_stems, stem_companions, MAX_SCAN_BYTES,
+};
 use super::{
     assets, modified_identity, path_text, unique_suffix, zip_sources, AssetKind, Canonical,
     ExportOutcome, Library, ReferencedLocation, Result,
@@ -220,19 +222,20 @@ impl Library {
                         .map(|text| text.to_ascii_lowercase())
                         .unwrap_or_default()
                 };
+                // Each text with the package path of the file it was read from.
                 let mut texts = if matches!(snapshot.format.as_str(), "GLTF" | "GLB") {
                     Vec::new()
                 } else {
-                    vec![small_text(&entry)]
+                    vec![(snapshot.entry_path.clone(), small_text(&entry))]
                 };
-                let wanted = |texts: &[Vec<u8>], names: &[&str]| {
+                let wanted = |texts: &[(String, Vec<u8>)], names: &[&str]| {
                     let stems = texts
                         .iter()
-                        .flat_map(|text| mentioned_stems(text))
+                        .flat_map(|(_, text)| mentioned_stems(text))
                         .collect();
                     let qualified = texts
                         .iter()
-                        .flat_map(|text| mentioned_paths(text))
+                        .flat_map(|(path, text)| mentioned_paths(text, folder_of(path)))
                         .collect();
                     let resources: Vec<&str> = names
                         .iter()
@@ -262,7 +265,10 @@ impl Library {
                     path.extension()
                         .is_some_and(|extension| extension.eq_ignore_ascii_case("mtl"))
                 }) {
-                    texts.push(small_text(&snapshot.package_root.join(mtl)));
+                    texts.push((
+                        mtl.to_string_lossy().into_owned(),
+                        small_text(&snapshot.package_root.join(mtl)),
+                    ));
                 }
                 if texts.len() > named {
                     self.extract_zip_resources(location, |names| wanted(&texts, names))?;
