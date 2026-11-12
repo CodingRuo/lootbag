@@ -18,6 +18,8 @@ pub struct ProjectExportPlan {
     pub size_bytes: u64,
     /// "Name (Paket): Grund" for every member that would be skipped.
     pub missing: Vec<String>,
+    /// Exported textures that replace a differently named model reference (see manifest notes).
+    pub substitutions: usize,
 }
 
 struct Member {
@@ -32,6 +34,8 @@ struct Member {
     /// Model snapshot plus extra package-relative resources to copy beside the entry.
     model: Option<(ModelResources, Vec<String>)>,
     missing: Option<String>,
+    /// Texture substitutions the exported model still references by their original name.
+    notes: Vec<String>,
     size_bytes: u64,
 }
 
@@ -92,6 +96,7 @@ impl Library {
                 package_prefix,
                 model: None,
                 missing: None,
+                notes: Vec::new(),
                 size_bytes: file
                     .as_ref()
                     .map_or(0, |file| file.size_bytes.max(0) as u64),
@@ -106,7 +111,10 @@ impl Library {
                     match self.model_resources(file.id) {
                         Ok(snapshot) if snapshot.errors.is_empty() => {
                             let extra = match companion_paths(&snapshot) {
-                                Ok(extra) => extra,
+                                Ok((extra, notes)) => {
+                                    member.notes = notes;
+                                    extra
+                                }
                                 Err(error) => {
                                     member.missing = Some(error);
                                     members.push(member);
@@ -153,11 +161,17 @@ impl Library {
                     Some(format!("{} ({}): {reason}", member.name, member.package))
                 })
                 .collect(),
+            substitutions: members
+                .iter()
+                .filter(|member| member.missing.is_none())
+                .map(|member| member.notes.len())
+                .sum(),
         })
     }
 
     /// Copies the folder's chosen variants into a new `<parent>/<folder name>` with `manifest.json`.
     /// Unavailable members are skipped and listed in the manifest; library originals are only read.
+    /// A failed export keeps its partial folder: the user may have moved own files into it meanwhile.
     pub fn export_project(&self, folder_id: i64, parent: &Path) -> Result<ExportOutcome> {
         let (project, members) = self.project_members(folder_id)?;
         let parent = parent
@@ -174,12 +188,8 @@ impl Library {
             }
             Err(error) => return Err(format!("Exportordner kann nicht erstellt werden: {error}")),
         }
-        let result = self.write_project(&root, &project, &members);
-        if result.is_err() {
-            // Only our freshly created folder; remove_dir_all does not follow symlinks.
-            let _ = fs::remove_dir_all(&root);
-        }
-        result
+        self.write_project(&root, &project, &members)
+            .map_err(|error| format!("Export unvollständig: {}: {error}", root.display()))
     }
 
     fn write_project(
@@ -196,6 +206,8 @@ impl Library {
                 used.insert(prefix.trim_end_matches('/').to_lowercase());
             }
         }
+        // Reserved before member files; only a subfolder named like it moves the manifest aside.
+        let manifest_name = unique_name(&mut used, "", "manifest", ".json");
         let (mut assets, mut missing, mut size_bytes) = (Vec::new(), Vec::new(), 0_u64);
         for member in members {
             let file = match (&member.missing, &member.file) {
@@ -260,6 +272,7 @@ impl Library {
                 "variant": { "fileId": file.id, "format": file.format, "file": file.original_filename },
                 "exportedFiles": exported,
                 "licenseNote": Value::Null,
+                "notes": member.notes,
             }));
         }
         let manifest = json!({ "project": project, "exportedAt": iso_utc(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()), "assets": assets, "missing": missing });
@@ -267,7 +280,7 @@ impl Library {
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(root.join("manifest.json"))
+            .open(root.join(manifest_name))
             .map_err(|e| format!("Manifest kann nicht geschrieben werden: {e}"))?;
         io::Write::write_all(&mut output, &bytes)
             .and_then(|()| output.sync_all())
@@ -279,13 +292,14 @@ impl Library {
     }
 }
 
-/// Extra resources beyond the entry and its declared glTF references.
+/// Extra resources beyond the entry and its declared glTF references, plus a note for each
+/// included file that stands in for a differently named reference (e.g. PNG for PSD).
 // shortcut: FBX/OBJ are not parsed; a texture or .mtl is included when its file stem followed by
 // "." appears in the model (or a matched .mtl), case-insensitively. Same-named files in other
 // folders are included too, and PSD references also take same-stem PNG replacements.
-fn companion_paths(snapshot: &ModelResources) -> Result<Vec<String>> {
+fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String>)> {
     if matches!(snapshot.format.as_str(), "GLTF" | "GLB") {
-        return Ok(Vec::new());
+        return Ok(Default::default());
     }
     let read = |relative: &str| -> Result<Vec<u8>> {
         let resource = snapshot
@@ -298,9 +312,7 @@ fn companion_paths(snapshot: &ModelResources) -> Result<Vec<String>> {
                 "{relative}: zu groß für die Begleitdatei-Erkennung"
             ));
         }
-        fs::read(&resource.path)
-            .map(|bytes| bytes.to_ascii_lowercase())
-            .map_err(|e| format!("{relative}: {e}"))
+        fs::read(&resource.path).map_err(|e| format!("{relative}: {e}"))
     };
     let stem = |path: &str| {
         Path::new(path)
@@ -310,7 +322,10 @@ fn companion_paths(snapshot: &ModelResources) -> Result<Vec<String>> {
             .to_ascii_lowercase()
             .into_bytes()
     };
-    let mut names = mentioned_stems(&read(&snapshot.entry_path)?);
+    // Raw texts keep the reference's spelling for notes; matching uses the lowercase copies.
+    let mut texts = vec![read(&snapshot.entry_path)?];
+    let mut lower = vec![texts[0].to_ascii_lowercase()];
+    let mut names = mentioned_stems(&lower[0]);
     let others = snapshot
         .resources
         .iter()
@@ -322,14 +337,55 @@ fn companion_paths(snapshot: &ModelResources) -> Result<Vec<String>> {
         .filter(|path| path.to_ascii_lowercase().ends_with(".mtl"))
     {
         if names.contains(&stem(mtl)) {
-            names.extend(mentioned_stems(&read(mtl)?));
+            texts.push(read(mtl)?);
+            lower.push(texts.last().unwrap().to_ascii_lowercase());
+            names.extend(mentioned_stems(lower.last().unwrap()));
         }
     }
-    Ok(others
+    let included = others
         .into_iter()
         .filter(|path| names.contains(&stem(path)))
-        .map(str::to_owned)
-        .collect())
+        .collect::<Vec<_>>();
+    let file_name = |path: &str| {
+        Path::new(path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let find = |needle: &[u8]| {
+        lower.iter().zip(&texts).find_map(|(text, raw)| {
+            let at = text
+                .windows(needle.len())
+                .position(|window| window == needle)?;
+            Some((raw, at))
+        })
+    };
+    let mentioned = |path: &str| find(file_name(path).to_ascii_lowercase().as_bytes()).is_some();
+    let mut notes = Vec::new();
+    for path in &included {
+        // Only when no same-stem file is referenced by its exact name.
+        if included
+            .iter()
+            .any(|other| stem(other) == stem(path) && mentioned(other))
+        {
+            continue;
+        }
+        let needle = [stem(path), b".".to_vec()].concat();
+        if let Some((raw, at)) = find(&needle) {
+            let end = at + needle.len();
+            let extension = raw[end..]
+                .iter()
+                .take_while(|byte| byte.is_ascii_alphanumeric())
+                .count();
+            notes.push(format!(
+                "Textur {} ersetzt durch {} – Referenz im Modell unverändert",
+                String::from_utf8_lossy(&raw[at..end + extension]),
+                file_name(path)
+            ));
+        }
+    }
+    Ok((included.into_iter().map(str::to_owned).collect(), notes))
 }
 
 /// Runs of name bytes directly before a ".", e.g. `texture_01_a` from `..\\textures\\texture_01_a.png`.

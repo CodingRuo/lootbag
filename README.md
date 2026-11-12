@@ -266,16 +266,22 @@ upgrades the catalog to format version 3.
 
 `Projekt exportieren …` in the catalog heading (shown while a project folder
 is selected) asks for a destination folder, then lists unavailable members
-before anything is copied; continue without them or cancel. The export creates
+and the number of texture substitutions before anything is copied; continue
+or cancel. The export creates
 a new `<destination>/<folder name>` (an existing folder, the library and
 external sources are refused), mirrors subfolders as directories and never
 changes library originals. glTF/GLB models take their declared buffers and
 images; FBX/OBJ take package textures and `.mtl` files whose file names appear
-in the model or its material file. Material sets and sprite sequences are
+in the model or its material file (a same-named PNG may stand in for a PSD
+reference; the model still names the original, and the asset's manifest
+`notes` say so). Material sets and sprite sequences are
 exported as the member asset's own file, not the whole group. Duplicate names
-get `-2`, `-3`, … `manifest.json` records project, `exportedAt`, every asset
+get `-2`, `-3`, … `manifest.json` (`manifest-2.json` if a subfolder already
+has that name) records project, `exportedAt`, every asset
 (id, name, role, kind, package, original package path, variant, exported files,
-`licenseNote: null`) and the skipped members. The copy runs in one background
+`licenseNote: null`, `notes`) and the skipped members. A failed copy keeps the
+partial folder and names it in the error ("Export unvollständig: …"); nothing
+in it is deleted. The copy runs in one background
 step without progress or cancellation. Game-project profiles are not built yet.
 
 ## Scope

@@ -119,6 +119,27 @@ test("invalid clips are skipped while valid ones stay playable", () => {
   animation.dispose();
 });
 
+test("clips with unbindable tracks are skipped and a failing switch keeps the current clip playing", () => {
+  const { model, target, clips } = animatedModel();
+  const broken = new AnimationClip("Broken", 1, [new VectorKeyframeTrack("not-a-track", [0, 1], [0, 0, 0, 1, 1, 1])]);
+  const elsewhere = new AnimationClip("Elsewhere", 1, [new VectorKeyframeTrack("Missing.position", [0, 1], [0, 0, 0, 1, 1, 1])]);
+  const grow = new AnimationClip("Grow", 1, [new VectorKeyframeTrack("Moving.scale", [0, 1], [1, 1, 1, 2, 2, 2])]);
+  const animation = new ModelAnimation(model, [broken, elsewhere, clips[0], grow]);
+  assert.equal(animation.skipped, 2);
+  assert.deepEqual(animation.clips.map((clip) => clip.name), ["Move", "Grow"]);
+  animation.play();
+  animation.update(0.5);
+  assert.equal(target.position.x, 1);
+  // The clip turns unbindable after construction; binding it throws before the current clip stops.
+  grow.tracks[0].name = "still not a track";
+  assert.throws(() => animation.select(1), /trackName/);
+  assert.equal(animation.state.selected, 0);
+  assert.equal(animation.state.playing, true);
+  animation.update(0.5);
+  assert.equal(target.position.x, 2);
+  animation.dispose();
+});
+
 test("a skeleton without a mesh has finite camera bounds and visible animated bone lines", () => {
   const model = new Group();
   const hip = new Bone();

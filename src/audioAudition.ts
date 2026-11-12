@@ -44,20 +44,22 @@ export function formatDuration(value: number | null | undefined) {
 }
 
 type AuditionElement = Pick<HTMLAudioElement, "src" | "pause" | "play" | "removeAttribute" | "load" | "onended">;
+type Page = Pick<Document, "querySelectorAll" | "addEventListener" | "removeEventListener">;
 
-// Quick catalog audition: one shared element, so starting a sound always stops the previous one.
-export function createCatalogAudition(element: AuditionElement, resolve: (fileId: number) => Promise<string>, onChange: (fileId: number | null) => void) {
+// Quick catalog audition: one shared element, so starting a sound always stops the previous one,
+// and pauses the page's own players (the audition element is detached, so they never see it play).
+export function createCatalogAudition(element: AuditionElement, resolve: (fileId: number) => Promise<string>, onChange: (fileId: number | null) => void, page: Pick<Page, "querySelectorAll">) {
   let current: number | null = null;
   let request = 0;
   const set = (fileId: number | null) => { current = fileId; onChange(fileId); };
   element.onended = () => set(null);
   function stop() {
     request++;
-    if (current === null) return;
+    // Unconditional: a sound that ended already cleared `current` but still holds its source.
     element.pause();
     element.removeAttribute("src");
     element.load();
-    set(null);
+    if (current !== null) set(null);
   }
   async function toggle(fileId: number) {
     if (current === fileId) return stop();
@@ -68,6 +70,7 @@ export function createCatalogAudition(element: AuditionElement, resolve: (fileId
       const src = await resolve(fileId);
       if (token !== request) return;
       element.src = src;
+      page.querySelectorAll<HTMLMediaElement>("audio, video").forEach((media) => media.pause());
       await element.play();
     } catch (reason) {
       // A newer toggle or stop superseded this request; its abort is expected.
@@ -77,4 +80,11 @@ export function createCatalogAudition(element: AuditionElement, resolve: (fileId
     }
   }
   return { toggle, stop, get playing() { return current; } };
+}
+
+// The reverse takeover: any player in the page starting stops the audition. Returns the cleanup.
+export function stopAuditionOnPagePlay(page: Pick<Page, "addEventListener" | "removeEventListener">, audition: { stop(): void }) {
+  const stop = () => audition.stop();
+  page.addEventListener("play", stop, true);
+  return () => page.removeEventListener("play", stop, true);
 }

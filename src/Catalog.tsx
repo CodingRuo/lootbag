@@ -9,7 +9,7 @@ import { assetKey } from "./imageWorkflows";
 import { TrashActions } from "./Trash";
 import { folderPath, type ProjectFolder } from "./ProjectFolders";
 import { catalogSelection, nextCatalogIndex, storeCatalogView, storedCatalogView, type CatalogSelection, type CatalogView, type SelectionMode } from "./catalogSelection";
-import { createCatalogAudition, formatDuration } from "./audioAudition";
+import { createCatalogAudition, formatDuration, stopAuditionOnPagePlay } from "./audioAudition";
 import { errorMessage } from "./errorMessage.ts";
 import { exportProject, memberRole } from "./projectExport.ts";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
@@ -58,7 +58,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   const setCatalogView = (view: CatalogView) => { setChosenViews((views) => ({ ...views, [catalogType]: view })); storeCatalogView(catalogType, view); };
   const [auditionFileId, setAuditionFileId] = useState<number | null>(null);
   const [audition] = useState(() => createCatalogAudition(new Audio(),
-    async (fileId) => convertFileSrc(await invoke<string>("resolve_preview", { fileId })), setAuditionFileId));
+    async (fileId) => convertFileSrc(await invoke<string>("resolve_preview", { fileId })), setAuditionFileId, document));
   const [modelThumbnails] = useState(createCatalogModelThumbnails);
   const thumbnailScope = library?.root ?? "";
   const [bulkTags, setBulkTags] = useState("");
@@ -86,10 +86,8 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   // New results (page, search or filter change) end the quick audition.
   useEffect(() => { audition.stop(); }, [audition, page]);
   useEffect(() => {
-    // Any other player starting (the inspector's audio) takes over; the audition element itself is not in the document.
-    const stop = () => audition.stop();
-    document.addEventListener("play", stop, true);
-    return () => { document.removeEventListener("play", stop, true); audition.stop(); };
+    const detach = stopAuditionOnPagePlay(document, audition);
+    return () => { detach(); audition.stop(); };
   }, [audition]);
 
   function toggleAudition(fileId: number) {

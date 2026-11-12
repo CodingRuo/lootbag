@@ -281,11 +281,9 @@ fn fbx_and_obj_exports_include_referenced_textures_and_materials_only() {
             .add_to_folder(folder.id, find(&library, name, "Kit").id)
             .unwrap();
     }
-    assert!(library
-        .plan_project_export(folder.id)
-        .unwrap()
-        .missing
-        .is_empty());
+    let plan = library.plan_project_export(folder.id).unwrap();
+    assert!(plan.missing.is_empty());
+    assert_eq!(plan.substitutions, 1);
     let exports = workspace.path("exports");
     fs::create_dir(&exports).unwrap();
     library.export_project(folder.id, &exports).unwrap();
@@ -303,9 +301,72 @@ fn fbx_and_obj_exports_include_referenced_textures_and_materials_only() {
             "Rock/OBJ/stone.tga"
         ])
     );
+    assert_eq!(
+        manifest["assets"][0]["notes"],
+        json!([
+            "Textur Crate_Wood.PSD ersetzt durch Crate_Wood.png – Referenz im Modell unverändert"
+        ])
+    );
+    assert_eq!(manifest["assets"][1]["notes"], json!([]));
     assert!(!exports.join("Props/Crate/Textures/Unused.png").exists());
     assert_eq!(
         fs::read(exports.join("Props/Rock/OBJ/stone.tga")).unwrap(),
         b"stone"
     );
+}
+
+#[test]
+fn a_subfolder_named_like_the_manifest_moves_the_manifest_aside() {
+    let workspace = Workspace::new();
+    let mut library = fixture(&workspace);
+    let game = library.create_folder("Game", None).unwrap();
+    let sub = library
+        .create_folder("Manifest.JSON", Some(game.id))
+        .unwrap();
+    library
+        .add_to_folder(sub.id, find(&library, "Gone", "Pack").id)
+        .unwrap();
+    let exports = workspace.path("exports");
+    fs::create_dir(&exports).unwrap();
+    library.export_project(game.id, &exports).unwrap();
+    let out = exports.join("Game");
+    assert_eq!(
+        fs::read(out.join("Manifest.JSON/Gone.wav")).unwrap(),
+        b"gone"
+    );
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(out.join("manifest-2.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["assets"][0]["exportedFiles"],
+        json!(["Manifest.JSON/Gone.wav"])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_copy_keeps_the_partial_export_and_names_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = Workspace::new();
+    let mut library = fixture(&workspace);
+    let folder = library.create_folder("Game", None).unwrap();
+    let gone = find(&library, "Gone", "Pack");
+    let other = find(&library, "Hit", "Other");
+    library.add_to_folder(folder.id, gone.id).unwrap();
+    library.add_to_folder(folder.id, other.id).unwrap();
+    // "Gone" sorts first and copies; "Hit" cannot be read.
+    let unreadable = workspace
+        .path("library")
+        .join(&other.files[0].relative_path);
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+    let exports = workspace.path("exports");
+    fs::create_dir(&exports).unwrap();
+    let error = library.export_project(folder.id, &exports).unwrap_err();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+    let out = exports.join("Game");
+    assert!(
+        error.starts_with(&format!("Export unvollständig: {}", out.display())),
+        "{error}"
+    );
+    // Nothing in the export folder is deleted: a file already there (ours or the user's) stays.
+    assert_eq!(fs::read(out.join("Gone.wav")).unwrap(), b"gone");
 }

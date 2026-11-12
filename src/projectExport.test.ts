@@ -12,7 +12,7 @@ test("export reports missing files before copying and copies only after confirma
   const calls: string[] = [];
   const invoke = async (command: string) => {
     calls.push(command);
-    return (command === "plan_project_export" ? { project: "Game", assetCount: 3, sizeBytes: 10, missing: ["Gone (Pack): Datei nicht verfügbar"] } : { status: "exported", path: "/x/Game" }) as never;
+    return (command === "plan_project_export" ? { project: "Game", assetCount: 3, sizeBytes: 10, missing: ["Gone (Pack): Datei nicht verfügbar"], substitutions: 0 } : { status: "exported", path: "/x/Game" }) as never;
   };
   let message = "";
   assert.equal(await exportProject(1, invoke, async () => "/x", async (text) => { message = text; return false; }), null);
@@ -29,4 +29,14 @@ test("catalog role prefers the active folder and falls back to a subfolder membe
   assert.equal(memberRole([{ folderId: 3, fileId: null, role: "Fremd" }, { folderId: 2, fileId: null, role: "Held" }], 1, folders), "Held");
   assert.equal(memberRole([{ folderId: 1, fileId: null, role: "Wald" }, { folderId: 2, fileId: null, role: "Held" }], 1, folders), "Wald");
   assert.equal(memberRole([{ folderId: 3, fileId: null, role: "Fremd" }], 1, folders), null);
+});
+
+test("export reports texture substitutions before copying", async () => {
+  const plan = { project: "Game", assetCount: 1, sizeBytes: 10, missing: [], substitutions: 2 };
+  let message = "";
+  const calls: string[] = [];
+  const invoke = async (command: string) => { calls.push(command); return plan as never; };
+  assert.equal(await exportProject(1, invoke, async () => "/x", async (text) => { message = text; return false; }), null);
+  assert.match(message, /^2 Texturen werden durch gleichnamige Dateien ersetzt/);
+  assert.deepEqual(calls, ["plan_project_export"]);
 });

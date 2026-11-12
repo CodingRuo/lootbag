@@ -1,4 +1,4 @@
-import { AnimationMixer, Bone, Box3, LoopOnce, LoopRepeat, Vector3, type AnimationAction, type AnimationClip, type Object3D } from "three";
+import { AnimationMixer, Bone, Box3, LoopOnce, LoopRepeat, PropertyBinding, Vector3, type AnimationAction, type AnimationClip, type Object3D } from "three";
 
 export function modelPreviewBounds(model: Object3D) {
   const box = new Box3().setFromObject(model);
@@ -8,6 +8,16 @@ export function modelPreviewBounds(model: Object3D) {
     model.traverse((child) => { if (child instanceof Bone) box.expandByPoint(child.getWorldPosition(position)); });
   }
   return box;
+}
+
+// A clip needs a duration, parsable track names (three.js throws on binding otherwise) and one track that targets this model.
+function playable(root: Object3D, clip: AnimationClip) {
+  if (!Number.isFinite(clip.duration) || clip.duration <= 0 || !clip.tracks.length) return false;
+  try {
+    return clip.tracks.some((track) => PropertyBinding.findNode(root, PropertyBinding.parseTrackName(track.name).nodeName));
+  } catch {
+    return false;
+  }
 }
 
 export class ModelAnimation {
@@ -22,7 +32,7 @@ export class ModelAnimation {
   private speed = 1;
 
   constructor(root: Object3D, clips: AnimationClip[]) {
-    const valid = clips.filter((clip) => Number.isFinite(clip.duration) && clip.duration > 0 && clip.tracks.length > 0);
+    const valid = clips.filter((clip) => playable(root, clip));
     if (!valid.length) throw new Error("Die Animation hat keine gültigen Tracks oder keine gültige Dauer.");
     this.root = root;
     this.mixer = new AnimationMixer(root);
@@ -45,10 +55,12 @@ export class ModelAnimation {
   select(index: number) {
     if (!Number.isInteger(index) || !this.clips[index]) throw new Error("Der Animations-Clip ist nicht verfügbar.");
     const playing = this.state.playing;
-    this.mixer.stopAllAction();
+    // Bind the new clip first: if that throws, the current clip keeps playing.
+    const action = this.mixer.clipAction(this.clips[index]).reset().play();
+    if (action !== this.action) this.action.stop();
     this.selected = index;
     this.clip = this.clips[index];
-    this.action = this.mixer.clipAction(this.clip).reset().play();
+    this.action = action;
     this.action.clampWhenFinished = true;
     this.setLoop(this.loop);
     this.setSpeed(this.speed);

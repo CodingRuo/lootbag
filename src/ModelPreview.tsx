@@ -38,7 +38,12 @@ export default function ModelPreview({ file, onReady, visible = true }: {
   function changeAnimation(change: (animation: ModelAnimation) => void) {
     const player = playback.current;
     if (!player) return;
-    change(player.animation);
+    try {
+      change(player.animation);
+      setAnimationError("");
+    } catch (reason) {
+      setAnimationError(errorMessage(reason, "Der Clip kann nicht abgespielt werden."));
+    }
     if (player.animation.state.playing) player.start();
     else player.stop();
     player.render();
@@ -188,7 +193,7 @@ export default function ModelPreview({ file, onReady, visible = true }: {
     </div>}
     {stats && <>
       {animationError && <p className="inline-error" role="alert">Animationsvorschau nicht verfügbar: {animationError}</p>}
-      {skippedClips > 0 && <p className="inline-error" role="status">{skippedClips} {skippedClips === 1 ? "Clip" : "Clips"} übersprungen (leer)</p>}
+      {skippedClips > 0 && <p className="inline-error" role="status">{skippedClips} {skippedClips === 1 ? "Clip" : "Clips"} übersprungen (leer oder ungültig)</p>}
       {animationState && <section className="model-animation" aria-label="3D-Animation">
         <div className="model-animation-fields">
           <label>Animations-Clip

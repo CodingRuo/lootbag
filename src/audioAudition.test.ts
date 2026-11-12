@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCatalogAudition, formatDuration, repeatAudioLoop, resolveAudioLoop, seekAudio, validateAudioLoop } from "./audioAudition.ts";
+import { createCatalogAudition, formatDuration, stopAuditionOnPagePlay, repeatAudioLoop, resolveAudioLoop, seekAudio, validateAudioLoop } from "./audioAudition.ts";
 
 test("a paused sound seeks safely and rejects invalid positions", () => {
   const player = { currentTime: 0, duration: 5, paused: true, ended: false };
@@ -56,12 +56,12 @@ test("quick audition plays one sound at a time and a filter change stops it", as
     load: () => {},
   };
   let playing: number | null = null;
-  const audition = createCatalogAudition(element as never, async (fileId) => `asset://${fileId}`, (fileId) => { playing = fileId; });
+  const audition = createCatalogAudition(element as never, async (fileId) => `asset://${fileId}`, (fileId) => { playing = fileId; }, { querySelectorAll: () => [] } as never);
   await audition.toggle(1);
   assert.equal(playing, 1);
   await audition.toggle(2);
   assert.equal(playing, 2);
-  assert.deepEqual(calls, ["play asset://1", "pause", "play asset://2"]);
+  assert.deepEqual(calls, ["pause", "play asset://1", "pause", "play asset://2"]);
   audition.stop(); // what the catalog does when the page or a filter changes
   assert.equal(playing, null);
   assert.equal(element.src, "");
@@ -77,4 +77,36 @@ test("quick audition plays one sound at a time and a filter change stops it", as
   await audition.toggle(5);
   element.onended?.();
   assert.equal(audition.playing, null);
+});
+
+test("a finished sound releases its source when stopped", async () => {
+  const element = { src: "", onended: null as (() => void) | null, play: async () => {}, pause: () => {}, removeAttribute: () => { element.src = ""; }, load: () => {} };
+  const audition = createCatalogAudition(element as never, async (fileId) => `asset://${fileId}`, () => {}, { querySelectorAll: () => [] } as never);
+  await audition.toggle(1);
+  element.onended?.();
+  assert.equal(element.src, "asset://1");
+  audition.stop();
+  assert.equal(element.src, "");
+});
+
+test("audition and page players take over from each other", async () => {
+  const calls: string[] = [];
+  const inspector = { pause: () => { calls.push("inspector pause"); } };
+  const listeners = new Map<string, () => void>();
+  const page = {
+    querySelectorAll: (selector: string) => { calls.push(`query ${selector}`); return [inspector]; },
+    addEventListener: (type: string, listener: () => void) => { listeners.set(type, listener); },
+    removeEventListener: (type: string) => { listeners.delete(type); },
+  };
+  const element = { src: "", onended: null, play: async () => { calls.push("audition play"); }, pause: () => {}, removeAttribute: () => { element.src = ""; }, load: () => {} };
+  let playing: number | null = null;
+  const audition = createCatalogAudition(element as never, async (fileId) => `asset://${fileId}`, (fileId) => { playing = fileId; }, page as never);
+  const detach = stopAuditionOnPagePlay(page as never, audition);
+  await audition.toggle(1);
+  assert.deepEqual(calls, ["query audio, video", "inspector pause", "audition play"]);
+  listeners.get("play")?.(); // the inspector starts playing
+  assert.equal(playing, null);
+  assert.equal(element.src, "");
+  detach();
+  assert.equal(listeners.size, 0);
 });
