@@ -47,6 +47,8 @@ export type Asset = {
   folderIds: number[];
   folderMembers: FolderMember[];
   imageGroup?: ImageGroupSummary | null;
+  // Active files in other assets with the same content as one of this asset's files.
+  duplicates: number;
 };
 export type LibraryInfo = {
   root: string;

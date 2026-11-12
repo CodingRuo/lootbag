@@ -8,6 +8,9 @@ pub use model_resources::{ModelResource, ModelResources};
 #[path = "model_traits.rs"]
 mod model_traits;
 pub use model_traits::ModelTraits;
+#[path = "file_hashes.rs"]
+mod file_hashes;
+pub use file_hashes::DuplicateCopy;
 #[path = "image_groups.rs"]
 mod image_groups;
 #[path = "sprite_export.rs"]
@@ -99,6 +102,8 @@ pub struct Asset {
     pub folder_members: Vec<FolderMember>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_group: Option<ImageGroupSummary>,
+    /// Active files in other assets with the same content as one of this asset's files.
+    pub duplicates: i64,
 }
 
 /// Project folder membership; `file_id` is `None` when the chosen variant is unset or no longer active in this asset.
@@ -132,6 +137,9 @@ pub struct CatalogQuery {
     pub kind: Option<AssetKind>,
     pub workflow: Option<ImageWorkflow>,
     pub tag: Option<String>,
+    /// Only assets with an identical file in another asset.
+    #[serde(default)]
+    pub duplicates: bool,
     pub offset: i64,
     pub limit: i64,
 }
@@ -142,6 +150,8 @@ pub struct CatalogFilters {
     pub folders: Vec<String>,
     pub formats: Vec<String>,
     pub tags: Vec<String>,
+    /// Assets in scope with at least one duplicate.
+    pub duplicates: i64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -213,6 +223,11 @@ fn catalog_filter(query: &CatalogQuery) -> (&'static str, String) {
         }
         None => String::new(),
     };
+    let duplicates = if query.duplicates {
+        format!("AND {}", file_hashes::has_copy())
+    } else {
+        String::new()
+    };
     let filter = format!("FROM assets a JOIN packages p ON p.id = a.package_id JOIN active_asset_files f ON f.asset_id = a.id
             WHERE (?1 IS NULL OR p.id = ?1)
             AND (?2 = '' OR instr(lower(a.name || ' ' || p.name || ' ' || {FILE_FOLDER} || ' ' || f.original_filename), lower(?2)) > 0
@@ -223,7 +238,7 @@ fn catalog_filter(query: &CatalogQuery) -> (&'static str, String) {
             AND (?5 IS NULL OR EXISTS(SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id AND t.tag = ?5 COLLATE NOCASE)
                 OR EXISTS(SELECT 1 FROM package_tags t WHERE t.package_id = p.id AND t.tag = ?5 COLLATE NOCASE))
             AND (?6 IS NULL OR EXISTS(SELECT 1 FROM folder_assets fa JOIN selected_folders s ON s.id = fa.folder_id WHERE fa.asset_id = a.id))
-            AND (?7 IS NULL OR a.id = ?7) {kind_filter}");
+            AND (?7 IS NULL OR a.id = ?7) {kind_filter} {duplicates}");
     (folder_filter, filter)
 }
 
@@ -316,6 +331,8 @@ impl Library {
             CREATE TABLE IF NOT EXISTS package_tags (package_id INTEGER NOT NULL REFERENCES packages(id) ON DELETE CASCADE, tag TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY(package_id, tag));
             CREATE TABLE IF NOT EXISTS audio_metadata (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, duration_seconds REAL, sample_rate INTEGER, channels INTEGER, codec TEXT, error TEXT);
             CREATE TABLE IF NOT EXISTS model_traits (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, has_mesh INTEGER, has_animation INTEGER, error TEXT);
+            CREATE TABLE IF NOT EXISTS file_hashes (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, size INTEGER, hash TEXT, error TEXT);
+            CREATE INDEX IF NOT EXISTS file_hashes_hash ON file_hashes(hash);
             CREATE INDEX IF NOT EXISTS asset_files_asset_id ON asset_files(asset_id);
             CREATE TABLE IF NOT EXISTS package_info (package_id INTEGER PRIMARY KEY REFERENCES packages(id) ON DELETE CASCADE, store TEXT, url TEXT, license TEXT, author TEXT, purchased TEXT, version TEXT, notes TEXT);")
             .map_err(|e| format!("Annotationen können nicht geöffnet werden: {e}"))?;
@@ -1010,6 +1027,7 @@ impl Library {
                 DELETE FROM external_files WHERE file_id IN doomed_files;
                 DELETE FROM audio_metadata WHERE file_id IN doomed_files;
                 DELETE FROM model_traits WHERE file_id IN doomed_files;
+                DELETE FROM file_hashes WHERE file_id IN doomed_files;
                 DELETE FROM asset_files WHERE id IN doomed_files;
                 DELETE FROM doomed_assets WHERE EXISTS (SELECT 1 FROM asset_files f WHERE f.asset_id = doomed_assets.id);
                 DELETE FROM asset_tags WHERE asset_id IN doomed_assets;
@@ -1264,6 +1282,8 @@ impl Library {
             folders: self.select_strings(&format!("SELECT DISTINCT {FILE_FOLDER} AS original_folder FROM active_asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id WHERE (?1 IS NULL OR p.id = ?1) ORDER BY original_folder COLLATE NOCASE"), package_id)?,
             formats: self.select_strings("SELECT DISTINCT f.format FROM active_asset_files f JOIN assets a ON a.id = f.asset_id WHERE (?1 IS NULL OR a.package_id = ?1) ORDER BY f.format", package_id)?,
             tags: self.select_strings("SELECT t.tag FROM asset_tags t JOIN active_assets a ON a.id = t.asset_id WHERE (?1 IS NULL OR a.package_id = ?1) UNION SELECT t.tag FROM package_tags t JOIN active_packages p ON p.id = t.package_id WHERE (?1 IS NULL OR t.package_id = ?1) ORDER BY tag COLLATE NOCASE", package_id)?,
+            duplicates: self.connection.query_row(&format!("SELECT COUNT(DISTINCT f.asset_id) FROM active_asset_files f JOIN assets a ON a.id = f.asset_id WHERE (?1 IS NULL OR a.package_id = ?1) AND {}", file_hashes::has_copy()), [package_id], |row| row.get(0))
+                .map_err(|e| format!("Duplikate nicht lesbar: {e}"))?,
         })
     }
 
@@ -1449,7 +1469,9 @@ impl Library {
         let mut files = self.files_for_assets(&ids)?;
         let mut tags = self.by_asset::<String>("SELECT asset_id, tag FROM asset_tags WHERE asset_id IN (SELECT value FROM json_each(?1)) ORDER BY tag COLLATE NOCASE", &ids)?;
         let mut folders = self.folder_members(&ids)?;
+        let duplicates = self.duplicate_counts(&ids)?;
         for asset in assets.iter_mut() {
+            asset.duplicates = duplicates.get(&asset.id).copied().unwrap_or_default();
             asset.files = files.remove(&asset.id).unwrap_or_default();
             asset.tags = tags.remove(&asset.id).unwrap_or_default();
             asset.folder_members = folders.remove(&asset.id).unwrap_or_default();
@@ -1829,6 +1851,7 @@ fn asset_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
         folder_members: Vec::new(),
         files: Vec::new(),
         image_group: None,
+        duplicates: 0,
     })
 }
 
@@ -6745,6 +6768,7 @@ mod tests {
             original_folder: Some("ambience".into()),
             format: Some("wav".into()),
             tag: Some("HUMBLE".into()),
+            duplicates: false,
             offset,
             limit: 40,
         };

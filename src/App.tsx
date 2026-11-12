@@ -115,7 +115,12 @@ export default function App() {
       // Sound results cannot change, and a revision bump would discard a running sound analysis.
       if (payload.remaining === 0 && catalogKind.current !== "sound") setRevision((value) => value + 1);
     }).then((stop) => { if (active) unlisten = stop; else stop(); }).catch(() => {});
-    return () => { active = false; unlisten?.(); };
+    // Duplicate counts and the filter change only once hashing has finished.
+    let unlistenHashes: (() => void) | undefined;
+    listen<{ done: number; remaining: number }>("file-hashes-progress", ({ payload }) => {
+      if (active && payload.done && payload.remaining === 0 && catalogKind.current !== "sound") setRevision((value) => value + 1);
+    }).then((stop) => { if (active) unlistenHashes = stop; else stop(); }).catch(() => {});
+    return () => { active = false; unlisten?.(); unlistenHashes?.(); };
   }, []);
 
   useEffect(() => { setModelSelection(null); }, [library?.root, file?.id, file?.available, selected?.imageGroup?.workflow, selectedPackage?.externalRoot]);
@@ -314,7 +319,7 @@ export default function App() {
             setSelectedFileId={setSelectedFileId} setModelSelection={setModelSelection} filteredPackage={filteredPackage} filteredFolderPath={filteredFolderPath}
             projectFolders={projectFolders} actionsDisabled={actionsDisabled} act={act} setLibrary={setLibrary} setRevision={setRevision} setNotice={setNotice}
             trashItem={trashItem} relinkSource={relinkSource} importPackage={imports.importPackage} />
-          <Inspector library={library} query={query} selected={selected} file={file} selectedPackage={selectedPackage} projectFolders={projectFolders}
+          <Inspector library={library} query={query} selected={selected} setSelected={setSelected} file={file} selectedPackage={selectedPackage} projectFolders={projectFolders}
             modelSelection={modelSelection} setModelSelection={setModelSelection} setSelectedFileId={setSelectedFileId} actionsDisabled={actionsDisabled}
             act={act} setLibrary={setLibrary} setRevision={setRevision} setNotice={setNotice} trashItem={trashItem} relinkSource={relinkSource} editPackageInfo={editPackageInfo} />
         </div>

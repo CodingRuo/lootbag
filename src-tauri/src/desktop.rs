@@ -1,9 +1,9 @@
 use crate::library::{
     AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform, BulkAction, BulkResult,
-    BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, EmbeddedAudioTags, EmptiedTrash,
-    ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress, KindCounts, Library,
-    ModelResources, PackageInfo, PackageInfoDetails, ProjectExportPlan, ProjectFolder, Result,
-    TrashEntry, ZipEstimate,
+    BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DuplicateCopy, EmbeddedAudioTags,
+    EmptiedTrash, ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress,
+    KindCounts, Library, ModelResources, PackageInfo, PackageInfoDetails, ProjectExportPlan,
+    ProjectFolder, Result, TrashEntry, ZipEstimate,
 };
 use std::{
     fs,
@@ -363,7 +363,7 @@ impl Session {
         Ok(())
     }
 
-    /// Cancels the running model inspection and makes `next` the current one.
+    /// Cancels the running background inspection and makes `next` the current one.
     fn replace_model_traits(&self, next: Option<Arc<AtomicBool>>) {
         let mut current = self
             .model_traits
@@ -480,14 +480,15 @@ fn catalog_write<'a>(app: &'a AppHandle, root: &Path) -> Result<MutexGuard<'a, (
 const LAST_LIBRARY: &str = "last-library";
 
 #[derive(Clone, serde::Serialize)]
-struct ModelTraitsProgress {
+struct BackfillProgress {
     done: usize,
     remaining: usize,
 }
 
-/// Classifies not yet inspected model files of `root` on a worker thread, replacing an earlier run.
-/// Emits `model-traits-progress` after each batch so the catalog can refresh its counts.
-fn start_model_traits(app: &AppHandle, root: PathBuf) {
+/// Classifies not yet inspected model files of `root`, then hashes files that may be duplicates,
+/// on a worker thread that replaces an earlier run. Emits `model-traits-progress` and
+/// `file-hashes-progress` after each batch so the catalog can refresh.
+fn start_backfill(app: &AppHandle, root: PathBuf) {
     let cancelled = Arc::new(AtomicBool::new(false));
     app.state::<Session>()
         .replace_model_traits(Some(cancelled.clone()));
@@ -496,28 +497,33 @@ fn start_model_traits(app: &AppHandle, root: PathBuf) {
         let Ok(library) = Library::writable(&root) else {
             return;
         };
-        let (mut after, mut done) = (0, 0);
-        while !cancelled.load(Ordering::Relaxed) {
-            match library.inspect_pending_models(&mut after, 200, &cancelled) {
-                Ok((inspected, remaining)) => {
-                    done += inspected;
-                    if !cancelled.load(Ordering::Relaxed) {
-                        let _ = app.emit(
-                            "model-traits-progress",
-                            ModelTraitsProgress { done, remaining },
-                        );
+        let run = |event: &str, step: &dyn Fn(&mut i64) -> Result<(usize, usize)>| {
+            let (mut after, mut done) = (0, 0);
+            while !cancelled.load(Ordering::Relaxed) {
+                match step(&mut after) {
+                    Ok((processed, remaining)) => {
+                        done += processed;
+                        if !cancelled.load(Ordering::Relaxed) {
+                            let _ = app.emit(event, BackfillProgress { done, remaining });
+                        }
+                        if remaining == 0 {
+                            break;
+                        }
                     }
-                    if remaining == 0 {
+                    Err(error) => {
+                        // Retried on the next activation or import.
+                        eprintln!("{error}");
                         break;
                     }
                 }
-                Err(error) => {
-                    // Retried on the next activation or import.
-                    eprintln!("{error}");
-                    break;
-                }
             }
-        }
+        };
+        run("model-traits-progress", &|after| {
+            library.inspect_pending_models(after, 200, &cancelled)
+        });
+        run("file-hashes-progress", &|after| {
+            library.hash_pending_files(after, 100, &cancelled)
+        });
     });
 }
 
@@ -537,7 +543,7 @@ fn activate(app: &AppHandle, library: &Library) -> Result<LibraryInfo> {
         let _ = allow_root(app, &source);
     }
     app.state::<Session>().set_root(library.root().to_owned())?;
-    start_model_traits(app, library.root().to_owned());
+    start_backfill(app, library.root().to_owned());
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = fs::create_dir_all(&dir).and_then(|()| {
             fs::write(
@@ -784,7 +790,7 @@ async fn managed_import(
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = None;
         if result.is_ok() {
-            start_model_traits(&app, root.clone());
+            start_backfill(&app, root.clone());
         }
         result
     })
@@ -803,7 +809,7 @@ async fn reference_folder(app: AppHandle, source: String) -> Result<AssetPackage
             &app,
             Path::new(package.external_root.as_deref().unwrap_or_default()),
         )?;
-        start_model_traits(&app, root.clone());
+        start_backfill(&app, root.clone());
         Ok(package)
     })
     .await
@@ -821,7 +827,7 @@ async fn relink_source(app: AppHandle, package_id: i64, source: String) -> Resul
             &app,
             Path::new(package.external_root.as_deref().unwrap_or_default()),
         )?;
-        start_model_traits(&app, root.clone());
+        start_backfill(&app, root.clone());
         Ok(package)
     })
     .await
@@ -995,6 +1001,12 @@ async fn annotate_package(app: AppHandle, package_id: i64, tags: Vec<String>) ->
         Library::writable(&root)?.annotate_package(package_id, &tags)
     })
     .await
+}
+
+#[tauri::command]
+async fn asset_duplicates(app: AppHandle, asset_id: i64) -> Result<Vec<DuplicateCopy>> {
+    let root = active_root(&app)?;
+    background(move || Library::writable(&root)?.asset_duplicates(asset_id)).await
 }
 
 #[tauri::command]
@@ -1431,6 +1443,7 @@ pub fn run() {
             annotate_package,
             get_package_info,
             set_package_info,
+            asset_duplicates,
             split_variant,
             assign_variant,
             resolve_preview,

@@ -304,6 +304,20 @@ Project exports also write `CREDITS.md` next to `manifest.json` (`CREDITS-2.md`
 if a subfolder has that name): one section per package with Urheber, Lizenz
 (or "nicht hinterlegt – bitte prüfen"), Shop/Link and the exported asset names.
 
+## Duplikate
+
+Bundles often ship the same model, texture or sound in several packs. After a
+library is opened and after imports, references and relinks, a background job
+hashes (SHA-256, streamed) every active file whose size matches another active
+file; unique sizes and empty files are skipped, offline files are retried on
+the next run, read errors are stored. Files with equal size and hash in
+different assets count as duplicates. Cards show a `2×` chip, `Filter` →
+`Duplikate (n)` lists only assets with a copy, and the inspector's `Herkunft`
+tab lists `Auch enthalten in:` with package and path; clicking a copy opens it.
+Nothing is deleted automatically – use the trash to remove copies you do not
+need. On a 6,968-file test library (2.5 GB) 3,439 candidates (370 MB) hash in
+about 2 s and form 513 groups.
+
 ## Scope
 
 The approved first release covers sound imports, search, annotations,

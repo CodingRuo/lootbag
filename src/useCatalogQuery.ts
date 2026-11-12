@@ -10,6 +10,7 @@ type CatalogFilters = {
   folders: string[];
   formats: string[];
   tags: string[];
+  duplicates: number;
 };
 export type CatalogQuery = ReturnType<typeof useCatalogQuery>;
 
@@ -44,10 +45,12 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
     : audioCriteria?.minDurationSeconds != null && audioCriteria.maxDurationSeconds != null && audioCriteria.minDurationSeconds > audioCriteria.maxDurationSeconds
       ? "Dauer: Minimum darf nicht größer als Maximum sein." : null;
   const [tag, setTag] = useState<string | null>(null);
+  const [duplicates, setDuplicates] = useState(false);
   const [filters, setFilters] = useState<CatalogFilters>({
     folders: [],
     formats: [],
     tags: [],
+    duplicates: 0,
   });
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState<CatalogPage | null>(null);
@@ -55,7 +58,7 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
   const [queryError, setQueryError] = useState<string | null>(null);
   const focusAssetId = useRef<number | null>(null);
   const focusFileId = useRef<number | null>(null);
-  const selectionScope = JSON.stringify([library?.root, text, packageId, folderId, originalFolder, format, kind, workflow, tag, audioFilters, offset]);
+  const selectionScope = JSON.stringify([library?.root, text, packageId, folderId, originalFolder, format, kind, workflow, tag, duplicates, audioFilters, offset]);
 
   useEffect(() => {
     setSelection({ keys: [], anchor: null });
@@ -85,6 +88,7 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
           kind,
           workflow,
           tag,
+          duplicates,
           offset,
           limit: PAGE_SIZE,
         },
@@ -118,7 +122,7 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
       active = false;
       window.clearTimeout(timer);
     };
-  }, [library?.root, text, packageId, folderId, originalFolder, format, kind, workflow, tag, audioFilters, offset, revision]);
+  }, [library?.root, text, packageId, folderId, originalFolder, format, kind, workflow, tag, duplicates, audioFilters, offset, revision]);
 
   useEffect(() => {
     if (!library) return;
@@ -158,6 +162,7 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
     setOriginalFolder(null);
     setFormat(null);
     setTag(null);
+    setDuplicates(false);
   }
 
   function filterFolder(id: number) {
@@ -184,7 +189,7 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
 
   return {
     text, setText, packageId, setPackageId, folderId, setFolderId, originalFolder, setOriginalFolder, format, setFormat,
-    kind, setKind, workflow, setWorkflow, tag, setTag, audioFilters, setAudioFilters, offset, setOffset, filters,
+    kind, setKind, workflow, setWorkflow, tag, setTag, duplicates, setDuplicates, audioFilters, setAudioFilters, offset, setOffset, filters,
     page, setPage, queryLoading, queryError, focusAssetId, focusFileId, audioFilterCount, audioCriteria, audioFilterError,
     audioResultsStale, setAudioResultsStale, changeAudioFilters, clearFilters, filterFolder, filterPackage, chooseType,
   };

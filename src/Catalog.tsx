@@ -47,7 +47,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   relinkSource: (sourcePackage: AssetPackage) => void;
   importPackage: () => void;
 }) {
-  const { text, setText, packageId, folderId, originalFolder, setOriginalFolder, format, setFormat, kind, workflow, tag, setTag,
+  const { text, setText, packageId, folderId, originalFolder, setOriginalFolder, format, setFormat, kind, workflow, tag, setTag, duplicates, setDuplicates,
     audioFilters, offset, setOffset, filters, page, queryLoading, queryError, audioFilterCount, audioFilterError,
     audioResultsStale, setAudioResultsStale, changeAudioFilters, clearFilters, filterPackage } = query;
   const { audioAnalysis, prepareAudioAnalysis, startAudioAnalysis, stopAudioAnalysis, discardAudioAnalysis } = audio;
@@ -63,7 +63,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   const thumbnailScope = library?.root ?? "";
   const [bulkTags, setBulkTags] = useState("");
   const [bulkFolderId, setBulkFolderId] = useState<number | null>(null);
-  const activeFilterCount = [originalFolder, format, tag].filter((value) => value !== null).length + audioFilterCount;
+  const activeFilterCount = [originalFolder, format, tag].filter((value) => value !== null).length + Number(duplicates) + audioFilterCount;
   const audioAnalysisScopeLabel = [
     filteredFolderPath ? `Projektordner: ${filteredFolderPath} (mit Unterordnern)` : filteredPackage ? `Paket: ${filteredPackage.name}` : "Gesamte Bibliothek",
     text && `Suche: „${text}“`,
@@ -242,6 +242,10 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
               {filters.tags.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
           </label>
+          <label className="checkbox-filter" title="Assets, deren Datei identisch auch in einem anderen Asset oder Paket liegt">
+            <input type="checkbox" checked={duplicates} onChange={(event) => { setDuplicates(event.target.checked); setOffset(0); }} />
+            Duplikate ({number.format(filters.duplicates)})
+          </label>
         </div>
         <section className="audio-filter-section" aria-label="Gespeicherte Audioanalyse">
           <h3>Gespeicherte Audioanalyse</h3>
@@ -410,6 +414,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                       <strong>{wrapName(name)}</strong>
                       {showFilename && <span className="asset-filename">{firstFile.originalFilename}</span>}
                       {catalogView === "cards" && role && <span className="role-chip" title="Rolle im Projekt">{role}</span>}
+                      {catalogView === "cards" && asset.duplicates > 0 && <span className="role-chip duplicate-chip" title={`Identisch in ${asset.duplicates} weiteren ${asset.duplicates === 1 ? "Datei" : "Dateien"}`}>{asset.duplicates + 1}×</span>}
                       {catalogView === "cards" && facts}
                       {asset.imageGroup?.errors.length ? <span className="unavailable">Zuordnung prüfen</span> : null}
                       {!firstFile.available && <span className="unavailable">Nicht verfügbar</span>}

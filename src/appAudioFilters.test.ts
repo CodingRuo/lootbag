@@ -94,7 +94,8 @@ class Harness {
     if (command === "get_library") return Promise.resolve(this.libraryInfo);
     if (command === "set_package_info") { this.packageInfoSaves.push(args); return Promise.resolve(); }
     if (command === "open_library") return Promise.resolve({ ...library, root: "/owned/reopened" });
-    if (command === "catalog_filters") return Promise.resolve({ folders: ["ambience"], formats: ["MP3", "WAV", "OGG", "FLAC", "PNG", "OBJ"], tags: ["wind"] });
+    if (command === "catalog_filters") return Promise.resolve({ folders: ["ambience"], formats: ["MP3", "WAV", "OGG", "FLAC", "PNG", "OBJ"], tags: ["wind"], duplicates: 3 });
+    if (command === "asset_duplicates") return Promise.resolve(args.assetId === 1 ? [{ fileId: 31, assetId: 2, packageName: "Other Pack", path: "sfx/match.mp3" }] : []);
     if (command === "analyze_audio") return new Promise((resolve, reject) => this.analysisRequests.push({ resolve, reject }));
     if (command === "resolve_preview") return Promise.resolve("/owned/sound.wav");
     if (command === "audio_waveform") return Promise.resolve({ durationSeconds: 1, peaks: [] });
@@ -653,5 +654,29 @@ test("the origin tab hints at a missing licence, edits package info and then sho
     assert.match(text, /Shop\s+Kenney/);
     assert.match(text, /Lizenz\s+CC0/);
     assert.match(text, /https:\/\/kenney\.nl\s+Link kopieren/);
+  } finally { app.dispose(); }
+});
+
+test("duplicates show a card chip, filter the catalog and list selectable copies in the origin tab", async () => {
+  const app = new Harness();
+  try {
+    await app.settle(); await app.runTimers();
+    app.requests[0].resolve(page([{ ...asset, duplicates: 1 }])); await app.settle();
+    assert.match(app.text(app.find((node) => String(node.props.className).includes("duplicate-chip"))), /^2\s*×$/);
+    const filter = app.elements(app.find((node) => node.props.className === "checkbox-filter")).find((node) => node.type === "input")!;
+    filter.props.onChange({ target: { checked: true } }); await app.settle(); await app.runTimers();
+    assert.equal(app.latestRequest?.args.query.duplicates, true);
+    assert.equal(app.latestRequest?.args.query.offset, 0);
+    assert.match(app.text(app.tree), /Duplikate \(\s*3\s*\)/);
+    assert.equal(app.find((node) => node.props.className === "filter-count").props.children, 1);
+    app.latestRequest!.resolve(page([{ ...asset, duplicates: 1 }], 1)); await app.settle();
+    assert.match(app.text(app.tree), /Auch enthalten in:/);
+    const copy = app.find((node) => node.type === "button" && /Other Pack\s+·\s+sfx\/match\.mp3/.test(app.text(node)));
+    copy.props.onClick(); await app.settle();
+    assert.deepEqual(app.latestRequest?.args.query, { assetId: 2, offset: 0, limit: 1 });
+    const other = { ...asset, id: 2, name: "Other Sound", packageName: "Other Pack", files: [{ ...matchingFile, id: 31 }], duplicates: 1 };
+    app.latestRequest!.resolve(page([other], 1)); await app.settle();
+    assert.equal(app.text(app.find((node) => node.type === "h2" && /Other Sound/.test(app.text(node)))), "Other Sound");
+    assert.equal(app.find((node) => node.type === AudioPreview).props.file.id, 31);
   } finally { app.dispose(); }
 });

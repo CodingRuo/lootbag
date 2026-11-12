@@ -18,15 +18,18 @@ import { nextInspectorTab, type InspectorTab } from "./inspectorTabs";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import { Icon, bytes, isAnimationOnly, type Act, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
+type DuplicateCopy = { fileId: number; assetId: number; packageName: string; path: string };
+
 type ExportResult =
   | { status: "cancelled" | "replacementRequired" }
   | { status: "exported"; path: string; sizeBytes: number };
 
 // Detail aside for the selected asset: variants, preview/properties/origin tabs and export.
-export default function Inspector({ library, query, selected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, relinkSource, editPackageInfo }: {
+export default function Inspector({ library, query, selected, setSelected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, relinkSource, editPackageInfo }: {
   library: LibraryInfo;
   query: CatalogQuery;
   selected: Asset | null;
+  setSelected: Setter<Asset | null>;
   file: AssetFile | null;
   selectedPackage: AssetPackage | undefined;
   projectFolders: ProjectFolder[];
@@ -47,6 +50,26 @@ export default function Inspector({ library, query, selected, file, selectedPack
   const facts = originFacts(selectedPackage?.info);
   const format = file && isAnimationOnly(file) ? `${file.format} · Animation` : file?.format;
   useEffect(() => { setInspectorTab("preview"); }, [assetKey(selected)]);
+  const [copies, setCopies] = useState<DuplicateCopy[]>([]);
+  useEffect(() => {
+    setCopies([]);
+    if (!selected?.duplicates) return;
+    let active = true;
+    invoke<DuplicateCopy[]>("asset_duplicates", { assetId: selected.id })
+      .then((result) => { if (active) setCopies(result); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [library.root, selected?.id, selected?.duplicates]);
+
+  // Opens a copy in the inspector even when it is not on the current catalog page.
+  function showCopy(copy: DuplicateCopy) {
+    void act("Kopie wird geöffnet …", async () => {
+      const page = await invoke<{ items: Asset[] }>("query_catalog", { audioCriteria: null, query: { assetId: copy.assetId, offset: 0, limit: 1 } });
+      if (!page.items[0]) return;
+      setSelected(page.items[0]);
+      setSelectedFileId(copy.fileId);
+    });
+  }
 
   function exportFile() {
     if (!file) return;
@@ -290,6 +313,18 @@ export default function Inspector({ library, query, selected, file, selectedPack
                       <dt>{selectedPackage.sourceKind === "external" ? "Ursprüngliche Quelle" : "Importiert aus"}</dt>
                       <dd className="source-path">
                         {selectedPackage.sourcePath}
+                      </dd>
+                    </div>
+                  )}
+                  {copies.length > 0 && (
+                    <div>
+                      <dt>Auch enthalten in:</dt>
+                      <dd>
+                        <ul className="duplicate-copies" aria-label="Identische Dateien in anderen Assets">
+                          {copies.map((copy) => <li key={copy.fileId}>
+                            <button className="text-button" disabled={actionsDisabled} onClick={() => showCopy(copy)}>{copy.packageName} · {copy.path}</button>
+                          </li>)}
+                        </ul>
                       </dd>
                     </div>
                   )}
