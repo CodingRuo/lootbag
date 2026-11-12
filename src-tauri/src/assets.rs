@@ -6,6 +6,9 @@ pub enum AssetKind {
     Sound,
     Image,
     Model,
+    /// Catalog filter only: model assets whose every variant is confirmed animation-only.
+    /// Such assets keep `Model` as their kind.
+    Animation,
 }
 
 impl AssetKind {
@@ -13,7 +16,7 @@ impl AssetKind {
         match self {
             Self::Sound => &["WAV", "MP3", "OGG", "FLAC"],
             Self::Image => &["PNG", "JPEG", "WEBP", "PSD", "TGA", "GIF", "ASEPRITE"],
-            Self::Model => &["GLB", "GLTF", "FBX", "OBJ", "BLEND"],
+            Self::Model | Self::Animation => &["GLB", "GLTF", "FBX", "OBJ", "BLEND"],
         }
     }
 

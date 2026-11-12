@@ -5,6 +5,9 @@ pub use assets::AssetKind;
 #[path = "model_resources.rs"]
 mod model_resources;
 pub use model_resources::{ModelResource, ModelResources};
+#[path = "model_traits.rs"]
+mod model_traits;
+pub use model_traits::ModelTraits;
 #[path = "image_groups.rs"]
 mod image_groups;
 #[path = "sprite_export.rs"]
@@ -69,6 +72,8 @@ pub struct AssetFile {
     pub kind: AssetKind,
     pub size_bytes: i64,
     pub audio: Option<AudioMetadata>,
+    /// Model files only; `None` until the background inspection has seen the file.
+    pub model_traits: Option<ModelTraits>,
     pub available: bool,
 }
 
@@ -176,10 +181,21 @@ fn catalog_filter(query: &CatalogQuery) -> (&'static str, String) {
     let folder_filter = "WITH RECURSIVE selected_folders(id) AS (
         SELECT id FROM folders WHERE id = ?6 UNION
         SELECT f.id FROM folders f JOIN selected_folders s ON f.parent_id = s.id)";
-    let kind_filter = query
-        .kind
-        .map(|kind| format!("AND f.format IN ('{}')", kind.formats().join("','")))
-        .unwrap_or_default();
+    let kind_filter = match query.kind {
+        Some(kind) => {
+            let animation = model_traits::animation_asset("a.id");
+            let traits = match kind {
+                AssetKind::Model => format!("AND NOT {animation}"),
+                AssetKind::Animation => format!("AND {animation}"),
+                _ => String::new(),
+            };
+            format!(
+                "AND f.format IN ('{}') {traits}",
+                kind.formats().join("','")
+            )
+        }
+        None => String::new(),
+    };
     let filter = format!("FROM assets a JOIN packages p ON p.id = a.package_id JOIN active_asset_files f ON f.asset_id = a.id
             WHERE (?1 IS NULL OR p.id = ?1)
             AND (?2 = '' OR instr(lower(a.name || ' ' || p.name || ' ' || {FILE_FOLDER} || ' ' || f.original_filename), lower(?2)) > 0
@@ -282,6 +298,7 @@ impl Library {
         connection.execute_batch("CREATE TABLE IF NOT EXISTS asset_tags (asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE, tag TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY(asset_id, tag));
             CREATE TABLE IF NOT EXISTS package_tags (package_id INTEGER NOT NULL REFERENCES packages(id) ON DELETE CASCADE, tag TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY(package_id, tag));
             CREATE TABLE IF NOT EXISTS audio_metadata (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, duration_seconds REAL, sample_rate INTEGER, channels INTEGER, codec TEXT, error TEXT);
+            CREATE TABLE IF NOT EXISTS model_traits (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, has_mesh INTEGER, has_animation INTEGER, error TEXT);
             CREATE INDEX IF NOT EXISTS asset_files_asset_id ON asset_files(asset_id);")
             .map_err(|e| format!("Annotationen können nicht geöffnet werden: {e}"))?;
         connection
@@ -914,6 +931,7 @@ impl Library {
                 DELETE FROM trash WHERE file_id IN doomed_files OR package_id IN doomed_packages;
                 DELETE FROM external_files WHERE file_id IN doomed_files;
                 DELETE FROM audio_metadata WHERE file_id IN doomed_files;
+                DELETE FROM model_traits WHERE file_id IN doomed_files;
                 DELETE FROM asset_files WHERE id IN doomed_files;
                 DELETE FROM doomed_assets WHERE EXISTS (SELECT 1 FROM asset_files f WHERE f.asset_id = doomed_assets.id);
                 DELETE FROM asset_tags WHERE asset_id IN doomed_assets;
@@ -1385,10 +1403,11 @@ impl Library {
     pub(super) fn files_for_assets(&self, ids: &[i64]) -> Result<HashMap<i64, Vec<AssetFile>>> {
         let mut statement = self.connection.prepare(&format!("SELECT f.asset_id, f.id, f.original_filename, f.relative_path, f.format, f.size_bytes, {FILE_FOLDER},
                 s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes,
-                m.file_id, m.duration_seconds, m.sample_rate, m.channels, m.codec, m.error
+                m.file_id, m.duration_seconds, m.sample_rate, m.channels, m.codec, m.error,
+                mt.file_id, mt.has_mesh, mt.has_animation
             FROM active_asset_files f JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id
             LEFT JOIN external_sources s ON s.package_id = p.id LEFT JOIN external_files e ON e.file_id = f.id
-            LEFT JOIN audio_metadata m ON m.file_id = f.id
+            LEFT JOIN audio_metadata m ON m.file_id = f.id LEFT JOIN model_traits mt ON mt.file_id = f.id
             WHERE a.id IN (SELECT value FROM json_each(?1)) ORDER BY f.format, f.original_filename, f.id"))
             .map_err(|e| format!("Asset-Dateien nicht lesbar: {e}"))?;
         let rows = statement
@@ -1413,6 +1432,13 @@ impl Library {
                         size_bytes: row.get(5)?,
                         original_folder: row.get(6)?,
                         audio,
+                        model_traits: match row.get::<_, Option<i64>>(19)? {
+                            Some(_) => Some(ModelTraits {
+                                has_mesh: row.get(20)?,
+                                has_animation: row.get(21)?,
+                            }),
+                            None => None,
+                        },
                     },
                 ))
             })
@@ -2019,16 +2045,44 @@ mod tests {
             "Hit.wav",
             "Hit.mp3",
             "Crate.obj",
+            "Walk.obj",
         ] {
             fs::write(source.join(name), name.as_bytes()).unwrap();
         }
+        // Run is animation-only; Walk mixes a mesh and an animation variant and stays a model.
+        for name in ["Run.fbx", "Walk.fbx"] {
+            fs::write(source.join(name), ANIMATION_FBX).unwrap();
+        }
         let mut library = Library::create(&workspace.path("library")).unwrap();
         library.import_folder(&source).unwrap();
+        assert_eq!(
+            library.kind_counts().unwrap().model,
+            3,
+            "uninspected files stay models"
+        );
+        library
+            .inspect_pending_models(&mut 0, 100, &std::sync::atomic::AtomicBool::new(false))
+            .unwrap();
         let counts = library.kind_counts().unwrap();
+        let animations = library
+            .query(CatalogQuery {
+                kind: Some(AssetKind::Animation),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(animations.items[0].name, "Run");
+        assert_eq!(
+            animations.items[0].files[0].model_traits,
+            Some(ModelTraits {
+                has_mesh: Some(false),
+                has_animation: Some(true)
+            })
+        );
         for (kind, workflow, expected) in [
             (Some(AssetKind::Sound), None, counts.sound),
             (Some(AssetKind::Image), None, counts.image),
             (Some(AssetKind::Model), None, counts.model),
+            (Some(AssetKind::Animation), None, counts.animation),
             (
                 Some(AssetKind::Image),
                 Some(ImageWorkflow::Material),
@@ -2055,11 +2109,77 @@ mod tests {
                 counts.sound,
                 counts.image,
                 counts.model,
+                counts.animation,
                 counts.material,
                 counts.sprite_sequence
             ),
-            (1, 4, 1, 1, 1)
+            (1, 4, 2, 1, 1, 1)
         );
+    }
+
+    const ANIMATION_FBX: &[u8] = b"; FBX 7.4.0 project file\nFBXHeaderExtension:  {\n\tFBXVersion: 7400\n}\nObjects:  {\n\tAnimationCurve: 1, \"AnimCurve::\", \"\" {\n\t\tKeyTime: *2 {\n\t\t\ta: 0,1\n\t\t}\n\t}\n}\n";
+
+    #[test]
+    fn model_inspection_persists_rows_skips_missing_files_and_resumes_after_reopen() {
+        let workspace = Workspace::new();
+        let source = workspace.path("Anims");
+        fs::create_dir_all(&source).unwrap();
+        for name in ["A.fbx", "B.fbx", "C.fbx"] {
+            fs::write(source.join(name), ANIMATION_FBX).unwrap();
+        }
+        let mut library = Library::create(&workspace.path("library")).unwrap();
+        library.import_folder(&source).unwrap();
+        let files = library.query(CatalogQuery::default()).unwrap().items;
+        let missing = library.resolve_preview(files[1].files[0].id).unwrap();
+        let bytes = fs::read(&missing).unwrap();
+        fs::remove_file(&missing).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut after = 0;
+        assert_eq!(
+            library
+                .inspect_pending_models(&mut after, 1, &cancel)
+                .unwrap(),
+            (1, 2)
+        );
+        // The missing file gets no row and the cursor moves past it within this run.
+        assert_eq!(
+            library
+                .inspect_pending_models(&mut after, 1, &cancel)
+                .unwrap(),
+            (0, 1)
+        );
+        assert_eq!(
+            library
+                .inspect_pending_models(&mut after, 1, &cancel)
+                .unwrap(),
+            (1, 0)
+        );
+        let animation = CatalogQuery {
+            kind: Some(AssetKind::Animation),
+            ..Default::default()
+        };
+        assert_eq!(library.query(animation).unwrap().total, 2);
+
+        fs::write(&missing, bytes).unwrap();
+        let library = Library::open(&workspace.path("library")).unwrap();
+        assert_eq!(
+            library
+                .inspect_pending_models(&mut 0, 100, &cancel)
+                .unwrap(),
+            (1, 0)
+        );
+        assert_eq!(
+            library
+                .inspect_pending_models(&mut 0, 100, &cancel)
+                .unwrap(),
+            (0, 0)
+        );
+        let animation = CatalogQuery {
+            kind: Some(AssetKind::Animation),
+            ..Default::default()
+        };
+        assert_eq!(library.query(animation).unwrap().total, 3);
+        assert_eq!(library.kind_counts().unwrap().model, 0);
     }
 
     #[test]

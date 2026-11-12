@@ -123,6 +123,13 @@ matches fail explicitly. The viewer identifies each replacement and keeps
 complete export disabled because the original FBX still references PSD.
 If a known FBX image is genuinely missing, readable geometry remains visible
 with a neutral texture and an explicit warning; complete export stays disabled.
+
+After a library is opened, imported or relinked, a background pass reads only
+the headers of model files (binary and ASCII FBX 7.x, GLB/glTF; OBJ counts as
+mesh) and records whether each has mesh geometry and keyed animation. An asset
+whose every variant has keyed curves and no mesh is listed under "Animationen"
+instead of "3D-Modelle"; mixed, unreadable and Blender files stay models.
+Mesh files with an empty "Take 001" stack are not animations.
 TGA previews share a bounded worker across cards, images, material maps, sprite
 frames and model textures. RAW/RLE truecolor (24/32-bit), grayscale (8-bit or
 16-bit with alpha) and indexed images (8-bit indices, 24-bit zero-origin palette)

@@ -13,7 +13,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Default)]
 struct Session {
@@ -27,6 +27,7 @@ struct Session {
     audio_tags_gate: Mutex<()>,
     sprite_export: Mutex<Option<(String, Arc<AtomicBool>)>>,
     audio_analysis: Mutex<Option<AudioAnalysisJob>>,
+    model_traits: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 struct AudioAnalysisJob {
@@ -357,7 +358,19 @@ impl Session {
         }
         self.cancel_audio_tags(None)?;
         self.cancel_audio_analysis(None)?;
+        self.replace_model_traits(None);
         Ok(())
+    }
+
+    /// Cancels the running model inspection and makes `next` the current one.
+    fn replace_model_traits(&self, next: Option<Arc<AtomicBool>>) {
+        let mut current = self
+            .model_traits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(previous) = std::mem::replace(&mut *current, next) {
+            previous.store(true, Ordering::Relaxed);
+        }
     }
 
     fn begin_preview(&self) -> Result<(PathBuf, u64)> {
@@ -465,6 +478,48 @@ fn catalog_write<'a>(app: &'a AppHandle, root: &Path) -> Result<MutexGuard<'a, (
 
 const LAST_LIBRARY: &str = "last-library";
 
+#[derive(Clone, serde::Serialize)]
+struct ModelTraitsProgress {
+    done: usize,
+    remaining: usize,
+}
+
+/// Classifies not yet inspected model files of `root` on a worker thread, replacing an earlier run.
+/// Emits `model-traits-progress` after each batch so the catalog can refresh its counts.
+fn start_model_traits(app: &AppHandle, root: PathBuf) {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    app.state::<Session>()
+        .replace_model_traits(Some(cancelled.clone()));
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let Ok(library) = Library::writable(&root) else {
+            return;
+        };
+        let (mut after, mut done) = (0, 0);
+        while !cancelled.load(Ordering::Relaxed) {
+            match library.inspect_pending_models(&mut after, 200, &cancelled) {
+                Ok((inspected, remaining)) => {
+                    done += inspected;
+                    if !cancelled.load(Ordering::Relaxed) {
+                        let _ = app.emit(
+                            "model-traits-progress",
+                            ModelTraitsProgress { done, remaining },
+                        );
+                    }
+                    if remaining == 0 {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    // Retried on the next activation or import.
+                    eprintln!("{error}");
+                    break;
+                }
+            }
+        }
+    });
+}
+
 /// Grants the asset protocol whole source roots once instead of one entry per previewed file.
 fn allow_root(app: &AppHandle, root: &Path) -> Result<()> {
     app.asset_protocol_scope()
@@ -481,6 +536,7 @@ fn activate(app: &AppHandle, library: &Library) -> Result<LibraryInfo> {
         let _ = allow_root(app, &source);
     }
     app.state::<Session>().set_root(library.root().to_owned())?;
+    start_model_traits(app, library.root().to_owned());
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = fs::create_dir_all(&dir).and_then(|()| {
             fs::write(
@@ -726,6 +782,9 @@ async fn managed_import(
             .import_control
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = None;
+        if result.is_ok() {
+            start_model_traits(&app, root.clone());
+        }
         result
     })
     .await
@@ -743,6 +802,7 @@ async fn reference_folder(app: AppHandle, source: String) -> Result<AssetPackage
             &app,
             Path::new(package.external_root.as_deref().unwrap_or_default()),
         )?;
+        start_model_traits(&app, root.clone());
         Ok(package)
     })
     .await
@@ -760,6 +820,7 @@ async fn relink_source(app: AppHandle, package_id: i64, source: String) -> Resul
             &app,
             Path::new(package.external_root.as_deref().unwrap_or_default()),
         )?;
+        start_model_traits(&app, root.clone());
         Ok(package)
     })
     .await

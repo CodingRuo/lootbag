@@ -95,6 +95,7 @@ pub struct KindCounts {
     pub sound: i64,
     pub image: i64,
     pub model: i64,
+    pub animation: i64,
     pub material: i64,
     pub sprite_sequence: i64,
 }
@@ -102,15 +103,18 @@ pub struct KindCounts {
 impl Library {
     pub fn kind_counts(&self) -> Result<KindCounts> {
         let kinds = [AssetKind::Sound, AssetKind::Image, AssetKind::Model];
-        let cases = kinds
-            .iter()
-            .enumerate()
-            .map(|(index, kind)| {
+        let animation = format!(
+            "WHEN f.format IN ('{}') AND {} THEN 3",
+            AssetKind::Animation.formats().join("','"),
+            super::model_traits::animation_asset("f.asset_id")
+        );
+        let cases = std::iter::once(animation)
+            .chain(kinds.iter().enumerate().map(|(index, kind)| {
                 format!(
                     "WHEN f.format IN ('{}') THEN {index}",
                     kind.formats().join("','")
                 )
-            })
+            }))
             .collect::<Vec<_>>()
             .join(" ");
         let mut statement = self
@@ -136,6 +140,7 @@ impl Library {
                 (Some(0), count) => counts.sound = count,
                 (Some(1), count) => counts.image = count,
                 (Some(2), count) => counts.model = count,
+                (Some(3), count) => counts.animation = count,
                 _ => {}
             }
         }

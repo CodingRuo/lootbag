@@ -511,6 +511,24 @@ fn enumerate_resources(root: &Path, relative: &Path, paths: &mut BTreeSet<String
 }
 
 fn gltf_paths(input: &mut fs::File, entry_path: &str, format: &str) -> Result<Vec<String>> {
+    let json = gltf_json(input, format)?;
+    let mut paths = BTreeSet::new();
+    for array in ["buffers", "images"] {
+        if let Some(entries) = json[array].as_array() {
+            for entry in entries {
+                if let Some(uri) = entry["uri"].as_str() {
+                    if !uri.starts_with("data:") {
+                        paths.insert(normalize_reference(entry_path, uri)?);
+                    }
+                }
+            }
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
+/// The bounded glTF JSON of a `.gltf` file or the JSON chunk of a `.glb`.
+pub(super) fn gltf_json(input: &mut fs::File, format: &str) -> Result<serde_json::Value> {
     let mut bytes = Vec::new();
     if format == "GLB" {
         let mut header = [0_u8; 20];
@@ -545,21 +563,7 @@ fn gltf_paths(input: &mut fs::File, entry_path: &str, format: &str) -> Result<Ve
             return Err("Modell-JSON ist zu groß für die Vorschau".into());
         }
     }
-    let json: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("glTF-Modell nicht lesbar: {error}"))?;
-    let mut paths = BTreeSet::new();
-    for array in ["buffers", "images"] {
-        if let Some(entries) = json[array].as_array() {
-            for entry in entries {
-                if let Some(uri) = entry["uri"].as_str() {
-                    if !uri.starts_with("data:") {
-                        paths.insert(normalize_reference(entry_path, uri)?);
-                    }
-                }
-            }
-        }
-    }
-    Ok(paths.into_iter().collect())
+    serde_json::from_slice(&bytes).map_err(|error| format!("glTF-Modell nicht lesbar: {error}"))
 }
 
 fn normalize_reference(entry_path: &str, uri: &str) -> Result<String> {
