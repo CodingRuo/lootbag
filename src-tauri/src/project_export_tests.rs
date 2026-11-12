@@ -390,3 +390,37 @@ fn texture_notes_ignore_the_model_itself_and_other_names_containing_the_stem() {
     let plan = library.plan_project_export(folder.id).unwrap();
     assert_eq!(plan.substitutions, 0);
 }
+
+#[test]
+fn mtl_texture_names_with_spaces_keep_their_whole_name() {
+    let workspace = Workspace::new();
+    write(
+        workspace.path("Kit/Rock.obj"),
+        b"mtllib rock.mtl\nv 0 0 0\n",
+    );
+    write(
+        workspace.path("Kit/rock.mtl"),
+        b"newmtl a\nmap_Kd Old Wood.tga\nmap_Bump textures/Bark Moss.tga\n",
+    );
+    // "Old Wood.tga" is missing but "Old Wood.png" exists: a note. "Wood.png" alone must not count.
+    write(workspace.path("Kit/Old Wood.png"), b"old");
+    write(workspace.path("Kit/Wood.png"), b"wood");
+    write(workspace.path("Kit/textures/Bark Moss.tga"), b"bark");
+    let mut library = Library::create(&workspace.path("library")).unwrap();
+    library.import_folder(&workspace.path("Kit")).unwrap();
+    let folder = library.create_folder("Props", None).unwrap();
+    library
+        .add_to_folder(folder.id, find(&library, "Rock", "Kit").id)
+        .unwrap();
+    let plan = library.plan_project_export(folder.id).unwrap();
+    assert_eq!(plan.substitutions, 1);
+    let exports = workspace.path("exports");
+    fs::create_dir(&exports).unwrap();
+    library.export_project(folder.id, &exports).unwrap();
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(exports.join("Props/manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["assets"][0]["notes"],
+        json!(["Textur Old Wood.tga ersetzt durch Old Wood.png – Referenz im Modell unverändert"])
+    );
+}

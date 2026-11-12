@@ -360,8 +360,8 @@ fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String
     // One pass per text: a texture reference whose exact file is not copied but whose stem is gets a note.
     let mut notes = Vec::new();
     for (index, raw) in texts.iter().enumerate() {
-        for (stem_name, full, spelled) in texture_references(raw, index > 0) {
-            if copied.contains(&full) {
+        for (stem_name, full, spelled, shorter) in texture_references(raw, index > 0) {
+            if copied.contains(&full) || shorter.iter().any(|name| copied.contains(name)) {
                 continue;
             }
             let Some(replacement) = included
@@ -386,9 +386,10 @@ const TEXTURE_EXTENSIONS: [&str; 12] = [
     "png", "jpg", "jpeg", "tga", "psd", "tif", "tiff", "bmp", "exr", "dds", "webp", "gif",
 ];
 
-/// Texture file names referenced in a model or MTL text as (lowercase stem, lowercase name, original spelling).
-/// FBX keeps whole names (spaces included); MTL lines start with a keyword, so only the last word counts there.
-fn texture_references(text: &[u8], mtl: bool) -> Vec<(String, String, String)> {
+/// Texture file names referenced in a model or MTL text as (lowercase stem, lowercase name, original spelling,
+/// lowercase shorter names after inner spaces). The whole name counts; an MTL line's leading keyword
+/// ("map_Kd") is dropped. Shorter names only tell whether an ambiguous reference was copied anyway.
+fn texture_references(text: &[u8], mtl: bool) -> Vec<(String, String, String, Vec<String>)> {
     let mut references = Vec::new();
     for (dot, _) in text.iter().enumerate().filter(|(_, byte)| **byte == b'.') {
         let extension = text[dot + 1..]
@@ -400,21 +401,27 @@ fn texture_references(text: &[u8], mtl: bool) -> Vec<(String, String, String)> {
             continue;
         }
         let floor = dot.saturating_sub(255);
-        let mut start = text[floor..dot]
-            .iter()
-            .rposition(|byte| matches!(byte, b'/' | b'\\' | b'"' | b':') || byte.is_ascii_control())
-            .map_or(floor, |position| floor + position + 1);
-        if mtl {
-            if let Some(space) = text[start..dot].iter().rposition(|byte| *byte == b' ') {
+        let separator = text[floor..dot].iter().rposition(|byte| {
+            matches!(byte, b'/' | b'\\' | b'"' | b':') || byte.is_ascii_control()
+        });
+        let mut start = separator.map_or(floor, |position| floor + position + 1);
+        let line_start = separator.is_none_or(|position| text[floor + position].is_ascii_control());
+        if mtl && line_start {
+            if let Some(space) = text[start..dot].iter().position(|byte| *byte == b' ') {
                 start += space + 1;
             }
         }
         if start == dot {
             continue;
         }
-        let spelled = String::from_utf8_lossy(&text[start..dot + 1 + extension]).into_owned();
+        let end = dot + 1 + extension;
+        let spelled = String::from_utf8_lossy(&text[start..end]).into_owned();
+        let shorter = (start..dot)
+            .filter(|at| text[*at] == b' ')
+            .map(|at| String::from_utf8_lossy(&text[at + 1..end]).to_ascii_lowercase())
+            .collect();
         let stem = String::from_utf8_lossy(&text[start..dot]).to_ascii_lowercase();
-        references.push((stem, spelled.to_ascii_lowercase(), spelled));
+        references.push((stem, spelled.to_ascii_lowercase(), spelled, shorter));
     }
     references
 }
