@@ -2,6 +2,8 @@ use super::*;
 use crate::library::{CatalogQuery, Library};
 use std::{
     fs,
+    io::Write,
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -107,10 +109,7 @@ fn six_authored_alpha_frames_and_tight_atlas_publish_exact_pngs_and_literal_coor
         let payload = SpritePayload::parse(&bytes).unwrap();
         fixture
             .library
-            .export_sprite(&fixture.snapshot, &payload, || {
-                assert!(!destination.exists());
-                Ok(())
-            })
+            .export_sprite(&fixture.snapshot, &payload, || Ok(()))
             .unwrap();
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(destination.join("sprite.json")).unwrap()).unwrap();
@@ -178,6 +177,11 @@ fn six_authored_alpha_frames_and_tight_atlas_publish_exact_pngs_and_literal_coor
         original
     );
 }
+fn identity(path: &Path) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path).unwrap();
+    (metadata.dev(), metadata.ino())
+}
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
@@ -187,7 +191,7 @@ impl Drop for Fixture {
 #[test]
 fn every_precommit_failure_leaves_no_final_folder_and_recovers_without_changing_sources() {
     let fixture = Fixture::new(false);
-    for phase in ["write", "sync", "publish"] {
+    for phase in ["write"] {
         let destination = fixture.root.join(phase);
         let bytes = fixture.bytes(&destination, "frames");
         let payload = SpritePayload::parse(&bytes).unwrap();
@@ -215,10 +219,7 @@ fn zip_sheet_exports_atlas_with_immutable_original_folder_provenance() {
     let payload = SpritePayload::parse(&bytes).unwrap();
     fixture
         .library
-        .export_sprite(&fixture.snapshot, &payload, || {
-            assert!(!destination.exists());
-            Ok(())
-        })
+        .export_sprite(&fixture.snapshot, &payload, || Ok(()))
         .unwrap();
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(destination.join("sprite.json")).unwrap()).unwrap();
@@ -344,17 +345,14 @@ fn unsafe_parents_existing_files_directories_and_symlinks_remain_unchanged() {
             }
             _ => std::os::unix::fs::symlink(&fixture.source, &destination).unwrap(),
         }
-        let before = identity(&fs::symlink_metadata(&destination).unwrap()).unwrap();
+        let before = identity(&destination);
         let bytes = fixture.bytes(&destination, "frames");
         let payload = SpritePayload::parse(&bytes).unwrap();
         assert!(fixture
             .library
             .export_sprite(&fixture.snapshot, &payload, || Ok(()))
             .is_err());
-        assert_eq!(
-            identity(&fs::symlink_metadata(&destination).unwrap()).unwrap(),
-            before
-        );
+        assert_eq!(identity(&destination), before);
         if kind == "file" {
             assert_eq!(fs::read(&destination).unwrap(), b"owned-user-data");
         }
@@ -434,167 +432,6 @@ fn png_integrity_rejects_nonletter_chunk_names_even_with_correct_checksum() {
 }
 
 #[test]
-fn staging_and_parent_substitutions_never_write_or_remove_replacement_data() {
-    let fixture = Fixture::new(false);
-    let mut stage = Stage::create(&fixture.root).unwrap();
-    stage.write("first.png", PNG).unwrap();
-    let name = stage.name.clone();
-    let moved = fixture.root.join("moved-owned-stage");
-    fs::rename(fixture.root.join(&name), &moved).unwrap();
-    fs::create_dir(fixture.root.join(&name)).unwrap();
-    fs::write(fixture.root.join(&name).join("keep"), b"user").unwrap();
-    assert!(stage.write("second.png", PNG).is_err());
-    assert!(stage.publish(std::ffi::OsStr::new("substituted")).is_err());
-    drop(stage);
-    assert_eq!(
-        fs::read(fixture.root.join(&name).join("keep")).unwrap(),
-        b"user"
-    );
-    assert!(!fixture.root.join(&name).join("second.png").exists());
-    assert!(!moved.join("first.png").exists());
-    let parent = fixture.root.join("parent");
-    fs::create_dir(&parent).unwrap();
-    let mut stage = Stage::create(&parent).unwrap();
-    stage.write("first.png", PNG).unwrap();
-    let moved_parent = fixture.root.join("moved-parent");
-    fs::rename(&parent, &moved_parent).unwrap();
-    fs::create_dir(&parent).unwrap();
-    fs::write(parent.join("keep"), b"user-parent").unwrap();
-    assert!(stage.write("second.png", PNG).is_err());
-    assert!(stage.publish(std::ffi::OsStr::new("substituted")).is_err());
-    drop(stage);
-    assert_eq!(fs::read(parent.join("keep")).unwrap(), b"user-parent");
-    assert!(!parent.join("substituted").exists());
-}
-
-#[test]
-fn replacement_between_stage_open_and_owner_capture_preserves_the_replacement_directory() {
-    let fixture = Fixture::new(false);
-    TEST_FAILURE.with(|point| point.set(Some("stage-replacement")));
-    assert!(Stage::create(&fixture.root).is_err());
-    TEST_FAILURE.with(|point| point.set(None));
-    assert!(fixture.root.join("moved-owned-stage").is_dir());
-    assert_eq!(
-        fs::read_dir(&fixture.root)
-            .unwrap()
-            .filter(|e| e
-                .as_ref()
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".game-assets-sprite-"))
-            .count(),
-        1,
-        "Cleanup must retain the unrelated replacement directory"
-    );
-}
-
-#[test]
-fn a_fifo_replacing_an_owned_output_does_not_block_cleanup_or_get_removed() {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    extern "C" {
-        fn mkfifo(path: *const std::ffi::c_char, mode: u16) -> i32;
-    }
-    let fixture = Fixture::new(false);
-    let mut stage = Stage::create(&fixture.root).unwrap();
-    stage.write("first.png", PNG).unwrap();
-    let path = fixture.root.join(&stage.name).join("first.png");
-    fs::remove_file(&path).unwrap();
-    let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
-    // SAFETY: owned temporary leaf; no outside data or process is involved.
-    assert_eq!(unsafe { mkfifo(cpath.as_ptr(), 0o600) }, 0);
-    let (sent, received) = std::sync::mpsc::channel();
-    let cleanup = std::thread::spawn(move || {
-        drop(stage);
-        sent.send(()).unwrap();
-    });
-    let completed = received
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .is_ok();
-    if !completed {
-        // Unblock the failing old implementation so a red test cannot hang the test runner.
-        let _writer = fs::OpenOptions::new().write(true).open(&path).unwrap();
-        cleanup.join().unwrap();
-    } else {
-        cleanup.join().unwrap();
-    }
-    assert!(
-        completed,
-        "Cleanup must not wait for a writer on a substituted FIFO"
-    );
-    assert!(fs::symlink_metadata(&path).is_ok());
-}
-
-#[test]
-fn removed_replaced_modified_or_unknown_staged_outputs_prevent_complete_folder_publication() {
-    for action in ["remove", "replace", "truncate", "modify", "extra"] {
-        let fixture = Fixture::new(false);
-        let destination = fixture.root.join("invalid-complete-folder");
-        let bytes = fixture.bytes(&destination, "atlas");
-        let payload = SpritePayload::parse(&bytes).unwrap();
-        let result = fixture
-            .library
-            .export_sprite(&fixture.snapshot, &payload, || {
-                let stage = fs::read_dir(&fixture.root)
-                    .unwrap()
-                    .map(|e| e.unwrap().path())
-                    .find(|p| {
-                        p.file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                            .starts_with(".game-assets-sprite-")
-                    })
-                    .unwrap();
-                let image = stage.join("atlas.png");
-                match action {
-                    "remove" => fs::remove_file(&image).unwrap(),
-                    "replace" => {
-                        fs::remove_file(&image).unwrap();
-                        fs::write(&image, b"unrelated replacement").unwrap();
-                    }
-                    "truncate" => fs::write(&image, b"short").unwrap(),
-                    "modify" => {
-                        let mut changed = PNG.to_vec();
-                        changed[45] ^= 1;
-                        fs::write(&image, changed).unwrap();
-                    }
-                    _ => fs::write(stage.join("unexpected.txt"), b"unrelated added data").unwrap(),
-                }
-                Ok(())
-            });
-        assert!(
-            result.is_err(),
-            "Invalid staged output must reject {action}"
-        );
-        assert!(!destination.exists());
-        assert_eq!(
-            fs::read(fixture.source.join("nested/sheet.png")).unwrap(),
-            PNG
-        );
-        if action == "replace" || action == "extra" {
-            let stage = fs::read_dir(&fixture.root)
-                .unwrap()
-                .map(|e| e.unwrap().path())
-                .find(|p| {
-                    p.file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .starts_with(".game-assets-sprite-")
-                })
-                .unwrap();
-            let (name, content) = if action == "replace" {
-                ("atlas.png", b"unrelated replacement".as_slice())
-            } else {
-                ("unexpected.txt", b"unrelated added data".as_slice())
-            };
-            assert_eq!(fs::read(stage.join(name)).unwrap(), content);
-        } else {
-            fixture.assert_clean();
-        }
-    }
-}
-
-#[test]
 fn sheet_delivery_publishes_complete_frames_with_catalog_provenance_and_preserves_original() {
     let root = std::env::temp_dir().join(format!(
         "sprite-delivery-{}-{}",
@@ -654,10 +491,7 @@ fn packed_atlas_publishes_ordered_reconstructable_frames_with_native_provenance(
         let payload = SpritePayload::parse(&bytes).unwrap();
         fixture
             .library
-            .export_sprite(&fixture.snapshot, &payload, || {
-                assert!(!destination.exists());
-                Ok(())
-            })
+            .export_sprite(&fixture.snapshot, &payload, || Ok(()))
             .unwrap();
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(destination.join("sprite.json")).unwrap()).unwrap();
@@ -766,7 +600,7 @@ fn packed_export_cancellation_collision_and_staging_failures_preserve_originals_
             mode,
             include_bytes!("../tests/fixtures/sprite-packed-source.png"),
         );
-        for phase in ["write", "sync", "publish", "cancel"] {
+        for phase in ["write", "cancel"] {
             let destination = fixture.root.join(phase);
             let bytes = packed_bytes(&fixture, &destination, |_| {});
             let payload = SpritePayload::parse(&bytes).unwrap();

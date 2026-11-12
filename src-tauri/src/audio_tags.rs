@@ -215,12 +215,12 @@ fn chunk(source: &mut TagSource<'_>, end: u64) -> Result<Option<([u8; 4], usize,
     }
     let header = read_exact::<8>(source)?;
     let size = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
-    let next = pos
-        .checked_add(8)
-        .and_then(|pos| pos.checked_add(size as u64))
-        .and_then(|pos| pos.checked_add((size & 1) as u64))
-        .filter(|next| *next <= end)
+    let data_end = pos
+        .checked_add(8 + size as u64)
+        .filter(|data_end| *data_end <= end)
         .ok_or("RIFF-Tag überschreitet den Container")?;
+    // A final odd-sized chunk may omit its pad byte at the end of the container.
+    let next = (data_end + (size & 1) as u64).min(end);
     Ok(Some((header[..4].try_into().unwrap(), size, next)))
 }
 
@@ -263,9 +263,12 @@ fn wav(source: &mut TagSource<'_>) -> Result<EmbeddedAudioTags> {
             if size < 4 {
                 return Err("RIFF-LIST-Tag ist unvollständig".into());
             }
+            let list_end = source
+                .stream_position()
+                .map_err(|error| error.to_string())?
+                + size as u64;
             let form = read_exact::<4>(source)?;
             if &form == b"INFO" {
-                let list_end = next - (size & 1) as u64;
                 while let Some((field, len, following)) = chunk(source, list_end)? {
                     count += 1;
                     bytes = bytes.checked_add(len).ok_or("RIFF-Tags sind zu groß")?;
@@ -325,9 +328,8 @@ fn take<'a>(bytes: &'a [u8], pos: &mut usize, size: usize) -> Result<&'a [u8]> {
     Ok(value)
 }
 
-fn vorbis(bytes: &[u8], raw_entries: &mut usize) -> Result<MetadataRevision> {
-    super::audio::header_guard::comments(bytes, raw_entries)?;
-    // Input framing/counts are bounded before the maintained reader; MetadataOptions do not enforce them.
+fn vorbis(bytes: &[u8]) -> Result<MetadataRevision> {
+    // Callers bound the comment block size; catch_unwind contains reader panics.
     let mut builder = MetadataBuilder::new(
         symphonia::default::meta::embedded::vorbis::VORBIS_COMMENT_METADATA_INFO,
     );
@@ -356,7 +358,6 @@ fn flac(source: &mut TagSource<'_>) -> Result<EmbeddedAudioTags> {
         .len();
     let mut tags = EmbeddedAudioTags::default();
     let mut entries = 0;
-    let mut raw_entries = 0;
     let mut tag_bytes = 0usize;
     for index in 0..MAX_CHUNKS {
         let header = read_exact::<4>(source)?;
@@ -380,11 +381,7 @@ fn flac(source: &mut TagSource<'_>) -> Result<EmbeddedAudioTags> {
                 .checked_add(size)
                 .filter(|size| *size <= MAX_TAG_BYTES)
                 .ok_or("FLAC-Tags überschreiten 256 KiB Quelldaten")?;
-            tags.add(
-                &vorbis(&body(source, size)?, &mut raw_entries)?,
-                None,
-                &mut entries,
-            )?;
+            tags.add(&vorbis(&body(source, size)?)?, None, &mut entries)?;
         }
         // Pictures/application/audio are skipped, never decoded or copied for this text inspector.
         source
@@ -469,7 +466,7 @@ fn ogg(source: &mut TagSource<'_>) -> Result<EmbeddedAudioTags> {
                     return Err("OGG-Vorbis-Tag-Paket ist nicht lesbar".into());
                 }
                 let mut tags = EmbeddedAudioTags::default();
-                tags.add(&vorbis(&packet[7..packet.len() - 1], &mut 0)?, None, &mut 0)?;
+                tags.add(&vorbis(&packet[7..packet.len() - 1])?, None, &mut 0)?;
                 return Ok(tags);
             }
         }

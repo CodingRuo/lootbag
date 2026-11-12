@@ -27,24 +27,11 @@ pub use audio::{AudioMetadata, AudioStatus, AudioWaveform, WaveformPeak};
 #[path = "audio_filters.rs"]
 mod audio_filters;
 pub(crate) use audio_filters::AudioCriteria;
-#[cfg(any(feature = "desktop", test))]
-// Without the desktop feature, tests only use the anchored import-stage helpers.
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-#[path = "storage.rs"]
-mod storage;
-#[cfg(feature = "desktop")]
-#[path = "trash_removal.rs"]
-mod trash_removal;
 use std::{
     collections::HashMap,
     fs, io,
     path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
-};
-#[cfg(feature = "desktop")]
-pub(crate) use trash_removal::{
-    prepare as prepare_external_trash_removal, remove as remove_external_trash,
-    PreparedTrashRemoval, TrashRemovalEntry, TrashRemovalPlan,
 };
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -167,6 +154,14 @@ pub struct TrashEntry {
     pub deleted_at: i64,
     pub original_folder: Option<String>,
     pub parent_trashed: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptiedTrash {
+    pub packages: i64,
+    pub files: i64,
+    pub disk_errors: Vec<String>,
 }
 
 pub struct Library {
@@ -865,6 +860,71 @@ impl Library {
             );
         }
         Ok(())
+    }
+
+    pub fn empty_trash(&mut self) -> Result<EmptiedTrash> {
+        let failed = |e: rusqlite::Error| format!("Papierkorb kann nicht geleert werden: {e}");
+        let transaction = self.connection.transaction().map_err(failed)?;
+        let (packages, files): (i64, i64) = transaction
+            .query_row(
+                "SELECT count(package_id), count(file_id) FROM trash",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(failed)?;
+        // Only managed data lives under the library root; external packages lose catalog rows only.
+        let managed: Vec<String> = transaction
+            .prepare(
+                "SELECT f.relative_path FROM trash t JOIN asset_files f ON f.id = t.file_id
+                    JOIN assets a ON a.id = f.asset_id
+                    WHERE NOT EXISTS (SELECT 1 FROM external_sources s WHERE s.package_id = a.package_id)
+                    AND NOT EXISTS (SELECT 1 FROM external_files e WHERE e.file_id = f.id)
+                 UNION ALL
+                 SELECT p.relative_path FROM trash t JOIN packages p ON p.id = t.package_id
+                    WHERE NOT EXISTS (SELECT 1 FROM external_sources s WHERE s.package_id = p.id)",
+            )
+            .map_err(failed)?
+            .query_map([], |row| row.get(0))
+            .map_err(failed)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(failed)?;
+        transaction
+            .execute_batch(
+                "CREATE TEMP TABLE doomed_packages AS SELECT package_id AS id FROM trash WHERE package_id IS NOT NULL;
+                CREATE TEMP TABLE doomed_files AS
+                    SELECT f.id FROM asset_files f JOIN assets a ON a.id = f.asset_id WHERE a.package_id IN doomed_packages
+                    UNION SELECT file_id FROM trash WHERE file_id IS NOT NULL;
+                CREATE TEMP TABLE doomed_assets AS
+                    SELECT asset_id AS id FROM asset_files WHERE id IN doomed_files
+                    UNION SELECT id FROM assets WHERE package_id IN doomed_packages;
+                DELETE FROM trash WHERE file_id IN doomed_files OR package_id IN doomed_packages;
+                DELETE FROM external_files WHERE file_id IN doomed_files;
+                DELETE FROM audio_metadata WHERE file_id IN doomed_files;
+                DELETE FROM asset_files WHERE id IN doomed_files;
+                DELETE FROM doomed_assets WHERE EXISTS (SELECT 1 FROM asset_files f WHERE f.asset_id = doomed_assets.id);
+                DELETE FROM asset_tags WHERE asset_id IN doomed_assets;
+                DELETE FROM folder_assets WHERE asset_id IN doomed_assets;
+                DELETE FROM assets WHERE id IN doomed_assets;
+                DELETE FROM package_tags WHERE package_id IN doomed_packages;
+                DELETE FROM external_sources WHERE package_id IN doomed_packages;
+                DELETE FROM packages WHERE id IN doomed_packages;
+                DROP TABLE temp.doomed_packages; DROP TABLE temp.doomed_files; DROP TABLE temp.doomed_assets;",
+            )
+            .map_err(failed)?;
+        transaction.commit().map_err(failed)?;
+        let disk_errors = managed
+            .iter()
+            .filter_map(|relative| {
+                remove_managed(&self.root, relative)
+                    .err()
+                    .map(|e| format!("{relative}: {e}"))
+            })
+            .collect();
+        Ok(EmptiedTrash {
+            packages,
+            files,
+            disk_errors,
+        })
     }
 
     pub fn annotate_asset(&mut self, asset_id: i64, name: &str, tags: &[String]) -> Result<()> {
@@ -1703,6 +1763,40 @@ fn insert_variant(
     transaction.execute("INSERT INTO asset_files(asset_id, original_filename, relative_path, format, size_bytes) VALUES (?1, ?2, ?3, ?4, ?5)", params![asset_id, filename, path, file.format, file.size])
         .map_err(|e| format!("Asset-Datei kann nicht katalogisiert werden: {e}"))?;
     Ok(transaction.last_insert_rowid())
+}
+
+/// Removes a managed `packages/...` path below `root`; refuses symlinks anywhere on the way.
+fn remove_managed(root: &Path, relative: &str) -> Result<()> {
+    let relative = Path::new(relative);
+    let mut parts = relative.components();
+    if parts.next() != Some(Component::Normal("packages".as_ref()))
+        || parts.clone().next().is_none()
+        || !parts.all(|part| matches!(part, Component::Normal(_)))
+    {
+        return Err("Ungültiger Pfad im Katalog".into());
+    }
+    let mut path = root.to_owned();
+    let mut metadata = None;
+    for part in relative.components() {
+        path.push(part);
+        match fs::symlink_metadata(&path) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err("Symbolische Verknüpfung wird nicht gelöscht".into())
+            }
+            Ok(m) => metadata = Some(m),
+            // Already gone, e.g. a trashed file inside a trashed package that was removed first.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let removed = match metadata {
+        Some(m) if m.is_dir() => fs::remove_dir_all(&path),
+        _ => fs::remove_file(&path),
+    };
+    match removed {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
 }
 
 fn resolve_external(
@@ -3640,6 +3734,66 @@ mod tests {
         assert_eq!(whistle.name, "Whistle");
         assert_eq!(whistle.files.len(), 2);
         assert_eq!(library.resolve_preview(ogg.id).unwrap(), ogg_path);
+    }
+
+    #[test]
+    fn empty_trash_deletes_managed_data_and_only_catalog_rows_of_external_packages() {
+        let workspace = Workspace::new();
+        let managed_source = workspace.path("Managed");
+        let kept_source = workspace.path("Kept");
+        let external = workspace.path("External");
+        for (folder, file) in [
+            (&managed_source, "rain.wav"),
+            (&kept_source, "wind.wav"),
+            (&kept_source, "fire.wav"),
+            (&external, "river.wav"),
+        ] {
+            fs::create_dir_all(folder).unwrap();
+            fs::write(folder.join(file), file).unwrap();
+        }
+        let root = workspace.path("library");
+        let mut library = Library::create(&root).unwrap();
+        let managed = library.import_folder(&managed_source).unwrap();
+        let kept = library.import_folder(&kept_source).unwrap();
+        let referenced = library.reference_folder(&external).unwrap();
+        let items = library.query(CatalogQuery::default()).unwrap().items;
+        let rain = items.iter().find(|item| item.name == "rain").unwrap();
+        library
+            .annotate_asset(rain.id, "rain", &["weather".into()])
+            .unwrap();
+        let wind = items.iter().find(|item| item.name == "wind").unwrap().files[0].id;
+        let wind_path = library.resolve_preview(wind).unwrap();
+        library.trash_package(managed.id).unwrap();
+        library.trash_package(referenced.id).unwrap();
+        library.trash_file(wind).unwrap();
+
+        let emptied = library.empty_trash().unwrap();
+
+        assert_eq!((emptied.packages, emptied.files), (2, 1));
+        assert!(emptied.disk_errors.is_empty(), "{:?}", emptied.disk_errors);
+        assert!(!root.join(&managed.relative_path).exists());
+        assert!(!wind_path.exists());
+        assert!(root.join(&kept.relative_path).join("fire.wav").exists());
+        assert_eq!(fs::read(external.join("river.wav")).unwrap(), b"river.wav");
+        let count = |table: &str| -> i64 {
+            library
+                .connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        for (table, expected) in [
+            ("packages", 1),
+            ("assets", 1),
+            ("asset_files", 1),
+            ("trash", 0),
+            ("asset_tags", 0),
+            ("external_sources", 0),
+            ("external_files", 0),
+        ] {
+            assert_eq!(count(table), expected, "{table}");
+        }
     }
 
     #[test]

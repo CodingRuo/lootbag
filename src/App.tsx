@@ -116,8 +116,7 @@ type ImportProgress = {
   currentPath: string | null;
 };
 type ImportOwner = { root: string; generation: number; stopped: boolean; imported: number; skipped: number; cancellationError: string | null };
-type PreparedTrashRemoval = { token: string; packageName: string; sourcePath: string; externalRoot: string; deletedAt: number; assetCount: number; fileCount: number };
-type TrashRemovalOwner = { root: string; scope: number; generation: number; token: string | null; running: boolean };
+type EmptiedTrash = { packages: number; files: number; diskErrors: string[] };
 type Notice = { tone: "error" | "success"; message: string };
 type BulkAction = { kind: "addTags"; tags: string[] } | { kind: "addToFolder"; folderId: number } | { kind: "trash" };
 type BulkResult = { assetCount: number; fileCount: number };
@@ -263,7 +262,6 @@ export default function App() {
   currentLibraryRoot.current = library?.root;
   const [showTrash, setShowTrash] = useState(false);
   const trashGeneration = useRef(0);
-  const trashRemovalOwner = useRef<TrashRemovalOwner | null>(null);
   const renderedTrashScope = trashGeneration.current;
   const [selectedFileId, setSelectedFileId] = useState<number | null>(null);
   const [modelSelection, setModelSelection] = useState<ModelExportSelection | null>(null);
@@ -309,8 +307,6 @@ export default function App() {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      const removal = trashRemovalOwner.current; trashRemovalOwner.current = null;
-      if (removal) void discardTrashRemoval(removal).catch(() => {});
       const owner = importOwner.current; importOwner.current = null;
       if (owner) abandonImport(owner);
     };
@@ -546,8 +542,6 @@ export default function App() {
 
   function useLibrary(info: LibraryInfo) {
     trashGeneration.current++;
-    const removal = trashRemovalOwner.current; trashRemovalOwner.current = null;
-    if (removal) void discardTrashRemoval(removal).catch(() => {});
     const owner = importOwner.current; importOwner.current = null;
     if (owner) abandonImport(owner);
     currentLibraryRoot.current = info.root;
@@ -877,58 +871,30 @@ export default function App() {
     });
   }
 
-  function discardTrashRemoval(owner: TrashRemovalOwner): Promise<void> {
-    const token = owner.token;
-    owner.token = null;
-    return token && !owner.running ? invoke("discard_trash_removal", { token }) : Promise.resolve();
-  }
-
   function closeTrash(scope: number) {
     if (trashGeneration.current !== scope) return;
     trashGeneration.current++;
-    const owner = trashRemovalOwner.current;
-    trashRemovalOwner.current = null;
-    if (owner) {
-      void discardTrashRemoval(owner).catch(() => {});
-      if (!owner.running && operationGeneration.current === owner.generation) {
-        operationGeneration.current++; operationRunning.current = false; setBusy(null);
-      }
-    }
     setShowTrash(false);
   }
 
-  function prepareTrashRemoval(entry: TrashEntry, scope: number) {
-    if (!library || !showTrash || trashGeneration.current !== scope || entry.fileId !== null) return;
-    void act("Entfernen aus dem Katalog wird vorbereitet …", async (isCurrent) => {
-      const owner: TrashRemovalOwner = { root: library.root, scope, generation: operationGeneration.current, token: null, running: false };
-      trashRemovalOwner.current = owner;
-      const owns = () => isCurrent() && trashRemovalOwner.current === owner && trashGeneration.current === scope && currentLibraryRoot.current === owner.root;
-      try {
-        const prepared = await invoke<PreparedTrashRemoval>("prepare_trash_removal", {
-          root: owner.root, entry: { id: entry.id, packageId: entry.packageId, name: entry.name, deletedAt: entry.deletedAt },
-        });
-        owner.token = prepared.token;
-        if (!owns()) return;
-        const proceed = await confirm(
-          `Paket „${prepared.packageName}“ endgültig aus dem Katalog entfernen?\n\nExterne Quelle: ${prepared.externalRoot}\nUrsprüngliche Quelle: ${prepared.sourcePath}\nGelöscht am: ${new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short" }).format(new Date(prepared.deletedAt * 1000))}\n${number.format(prepared.assetCount)} Assets · ${number.format(prepared.fileCount)} Dateien\n\nDas Entfernen ist unwiderruflich: Katalogeinträge, Annotationen und Projektzuordnungen gehen verloren. Eine Wiederherstellung im Papierkorb ist danach nicht mehr möglich.\n\nExterne Originale bleiben unverändert. Es werden 0 Byte Dateien und keine verwalteten Paketdaten entfernt.`,
-          { title: "Externes Paket aus dem Katalog entfernen?", kind: "warning", okLabel: "Endgültig aus Katalog entfernen", cancelLabel: "Abbrechen" },
-        );
-        if (!owns()) return;
-        if (!proceed) { await discardTrashRemoval(owner); return; }
-        owner.running = true; owner.token = null;
-        await invoke("remove_prepared_trash", { token: prepared.token });
-        if (!owns()) return;
-        const info = await invoke<LibraryInfo>("get_library");
-        if (!owns()) return;
-        setLibrary(info);
-        setRevision((value) => value + 1);
-        setNotice({ tone: "success", message: `${prepared.packageName} aus dem Katalog entfernt. Externe Originale bleiben unverändert; 0 Byte Dateien entfernt.` });
-      } catch (error: unknown) {
-        if (owns()) throw error;
-      } finally {
-        await discardTrashRemoval(owner).catch(() => {});
-        if (trashRemovalOwner.current === owner) trashRemovalOwner.current = null;
-      }
+  function emptyTrash(entries: TrashEntry[]) {
+    if (!entries.length) return;
+    void act("Papierkorb wird geleert …", async (isCurrent) => {
+      const packages = entries.filter((entry) => entry.fileId === null).length;
+      const names = entries.slice(0, 8).map((entry) => `• ${entry.name}`).join("\n");
+      const proceed = await confirm(
+        `${number.format(packages)} Pakete und ${number.format(entries.length - packages)} Dateien endgültig löschen?\n\n${names}${entries.length > 8 ? `\n… und ${entries.length - 8} weitere` : ""}\n\nImportierte Paketdaten werden von der Festplatte gelöscht. Bei externen Paketen werden nur die Katalogeinträge entfernt; die Originale bleiben unverändert. Annotationen und Projektzuordnungen gehen verloren. Dies kann nicht rückgängig gemacht werden.`,
+        { title: "Papierkorb leeren?", kind: "warning", okLabel: "Endgültig löschen", cancelLabel: "Abbrechen" },
+      );
+      if (!proceed || !isCurrent()) return;
+      const result = await invoke<EmptiedTrash>("empty_trash");
+      const info = await invoke<LibraryInfo>("get_library");
+      if (!isCurrent()) return;
+      setLibrary(info);
+      setRevision((value) => value + 1);
+      setNotice(result.diskErrors.length
+        ? { tone: "error", message: `Papierkorb geleert, aber ${result.diskErrors.length} Pfade konnten nicht von der Festplatte gelöscht werden: ${result.diskErrors.join("; ")}` }
+        : { tone: "success", message: `Papierkorb geleert: ${number.format(result.packages)} Pakete und ${number.format(result.files)} Dateien endgültig gelöscht.` });
     });
   }
 
@@ -1811,7 +1777,7 @@ export default function App() {
       )}
       {library && showTrash && (
         <TrashDialog root={library.root} revision={revision} disabled={actionsDisabled} notice={notice}
-          onClose={() => closeTrash(renderedTrashScope)} onRestore={restoreTrash} onPrepareRemoval={entry => prepareTrashRemoval(entry, renderedTrashScope)} />
+          onClose={() => closeTrash(renderedTrashScope)} onRestore={restoreTrash} onEmpty={emptyTrash} />
       )}
       {!library && (
         <footer className="onboarding-footer">

@@ -65,14 +65,14 @@ export function TrashActions({ children, label, disabled, onTrash, className = "
 const PAGE_SIZE = 40;
 const date = new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short" });
 
-export function TrashDialog({ root, revision, disabled, notice, onClose, onRestore, onPrepareRemoval }: {
+export function TrashDialog({ root, revision, disabled, notice, onClose, onRestore, onEmpty }: {
   root: string;
   revision: number;
   disabled: boolean;
   notice: { tone: "error" | "success"; message: string } | null;
   onClose: () => void;
   onRestore: (entry: TrashEntry) => void;
-  onPrepareRemoval: (entry: TrashEntry) => void;
+  onEmpty: (entries: TrashEntry[]) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [entries, setEntries] = useState<TrashEntry[]>([]);
@@ -105,9 +105,12 @@ export function TrashDialog({ root, revision, disabled, notice, onClose, onResto
     <dialog ref={dialog} className="trash-dialog" aria-labelledby="trash-title" onCancel={onClose} onClose={onClose}>
       <div className="trash-heading">
         <h2 id="trash-title">Interner Papierkorb</h2>
-        <button className="button outlined" onClick={onClose}>Schließen</button>
+        <div className="trash-row-actions">
+          <button className="button outlined" disabled={disabled || loading || !entries.length} onClick={() => onEmpty(entries)}>Papierkorb leeren</button>
+          <button className="button outlined" onClick={onClose}>Schließen</button>
+        </div>
       </div>
-      <p className="detail-hint">Gelöschte Katalogeinträge können wiederhergestellt werden. Importierte Dateien bleiben gespeichert und belegen weiterhin Speicherplatz. Externe Originale und Quellarchive bleiben erhalten. Nur externe Pakete können nach Vorbereitung und Bestätigung endgültig aus dem Katalog entfernt werden; dabei werden 0 Byte Dateien entfernt.</p>
+      <p className="detail-hint">Gelöschte Katalogeinträge können wiederhergestellt werden. Importierte Dateien bleiben gespeichert und belegen weiterhin Speicherplatz. Externe Originale und Quellarchive bleiben erhalten. „Papierkorb leeren“ löscht alle Einträge endgültig: importierte Paketdaten werden von der Festplatte entfernt, externe Pakete verlieren nur ihre Katalogeinträge.</p>
       {notice && <p role={notice.tone === "error" ? "alert" : "status"} className={notice.tone === "error" ? "inline-error" : "detail-hint"}>{notice.message}</p>}
       {error ? <p role="alert" className="inline-error">{error}</p> : loading && !entries.length
         ? <p role="status">Papierkorb wird geladen …</p> : entries.length ? <>
@@ -121,11 +124,8 @@ export function TrashDialog({ root, revision, disabled, notice, onClose, onResto
                   {entry.parentTrashed && <span className="table-folder">Zuerst das Paket wiederherstellen.</span>}
                 </td>
                 <td>{date.format(new Date(entry.deletedAt * 1000))}</td>
-                <td><div className="trash-row-actions"><button className="button outlined" disabled={disabled || loading || entry.parentTrashed} onClick={() => onRestore(entry)}
-                  aria-label={`${entry.name} wiederherstellen`}>Wiederherstellen</button>
-                  {entry.fileId === null && <button className="button outlined" disabled={disabled || loading}
-                    onClick={() => onPrepareRemoval(entry)} aria-label={`${entry.name}: Entfernen vorbereiten`}>Entfernen vorbereiten</button>}
-                </div></td>
+                <td><button className="button outlined" disabled={disabled || loading || entry.parentTrashed} onClick={() => onRestore(entry)}
+                  aria-label={`${entry.name} wiederherstellen`}>Wiederherstellen</button></td>
               </tr>)}</tbody>
             </table>
           </div>

@@ -1,8 +1,4 @@
 use super::{AssetKind, Library, Result};
-#[path = "audio_guard.rs"]
-pub(super) mod header_guard;
-#[path = "vorbis_guard.rs"]
-mod vorbis_guard;
 use std::{
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom},
@@ -152,16 +148,19 @@ fn probe_stream<'a>(
         },
         length: Some(size),
     };
-    let mut signature = [0; 4];
-    source
-        .read_exact(&mut signature)
-        .map_err(|e| e.to_string())?;
+    let mut header = [0; 8];
+    source.read_exact(&mut header).map_err(|e| e.to_string())?;
+    let signature = &header[..4];
+    // Symphonia reports a truncated WAV's declared duration; reject it instead of storing a wrong length.
+    if signature == b"RIFF"
+        && 8 + u64::from(u32::from_le_bytes(header[4..].try_into().unwrap())) > size
+    {
+        return Err("WAV-Container ist unvollständig".into());
+    }
     // The MP3 reader otherwise exposes its bitrate estimate as an ordinary duration.
-    if !matches!(&signature, b"RIFF" | b"OggS" | b"fLaC") {
+    if !matches!(signature, b"RIFF" | b"OggS" | b"fLaC") {
         source.length = None;
     }
-    source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    header_guard::validate(&mut source, size, &signature)?;
     source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     Ok((
         MediaSourceStream::new(Box::new(source), Default::default()),
@@ -334,7 +333,6 @@ fn waveform(source: File, path: &Path, cancelled: &AtomicBool) -> Result<AudioWa
         return Err("Audiocodec wird für die Wellenform nicht unterstützt".into());
     }
     validate_parameters(parameters)?;
-    vorbis_guard::validate(parameters)?;
     let id = track.id;
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(parameters, &Default::default())
@@ -476,7 +474,6 @@ fn inspect(source: File, path: &Path, cancelled: &AtomicBool) -> Result<AudioMet
         return Err("Audiocodec wird nicht unterstützt. Vorschauziele: WAV/PCM, MP3, OGG/Vorbis und native FLAC.".into());
     }
     validate_parameters(parameters)?;
-    vorbis_guard::validate(parameters)?;
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(parameters, &Default::default())
         .map_err(|error| format!("Audiocodec nicht unterstützt: {error}"))?;

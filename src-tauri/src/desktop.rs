@@ -1,32 +1,22 @@
 use crate::library::{
-    prepare_external_trash_removal, remove_external_trash, PreparedTrashRemoval, TrashRemovalEntry,
-    TrashRemovalPlan,
-};
-use crate::library::{
     AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform, BulkAction, BulkResult,
-    BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, EmbeddedAudioTags, ExportOutcome,
-    ImageGroup, ImageWorkflow, ImportControl, ImportProgress, Library, ModelResources,
-    ProjectFolder, Result, TrashEntry, ZipEstimate,
+    BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, EmbeddedAudioTags, EmptiedTrash,
+    ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress, Library,
+    ModelResources, ProjectFolder, Result, TrashEntry, ZipEstimate,
 };
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager};
 
-#[cfg(all(test, target_os = "macos"))]
-#[path = "trash_removal_tests.rs"]
-mod trash_removal_tests;
-
 #[derive(Default)]
 struct Session {
     root: Mutex<Option<PathBuf>>,
-    root_generation: AtomicU64,
-    trash_removal: Mutex<Option<ReadyTrashRemoval>>,
     import_gate: Mutex<()>,
     import_control: Mutex<Option<Arc<ImportControl>>>,
     model_preview: Mutex<PreviewState>,
@@ -36,12 +26,6 @@ struct Session {
     audio_tags_gate: Mutex<()>,
     sprite_export: Mutex<Option<(String, Arc<AtomicBool>)>>,
     audio_analysis: Mutex<Option<AudioAnalysisJob>>,
-}
-
-struct ReadyTrashRemoval {
-    root: PathBuf,
-    generation: u64,
-    plan: TrashRemovalPlan,
 }
 
 struct AudioAnalysisJob {
@@ -74,79 +58,6 @@ struct PreviewState {
 }
 
 impl Session {
-    fn prepare_trash_removal(
-        &self,
-        root: &Path,
-        entry: TrashRemovalEntry,
-    ) -> Result<PreparedTrashRemoval> {
-        let _gate = self
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        self.trash_removal
-            .lock()
-            .map_err(|_| "Papierkorb-Vorbereitung ist nicht verfügbar")?
-            .take();
-        if current.as_deref() != Some(root) {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        let generation = self.root_generation.load(Ordering::Relaxed);
-        let plan = prepare_external_trash_removal(root, entry)?;
-        let reply = plan.reply.clone();
-        *self
-            .trash_removal
-            .lock()
-            .map_err(|_| "Papierkorb-Vorbereitung ist nicht verfügbar")? =
-            Some(ReadyTrashRemoval {
-                root: root.into(),
-                generation,
-                plan,
-            });
-        Ok(reply)
-    }
-
-    fn remove_prepared_trash(&self, token: &str) -> Result<()> {
-        let ready = {
-            let mut ready = self
-                .trash_removal
-                .lock()
-                .map_err(|_| "Papierkorb-Vorbereitung ist nicht verfügbar")?;
-            if !ready.as_ref().is_some_and(|r| r.plan.reply.token == token) {
-                return Err("Papierkorb-Vorbereitung wurde ersetzt oder verbraucht".into());
-            }
-            ready.take().ok_or("Papierkorb-Vorbereitung fehlt")?
-        };
-        let _gate = self
-            .import_gate
-            .try_lock()
-            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
-        let current = self
-            .root
-            .lock()
-            .map_err(|_| "Bibliothek ist nicht verfügbar")?;
-        if current.as_deref() != Some(&ready.root)
-            || self.root_generation.load(Ordering::Relaxed) != ready.generation
-        {
-            return Err("Die aktive Bibliothek wurde geändert".into());
-        }
-        remove_external_trash(&ready.root, ready.plan)
-    }
-
-    fn discard_trash_removal(&self, token: &str) -> Result<()> {
-        let mut ready = self
-            .trash_removal
-            .lock()
-            .map_err(|_| "Papierkorb-Vorbereitung ist nicht verfügbar")?;
-        if ready.as_ref().is_some_and(|r| r.plan.reply.token == token) {
-            ready.take();
-        }
-        Ok(())
-    }
-
     fn begin_audio_analysis(&self, request_id: &str) -> Result<(PathBuf, Arc<AtomicBool>)> {
         if request_id.is_empty() || request_id.len() > 128 {
             return Err("Ungültige Audioanalyse-Anfrage".into());
@@ -459,11 +370,6 @@ impl Session {
             .model_preview
             .lock()
             .map_err(|_| "Vorschau ist nicht verfügbar")?;
-        self.trash_removal
-            .lock()
-            .map_err(|_| "Papierkorb-Vorbereitung ist nicht verfügbar")?
-            .take();
-        self.root_generation.fetch_add(1, Ordering::Relaxed);
         *current = Some(root);
         preview.request = preview.request.wrapping_add(1);
         preview.snapshot = None;
@@ -993,26 +899,20 @@ async fn trash_entries(app: AppHandle) -> Result<Vec<TrashEntry>> {
 }
 
 #[tauri::command]
-async fn prepare_trash_removal(
-    app: AppHandle,
-    root: String,
-    entry: TrashRemovalEntry,
-) -> Result<PreparedTrashRemoval> {
+async fn empty_trash(app: AppHandle) -> Result<EmptiedTrash> {
+    let root = active_root(&app)?;
     background(move || {
-        app.state::<Session>()
-            .prepare_trash_removal(Path::new(&root), entry)
+        let state = app.state::<Session>();
+        let _gate = state
+            .import_gate
+            .try_lock()
+            .map_err(|_| "Bitte den laufenden Dateivorgang abwarten")?;
+        if active_root(&app)? != root {
+            return Err("Die aktive Bibliothek wurde geändert".into());
+        }
+        Library::open(&root)?.empty_trash()
     })
     .await
-}
-
-#[tauri::command]
-async fn remove_prepared_trash(app: AppHandle, token: String) -> Result<()> {
-    background(move || app.state::<Session>().remove_prepared_trash(&token)).await
-}
-
-#[tauri::command]
-fn discard_trash_removal(app: AppHandle, token: String) -> Result<()> {
-    app.state::<Session>().discard_trash_removal(&token)
 }
 
 #[tauri::command]
@@ -1514,9 +1414,7 @@ pub fn run() {
             trash_package,
             trash_file,
             trash_entries,
-            prepare_trash_removal,
-            remove_prepared_trash,
-            discard_trash_removal,
+            empty_trash,
             restore_trash,
             annotate_asset,
             bulk_assets,

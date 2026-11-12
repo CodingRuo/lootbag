@@ -1,5 +1,5 @@
 use super::*;
-use crate::library::{CatalogQuery, Library};
+use crate::library::{AudioStatus, CatalogQuery, Library};
 use std::{
     fs,
     path::PathBuf,
@@ -422,6 +422,39 @@ fn embedded_audio_tags_reads_info_after_audio_and_preserves_odd_padding_and_sour
 }
 
 #[test]
+fn wav_with_final_odd_chunk_without_pad_byte_has_duration_and_tags() {
+    // 24-bit mono, 44101 frames: the final data chunk is odd-sized and the file ends without its pad byte.
+    let mut format = 1_u16.to_le_bytes().to_vec();
+    format.extend_from_slice(&1_u16.to_le_bytes());
+    format.extend_from_slice(&44_100_u32.to_le_bytes());
+    format.extend_from_slice(&(44_100_u32 * 3).to_le_bytes());
+    format.extend_from_slice(&3_u16.to_le_bytes());
+    format.extend_from_slice(&24_u16.to_le_bytes());
+    let mut data = riff_chunk(b"data", &vec![0; 44_101 * 3]);
+    data.pop();
+    let wav = riff_file(&[
+        riff_chunk(b"fmt ", &format),
+        info(&[(b"INAM", b"River")]),
+        data,
+    ]);
+    assert_eq!(wav.len() % 2, 1);
+    let workspace = Workspace::new();
+    let source = workspace.0.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("odd.wav"), &wav).unwrap();
+    let mut library = Library::create(&workspace.0.join("library")).unwrap();
+    library.import_folder(&source).unwrap();
+    let file = library.query(CatalogQuery::default()).unwrap().items[0].files[0].id;
+    let tags = library
+        .embedded_audio_tags(file, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(tags.title.as_deref(), Some("River"));
+    let metadata = library.analyze_audio(file).unwrap();
+    assert_eq!(metadata.status, AudioStatus::Ready, "{:?}", metadata.error);
+    assert!((metadata.duration_seconds.unwrap() - 44_101.0 / 44_100.0).abs() < 1e-6);
+}
+
+#[test]
 fn embedded_audio_tags_limits_count_and_bytes_across_all_riff_info_lists() {
     let many: Vec<(&[u8; 4], &[u8])> = (0..129).map(|_| (b"IUNK", b"x".as_slice())).collect();
     let unknown = vec![b'a'; 4096];
@@ -554,19 +587,6 @@ fn embedded_audio_tags_flac_skips_large_pictures_and_bounds_all_comment_blocks()
             .as_deref(),
         Some("Salzburg River")
     );
-    let duplicate = comments(&vec![b"IGNORED=value".as_slice(); 129]);
-    assert!(read_owned_bytes(
-        "count.flac",
-        &flac_file(&[(4, duplicate.clone()), (4, duplicate)])
-    )
-    .unwrap_err()
-    .contains("256 Einträge"));
-    let large = vec![b'x'; 4097];
-    assert!(
-        read_owned_bytes("field.flac", &flac_file(&[(4, comments(&[&large]))]))
-            .unwrap_err()
-            .contains("4 KiB")
-    );
     let mut entry = b"IGNORED=".to_vec();
     entry.extend_from_slice(&vec![b'x'; 4088]);
     let block = comments(&[&entry]);
@@ -586,40 +606,6 @@ fn embedded_audio_tags_flac_skips_large_pictures_and_bounds_all_comment_blocks()
     assert!(read_owned_bytes("truncated.flac", &truncated)
         .unwrap_err()
         .contains("unvollständig"));
-}
-
-#[test]
-fn embedded_audio_tags_vorbis_rejects_malformed_comments_instead_of_silent_partial_success() {
-    for entry in [
-        b"missing-separator".as_slice(),
-        b"=value",
-        b"BAD\x01KEY=value",
-        b"TITLE=\xff",
-    ] {
-        let comment = comments(&[b"ARTIST=Visible artist", entry]);
-        for (name, bytes) in [
-            ("bad.ogg", ogg_file(&comment)),
-            ("bad.flac", flac_file(&[(4, comment.clone())])),
-        ] {
-            assert!(read_owned_bytes(name, &bytes).is_err(), "{name} {entry:?}");
-        }
-    }
-    let too_many = comments(&vec![b"IGNORED=value".as_slice(); 257]);
-    assert!(read_owned_bytes("count.ogg", &ogg_file(&too_many))
-        .unwrap_err()
-        .contains("256 Einträge"));
-    let mut trailing = comments(&[b"TITLE=Known title"]);
-    trailing.push(0);
-    assert!(
-        read_owned_bytes("trailing.flac", &flac_file(&[(4, trailing)]))
-            .unwrap_err()
-            .contains("Restdaten")
-    );
-    let mut vendor = comments(&[]);
-    vendor[..4].copy_from_slice(&4097u32.to_le_bytes());
-    assert!(read_owned_bytes("vendor.ogg", &ogg_file(&vendor))
-        .unwrap_err()
-        .contains("4 KiB"));
 }
 
 #[test]

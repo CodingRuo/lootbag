@@ -1,9 +1,7 @@
-use super::model_resources::SourceStamp;
-use super::{path_text, unique_suffix, ExportOutcome, Library, ModelResources, Result};
+use super::{path_text, ExportOutcome, Library, ModelResources, Result};
 use std::{
     fs,
-    io::Write,
-    path::{Component, Path, PathBuf},
+    path::{Component, PathBuf},
 };
 
 const MAX_BYTES: usize = 32 * 1024 * 1024;
@@ -312,7 +310,6 @@ fn validate_png(bytes: &[u8], width: u32, height: u32) -> Result<()> {
 }
 
 impl Library {
-    #[cfg(target_os = "macos")]
     pub(crate) fn export_sprite(
         &self,
         snapshot: &ModelResources,
@@ -348,444 +345,39 @@ impl Library {
             manifest["coordinateOrigin"] = serde_json::json!("topLeft");
         }
         let manifest = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
-        let mut stage = Stage::create(&parent)?;
+        let destination = parent.join(name);
+        // create_dir fails on any existing file, folder or symlink, so existing destinations are never touched.
+        fs::create_dir(&destination).map_err(|e| {
+            format!("Sprite-Ordner konnte nicht angelegt werden (bestehende Ziele bleiben erhalten): {e}")
+        })?;
         let mut total = 0_u64;
-        for (i, image) in payload.images.iter().enumerate() {
-            let filename = if payload.plan.mode == Mode::Frames {
-                format!("frame-{:04}.png", i + 1)
-            } else {
-                "atlas.png".to_string()
-            };
-            stage.write(&filename, image)?;
-            total += image.len() as u64;
+        let written = (|| {
+            for (i, image) in payload.images.iter().enumerate() {
+                let filename = if payload.plan.mode == Mode::Frames {
+                    format!("frame-{:04}.png", i + 1)
+                } else {
+                    "atlas.png".to_string()
+                };
+                #[cfg(test)]
+                fail_at("write")?;
+                fs::write(destination.join(filename), image)
+                    .map_err(|e| format!("Sprite-Datei konnte nicht geschrieben werden: {e}"))?;
+                total += image.len() as u64;
+            }
+            fs::write(destination.join("sprite.json"), &manifest)
+                .map_err(|e| format!("Sprite-Datei konnte nicht geschrieben werden: {e}"))?;
+            total += manifest.len() as u64;
+            before_commit()?;
+            self.validate_sheet_source(snapshot)
+        })();
+        if let Err(e) = written {
+            let _ = fs::remove_dir_all(&destination);
+            return Err(e);
         }
-        stage.write("sprite.json", &manifest)?;
-        total += manifest.len() as u64;
-        stage.sync()?;
-        before_commit()?;
-        self.validate_sheet_source(snapshot)?;
-        stage.publish(name)?;
         Ok(ExportOutcome::Exported {
-            path: path_text(&parent.join(name))?,
+            path: path_text(&destination)?,
             size_bytes: total,
         })
-    }
-    #[cfg(not(target_os = "macos"))]
-    pub(crate) fn export_sprite(
-        &self,
-        _snapshot: &ModelResources,
-        _payload: &SpritePayload<'_>,
-        _before_commit: impl FnOnce() -> Result<()>,
-    ) -> Result<ExportOutcome> {
-        Err("Atomarer Sprite-Export ist derzeit nur auf macOS verfügbar".into())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn identity(metadata: &fs::Metadata) -> Result<String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(format!(
-            "{:?}",
-            metadata.created().map_err(|e| e.to_string())?
-        ))
-    }
-}
-#[cfg(target_os = "macos")]
-fn directory_identity(path: &Path) -> Result<String> {
-    let metadata =
-        fs::symlink_metadata(path).map_err(|e| format!("Exportordner nicht verfügbar: {e}"))?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err("Exportordner wurde ersetzt".into());
-    }
-    identity(&metadata)
-}
-
-#[cfg(target_os = "macos")]
-struct Stage {
-    parent: PathBuf,
-    name: String,
-    parent_id: String,
-    stage_id: String,
-    files: Vec<(String, SourceStamp)>,
-    published: bool,
-    #[cfg(target_os = "macos")]
-    parent_fd: fs::File,
-    #[cfg(target_os = "macos")]
-    stage_fd: fs::File,
-}
-#[cfg(target_os = "macos")]
-impl Stage {
-    fn create(parent: &Path) -> Result<Self> {
-        let parent_id = directory_identity(parent)?;
-        let name = format!(".game-assets-sprite-{}", unique_suffix());
-        #[cfg(target_os = "macos")]
-        let (parent_fd, stage_fd) = anchored::create(parent, &name)?;
-        #[cfg(test)]
-        if TEST_FAILURE.with(|point| point.get()) == Some("stage-replacement") {
-            fs::rename(parent.join(&name), parent.join("moved-owned-stage"))
-                .map_err(|e| e.to_string())?;
-            fs::create_dir(parent.join(&name)).map_err(|e| e.to_string())?;
-        }
-        let stage_id = identity(&stage_fd.metadata().map_err(|e| e.to_string())?)?;
-        let stage = Self {
-            parent: parent.into(),
-            name,
-            parent_id,
-            stage_id,
-            files: Vec::new(),
-            published: false,
-            #[cfg(target_os = "macos")]
-            parent_fd,
-            #[cfg(target_os = "macos")]
-            stage_fd,
-        };
-        stage.check()?;
-        Ok(stage)
-    }
-    fn check(&self) -> Result<()> {
-        if directory_identity(&self.parent)? != self.parent_id {
-            return Err("Sprite-Exportordner wurde während der Vorbereitung ersetzt".into());
-        }
-        #[cfg(target_os = "macos")]
-        if identity(&self.parent_fd.metadata().map_err(|e| e.to_string())?)? != self.parent_id
-            || identity(&self.stage_fd.metadata().map_err(|e| e.to_string())?)? != self.stage_id
-            || anchored::directory_identity(&self.parent_fd, &self.name)? != self.stage_id
-        {
-            return Err("Sprite-Exportordner wurde ersetzt".into());
-        }
-        Ok(())
-    }
-    fn write(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
-        self.check()?;
-        #[cfg(target_os = "macos")]
-        let mut file = anchored::create_file(&self.stage_fd, name)?;
-        self.files.push((
-            name.into(),
-            SourceStamp::read(&file.metadata().map_err(|e| e.to_string())?)?,
-        ));
-        #[cfg(test)]
-        if TEST_FAILURE.with(|point| point.get()) == Some("write") {
-            file.write_all(&bytes[..bytes.len() / 2])
-                .map_err(|e| e.to_string())?;
-            return fail_at("write");
-        }
-        file.write_all(bytes)
-            .map_err(|e| format!("Sprite-Datei konnte nicht geschrieben werden: {e}"))?;
-        #[cfg(test)]
-        fail_at("sync")?;
-        file.sync_all()
-            .map_err(|e| format!("Sprite-Datei konnte nicht gespeichert werden: {e}"))?;
-        let metadata = file.metadata().map_err(|e| e.to_string())?;
-        if metadata.len() != bytes.len() as u64 {
-            return Err("Sprite-Ausgabe wurde während des Schreibens verändert".into());
-        }
-        self.files
-            .last_mut()
-            .ok_or("Sprite-Ausgabe wurde nicht vorbereitet")?
-            .1 = SourceStamp::read(&metadata)?;
-        self.check()
-    }
-    fn sync(&self) -> Result<()> {
-        self.check()?;
-        #[cfg(target_os = "macos")]
-        self.stage_fd
-            .sync_all()
-            .map_err(|e| format!("Sprite-Ordner konnte nicht gespeichert werden: {e}"))?;
-        Ok(())
-    }
-    fn publish(&mut self, destination: &std::ffi::OsStr) -> Result<()> {
-        self.check()?;
-        for (name, stamp) in &self.files {
-            if anchored::output_stamp(&self.stage_fd, name)? != *stamp {
-                return Err("Sprite-Ausgabe wurde während der Vorbereitung verändert".into());
-            }
-        }
-        anchored::check_entries(&self.stage_fd, &self.files)?;
-        #[cfg(test)]
-        fail_at("publish")?;
-        #[cfg(target_os = "macos")]
-        anchored::publish(&self.parent_fd, &self.name, destination)?;
-        #[cfg(target_os = "macos")]
-        {
-            self.published = true;
-            Ok(())
-        }
-    }
-}
-#[cfg(target_os = "macos")]
-impl Drop for Stage {
-    fn drop(&mut self) {
-        if self.published {
-            return;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            for (name, expected) in self.files.iter().rev() {
-                anchored::remove_file(&self.stage_fd, name, &expected.identity);
-            }
-            if anchored::directory_identity(&self.parent_fd, &self.name)
-                .ok()
-                .as_ref()
-                == Some(&self.stage_id)
-            {
-                anchored::remove_directory(&self.parent_fd, &self.name);
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(super) mod anchored {
-    use super::*;
-    use std::{
-        ffi::{CString, OsStr},
-        os::{
-            fd::{AsRawFd, FromRawFd},
-            unix::ffi::OsStrExt,
-        },
-    };
-    extern "C" {
-        fn mkdirat(fd: i32, name: *const std::ffi::c_char, mode: u16) -> i32;
-        fn openat(fd: i32, name: *const std::ffi::c_char, flags: i32, ...) -> i32;
-        fn unlinkat(fd: i32, name: *const std::ffi::c_char, flags: i32) -> i32;
-        fn renameatx_np(
-            from: i32,
-            source: *const std::ffi::c_char,
-            to: i32,
-            destination: *const std::ffi::c_char,
-            flags: u32,
-        ) -> i32;
-        #[cfg_attr(target_arch = "x86_64", link_name = "fdopendir$INODE64")]
-        fn fdopendir(fd: i32) -> *mut std::ffi::c_void;
-        #[cfg_attr(target_arch = "x86_64", link_name = "readdir$INODE64")]
-        fn readdir(directory: *mut std::ffi::c_void) -> *const DirectoryEntry;
-        fn closedir(directory: *mut std::ffi::c_void) -> i32;
-        fn __error() -> *mut i32;
-    }
-    // Darwin SDK sys/dirent.h, 64-bit inode layout (arm64 and x86_64).
-    #[repr(C)]
-    struct DirectoryEntry {
-        inode: u64,
-        offset: u64,
-        record_length: u16,
-        name_length: u16,
-        kind: u8,
-        name: [u8; 1024],
-    }
-    struct Directory(*mut std::ffi::c_void);
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            // SAFETY: fdopendir transferred the uniquely owned listing descriptor.
-            let _ = unsafe { closedir(self.0) };
-        }
-    }
-    fn name(value: &OsStr) -> Result<CString> {
-        if Path::new(value).components().count() != 1
-            || !matches!(
-                Path::new(value).components().next(),
-                Some(Component::Normal(_))
-            )
-        {
-            return Err("Ungültiger Exportname".into());
-        }
-        CString::new(value.as_bytes()).map_err(|_| "Ungültiger Exportname".into())
-    }
-    fn opened(fd: i32) -> Result<fs::File> {
-        if fd < 0 {
-            Err(format!(
-                "Sprite-Export: {}",
-                std::io::Error::last_os_error()
-            ))
-        } else {
-            // SAFETY: successful openat returns a uniquely owned descriptor.
-            Ok(unsafe { fs::File::from_raw_fd(fd) })
-        }
-    }
-    pub(super) fn create(parent: &Path, stage: &str) -> Result<(fs::File, fs::File)> {
-        let directory = fs::File::open(parent).map_err(|e| e.to_string())?;
-        if identity(&directory.metadata().map_err(|e| e.to_string())?)?
-            != super::directory_identity(parent)?
-        {
-            return Err("Exportordner wurde ersetzt".into());
-        }
-        let file = create_at(&directory, stage)?;
-        Ok((directory, file))
-    }
-    pub(in crate::library) fn create_at(directory: &fs::File, stage: &str) -> Result<fs::File> {
-        create_at_report_retained(directory, stage, || {})
-    }
-    pub(in crate::library) fn create_at_report_retained(
-        directory: &fs::File,
-        stage: &str,
-        retained: impl FnOnce(),
-    ) -> Result<fs::File> {
-        let stage_name = stage;
-        let stage = name(OsStr::new(stage))?;
-        // SAFETY: valid directory descriptor and NUL-terminated names; Darwin SDK constants.
-        if unsafe { mkdirat(directory.as_raw_fd(), stage.as_ptr(), 0o700) } != 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        match opened(unsafe {
-            openat(
-                directory.as_raw_fd(),
-                stage.as_ptr(),
-                0x100000 | 0x100 | 0x1000000,
-            )
-        }) {
-            Ok(file) => Ok(file),
-            Err(error) => {
-                // No descriptor pins the newly created identity; unlinking could remove a replacement.
-                retained();
-                Err(format!(
-                    "{error}; der neu angelegte Ordner „{stage_name}“ konnte nicht geöffnet werden und wurde nicht sicher entfernt. Bitte den Zielordner prüfen."
-                ))
-            }
-        }
-    }
-    pub(in crate::library) fn create_file(stage: &fs::File, filename: &str) -> Result<fs::File> {
-        let filename = name(OsStr::new(filename))?;
-        // SAFETY: anchored owned directory; O_EXCL|O_NOFOLLOW prevents replacing existing resources.
-        opened(unsafe {
-            openat(
-                stage.as_raw_fd(),
-                filename.as_ptr(),
-                1 | 0x200 | 0x800 | 0x100 | 0x1000000,
-                0o600_i32,
-            )
-        })
-    }
-    pub(super) fn directory_identity(parent: &fs::File, filename: &str) -> Result<String> {
-        let filename = name(OsStr::new(filename))?;
-        // SAFETY: one leaf in the retained parent; no symlink traversal.
-        let file = opened(unsafe {
-            openat(
-                parent.as_raw_fd(),
-                filename.as_ptr(),
-                0x100000 | 0x100 | 0x1000000,
-            )
-        })?;
-        identity(&file.metadata().map_err(|e| e.to_string())?)
-    }
-    pub(super) fn output_stamp(stage: &fs::File, filename: &str) -> Result<SourceStamp> {
-        let filename = name(OsStr::new(filename))?;
-        // SAFETY: anchored no-follow leaf; O_NONBLOCK prevents substituted FIFOs from waiting for a writer.
-        let file =
-            opened(unsafe { openat(stage.as_raw_fd(), filename.as_ptr(), 4 | 0x100 | 0x1000000) })?;
-        let metadata = file.metadata().map_err(|e| e.to_string())?;
-        if !metadata.is_file() {
-            return Err("Sprite-Ausgabe ist keine reguläre Datei".into());
-        }
-        SourceStamp::read(&metadata)
-    }
-    pub(super) fn check_entries(stage: &fs::File, files: &[(String, SourceStamp)]) -> Result<()> {
-        // SAFETY: a new anchored directory descriptor has an independent listing offset.
-        let listing = opened(unsafe {
-            openat(
-                stage.as_raw_fd(),
-                c".".as_ptr(),
-                0x100000 | 0x100 | 0x1000000,
-            )
-        })?;
-        let raw = unsafe { fdopendir(listing.as_raw_fd()) };
-        if raw.is_null() {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        std::mem::forget(listing);
-        let directory = Directory(raw);
-        let mut found = std::collections::BTreeSet::new();
-        loop {
-            // SAFETY: thread-local errno and live opaque DIR. The entry remains valid until the next readdir.
-            unsafe {
-                *__error() = 0;
-            }
-            let entry = unsafe { readdir(directory.0) };
-            if entry.is_null() {
-                if unsafe { *__error() } != 0 {
-                    return Err(std::io::Error::last_os_error().to_string());
-                }
-                break;
-            }
-            let length = unsafe { (*entry).name_length as usize };
-            let name_offset = std::mem::offset_of!(DirectoryEntry, name);
-            if length == 0
-                || length > 1023
-                || unsafe { (*entry).record_length as usize } < name_offset + length + 1
-            {
-                return Err("Ungültiger Name im Sprite-Exportordner".into());
-            }
-            let bytes = unsafe {
-                std::slice::from_raw_parts(std::ptr::addr_of!((*entry).name).cast::<u8>(), length)
-            };
-            if bytes == b"." || bytes == b".." {
-                continue;
-            }
-            let filename = std::str::from_utf8(bytes)
-                .map_err(|_| "Unbekannte Datei im Sprite-Exportordner")?;
-            if !files.iter().any(|(name, _)| name == filename) || !found.insert(filename.to_owned())
-            {
-                return Err("Unbekannte Datei im Sprite-Exportordner; Export abgebrochen".into());
-            }
-        }
-        if found.len() != files.len() {
-            return Err("Sprite-Exportdatei fehlt".into());
-        }
-        Ok(())
-    }
-    pub(super) fn remove_file(stage: &fs::File, filename: &str, expected: &str) {
-        let Ok(filename) = name(OsStr::new(filename)) else {
-            return;
-        };
-        // SAFETY: leaf lookups stay in the owned stage even if its name moved.
-        let Ok(file) =
-            opened(unsafe { openat(stage.as_raw_fd(), filename.as_ptr(), 4 | 0x100 | 0x1000000) })
-        else {
-            return;
-        };
-        if file
-            .metadata()
-            .ok()
-            .filter(|m| m.is_file())
-            .and_then(|m| identity(&m).ok())
-            .as_deref()
-            == Some(expected)
-        {
-            let _ = unsafe { unlinkat(stage.as_raw_fd(), filename.as_ptr(), 0) };
-        }
-    }
-    pub(super) fn remove_directory(parent: &fs::File, filename: &str) {
-        let Ok(filename) = name(OsStr::new(filename)) else {
-            return;
-        };
-        // SAFETY: AT_REMOVEDIR removes only the checked empty owned staging name.
-        let _ = unsafe { unlinkat(parent.as_raw_fd(), filename.as_ptr(), 0x80) };
-    }
-    pub(in crate::library) fn publish(
-        parent: &fs::File,
-        stage: &str,
-        destination: &OsStr,
-    ) -> Result<()> {
-        let stage = name(OsStr::new(stage))?;
-        let destination = name(destination)?;
-        // SAFETY: both names resolve in the retained parent directory. RENAME_EXCL never replaces a collision.
-        if unsafe {
-            renameatx_np(
-                parent.as_raw_fd(),
-                stage.as_ptr(),
-                parent.as_raw_fd(),
-                destination.as_ptr(),
-                4,
-            )
-        } != 0
-        {
-            return Err(format!("Sprite-Ordner konnte nicht veröffentlicht werden (bestehende Ziele bleiben erhalten): {}",std::io::Error::last_os_error()));
-        }
-        Ok(())
     }
 }
 

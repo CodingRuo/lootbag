@@ -5,7 +5,6 @@ edition = "2021"
 
 [lib]
 name = "game_asset_library"
-crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
 name = "game-asset-library"

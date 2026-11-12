@@ -37,13 +37,10 @@ pub struct ImportProgress {
     pub current_path: Option<String>,
 }
 
-pub(super) type Publication<'a> =
-    dyn FnMut(&mut dyn FnMut() -> Result<AssetPackage>) -> Result<AssetPackage> + 'a;
 pub(super) struct ImportRun<'a> {
     control: &'a ImportControl,
     on_progress: &'a mut dyn FnMut(ImportProgress),
     pub(super) progress: ImportProgress,
-    publisher: Option<&'a mut Publication<'a>>,
 }
 
 impl<'a> ImportRun<'a> {
@@ -54,7 +51,6 @@ impl<'a> ImportRun<'a> {
         Self {
             control,
             on_progress,
-            publisher: None,
             progress: ImportProgress {
                 stage: "preparing",
                 completed_bytes: 0,
@@ -124,17 +120,7 @@ impl Library {
         control: &ImportControl,
         mut on_progress: impl FnMut(ImportProgress),
     ) -> Result<AssetPackage> {
-        self.import_folder_controlled(source, control, &mut on_progress, None)
-    }
-    pub(super) fn import_folder_controlled<'a>(
-        &mut self,
-        source: &Path,
-        control: &'a ImportControl,
-        on_progress: &'a mut dyn FnMut(ImportProgress),
-        publisher: Option<&'a mut Publication<'a>>,
-    ) -> Result<AssetPackage> {
-        let mut run = ImportRun::new(control, on_progress);
-        run.publisher = publisher;
+        let mut run = ImportRun::new(control, &mut on_progress);
         let result = (|| {
             run.report()?;
             let source = source
@@ -161,12 +147,7 @@ impl Library {
             run.progress.stage = "copying";
             run.report()?;
             let (staging, relative_path) = self.prepare_import()?;
-            let owned_stage = if run.publisher.is_some() {
-                Some(own_import_stage(&staging)?)
-            } else {
-                None
-            };
-            let mut result = (|| {
+            let result = (|| {
                 let mut files = Vec::new();
                 copy_folder(&source, &staging, Path::new(""), &mut files, &mut run)?;
                 self.finish_import(
@@ -178,16 +159,8 @@ impl Library {
                     &mut run,
                 )
             })();
-            if result.is_err()
-                && !self.remove_failed_import_controlled(
-                    &staging,
-                    &relative_path,
-                    owned_stage.as_ref(),
-                )
-            {
-                result = result.map_err(|e| {
-                    format!("{e}; der veränderte Zwischenordner wurde nicht vollständig entfernt")
-                });
+            if result.is_err() {
+                self.remove_failed_import(&staging, &relative_path);
             }
             result
         })();
@@ -205,29 +178,10 @@ impl Library {
         control: &ImportControl,
         mut on_progress: impl FnMut(ImportProgress),
     ) -> Result<AssetPackage> {
-        self.import_zip_controlled(source, control, &mut on_progress, None, None)
-    }
-    pub(super) fn import_zip_controlled<'a>(
-        &mut self,
-        source: &Path,
-        control: &'a ImportControl,
-        on_progress: &'a mut dyn FnMut(ImportProgress),
-        publisher: Option<&'a mut Publication<'a>>,
-        reader: Option<fs::File>,
-    ) -> Result<AssetPackage> {
-        let mut run = ImportRun::new(control, on_progress);
-        run.publisher = publisher;
+        let mut run = ImportRun::new(control, &mut on_progress);
         let result = (|| {
             run.report()?;
-            let estimate = if let Some(reader) = &reader {
-                estimate_open_zip(
-                    &self.root,
-                    open_zip_file(reader.try_clone().map_err(|e| e.to_string())?)?,
-                    &mut run,
-                )?
-            } else {
-                self.inspect_zip(source, &mut run)?
-            };
+            let estimate = self.inspect_zip(source, &mut run)?;
             if !estimate.has_space {
                 return Err("Nicht genug Speicherplatz für ZIP-Inhalt und Reserve".into());
             }
@@ -245,17 +199,8 @@ impl Library {
             run.progress.stage = "copying";
             run.report()?;
             let (staging, relative_path) = self.prepare_import()?;
-            let owned_stage = if run.publisher.is_some() {
-                Some(own_import_stage(&staging)?)
-            } else {
-                None
-            };
-            let mut result = (|| {
-                let mut archive = if let Some(reader) = &reader {
-                    open_zip_file(reader.try_clone().map_err(|e| e.to_string())?)?
-                } else {
-                    open_zip(&source)?
-                };
+            let result = (|| {
+                let mut archive = open_zip(&source)?;
                 if archive.len() != estimate.entry_count {
                     return Err("ZIP-Datei wurde während des Imports verändert".into());
                 }
@@ -287,16 +232,8 @@ impl Library {
                     &mut run,
                 )
             })();
-            if result.is_err()
-                && !self.remove_failed_import_controlled(
-                    &staging,
-                    &relative_path,
-                    owned_stage.as_ref(),
-                )
-            {
-                result = result.map_err(|e| {
-                    format!("{e}; der veränderte Zwischenordner wurde nicht vollständig entfernt")
-                });
+            if result.is_err() {
+                self.remove_failed_import(&staging, &relative_path);
             }
             result
         })();
@@ -333,76 +270,19 @@ impl Library {
         run: &mut ImportRun<'_>,
     ) -> Result<AssetPackage> {
         run.check()?;
-        let run_publisher = run.publisher.take();
-        let destination = self.root.join(&relative_path);
-        let mut payload = Some((name, source_path, relative_path, files));
-        let mut operation = || {
-            run.check()?;
-            let (name, source_path, relative_path, files) = payload
-                .take()
-                .ok_or("Import wurde bereits veröffentlicht")?;
-            fs::rename(staging, &destination)
-                .map_err(|e| format!("Paket kann nicht gespeichert werden: {e}"))?;
-            self.save_import(name, source_path, relative_path, files, run)
-        };
-        match run_publisher {
-            Some(publish) => publish(&mut operation),
-            None => operation(),
-        }
+        fs::rename(staging, self.root.join(&relative_path))
+            .map_err(|e| format!("Paket kann nicht gespeichert werden: {e}"))?;
+        self.save_import(name, source_path, relative_path, files, run)
     }
 
-    fn remove_failed_import_controlled(
-        &self,
-        staging: &Path,
-        relative_path: &str,
-        owned: Option<&fs::File>,
-    ) -> bool {
-        let mut complete = true;
+    fn remove_failed_import(&self, staging: &Path, relative_path: &str) {
         for path in [staging.to_owned(), self.root.join(relative_path)] {
-            #[cfg(target_os = "macos")]
-            if let Some(owned) = owned {
-                use std::os::unix::fs::MetadataExt;
-                let Ok(expected) = owned.metadata() else {
-                    complete = false;
-                    continue;
-                };
-                let actual = match fs::symlink_metadata(&path) {
-                    Ok(m) => m,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                    Err(_) => {
-                        complete = false;
-                        continue;
-                    }
-                };
-                if actual.file_type().is_symlink()
-                    || (actual.dev(), actual.ino()) != (expected.dev(), expected.ino())
-                {
-                    complete = false;
-                    continue;
-                }
-            }
-            if let Err(e) = fs::remove_dir_all(path) {
-                if owned.is_some() && e.kind() != io::ErrorKind::NotFound {
-                    complete = false
-                }
-            }
+            let _ = fs::remove_dir_all(path);
         }
-        complete
     }
 }
 
-fn own_import_stage(path: &Path) -> Result<fs::File> {
-    #[cfg(all(target_os = "macos", any(feature = "desktop", test)))]
-    {
-        super::storage::anchored::root(path)
-    }
-    #[cfg(not(all(target_os = "macos", any(feature = "desktop", test))))]
-    {
-        fs::File::open(path).map_err(|e| e.to_string())
-    }
-}
-
-pub(super) fn estimate_open_zip(
+fn estimate_open_zip(
     root: &Path,
     mut archive: ZipArchive<fs::File>,
     run: &mut ImportRun<'_>,
@@ -436,7 +316,7 @@ fn open_zip(source: &Path) -> Result<ZipArchive<fs::File>> {
         .map_err(|e| format!("ZIP-Datei nicht verfügbar oder nicht lokal lesbar: {e}"))?;
     open_zip_file(file)
 }
-pub(super) fn open_zip_file(file: fs::File) -> Result<ZipArchive<fs::File>> {
+fn open_zip_file(file: fs::File) -> Result<ZipArchive<fs::File>> {
     if !file
         .metadata()
         .map_err(|e| format!("ZIP-Datei nicht verfügbar: {e}"))?
