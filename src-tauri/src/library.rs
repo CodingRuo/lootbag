@@ -138,7 +138,7 @@ pub struct ProjectFolder {
     pub asset_count: i64,
 }
 
-#[derive(Debug, Default, Clone, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogQuery {
     #[serde(default)]
@@ -213,8 +213,6 @@ pub struct EmptiedTrash {
 pub struct Library {
     root: PathBuf,
     connection: Connection,
-    /// Set when a read dropped hashes of changed files; see `take_stale_hashes`.
-    stale_hashes: std::cell::Cell<bool>,
 }
 
 // File provenance is derived from the immutable package-relative path, even after regrouping.
@@ -325,11 +323,7 @@ impl Library {
         connection
             .pragma_update(None, "foreign_keys", true)
             .map_err(|e| format!("Katalog nicht verfügbar: {e}"))?;
-        Ok(Self {
-            root,
-            connection,
-            stale_hashes: Default::default(),
-        })
+        Ok(Self { root, connection })
     }
 
     pub fn open_read_only(root: &Path) -> Result<Self> {
@@ -350,9 +344,7 @@ impl Library {
 
     /// Activates a library: schema, one-time repairs and crash leftovers. Not for per-command use.
     pub fn open(root: &Path) -> Result<Self> {
-        let Self {
-            root, connection, ..
-        } = Self::writable(root)?;
+        let Self { root, connection } = Self::writable(root)?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS external_sources (package_id INTEGER PRIMARY KEY REFERENCES packages(id), root TEXT NOT NULL, identity TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS external_files (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id), identity TEXT NOT NULL, modified TEXT NOT NULL);").map_err(|e| format!("Externe Quellen können nicht geöffnet werden: {e}"))?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS asset_tags (asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE, tag TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY(asset_id, tag));
@@ -399,11 +391,7 @@ impl Library {
             )
             .map_err(|e| format!("Projektordner können nicht geöffnet werden: {e}"))?;
         search::create_schema(&connection)?;
-        let mut library = Self {
-            root,
-            connection,
-            stale_hashes: Default::default(),
-        };
+        let mut library = Self { root, connection };
         library.remove_import_leftovers();
         library.trim_zip_cache();
         let version: i64 = library
@@ -1423,23 +1411,7 @@ impl Library {
         self.query_with_audio(query, None)
     }
 
-    /// Reads the page again after dropping stale hashes of its duplicates, so counts and the duplicate
-    /// filter only use hashes that still match the files; each repeat deletes rows, so it ends.
     pub(crate) fn query_with_audio(
-        &self,
-        query: CatalogQuery,
-        audio: Option<AudioCriteria>,
-    ) -> Result<CatalogPage> {
-        loop {
-            let page = self.query_page(query.clone(), audio.clone())?;
-            let ids: Vec<_> = page.items.iter().map(|asset| asset.id).collect();
-            if self.drop_stale_copies(&ids)? == 0 {
-                return Ok(page);
-            }
-        }
-    }
-
-    fn query_page(
         &self,
         mut query: CatalogQuery,
         audio: Option<AudioCriteria>,

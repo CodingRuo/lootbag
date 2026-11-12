@@ -75,6 +75,10 @@ export default function App() {
   const audioBusy = useRef(false);
   const refreshAfterAudio = useRef(false);
   audioBusy.current = audioPhase === "preparing" || audioPhase === "prepared" || audioPhase === "running";
+  function refreshCatalog() {
+    if (audioBusy.current) refreshAfterAudio.current = true;
+    else setRevision((value) => value + 1);
+  }
   useEffect(() => {
     if (audioBusy.current || !refreshAfterAudio.current) return;
     refreshAfterAudio.current = false;
@@ -132,8 +136,7 @@ export default function App() {
       // A hashing run may only drop hashes of changed files (`invalidated`), which changes duplicates too.
       listen<{ done: number; remaining: number; invalidated?: number }>(event, ({ payload }) => {
         if (!active || !(payload.done || payload.invalidated) || payload.remaining !== 0) return;
-        if (audioBusy.current) refreshAfterAudio.current = true;
-        else setRevision((value) => value + 1);
+        refreshCatalog();
       }).then((stop) => { if (active) stops.push(stop); else stop(); }).catch(() => {});
     }
     return () => { active = false; unlisten?.(); stops.forEach((stop) => stop()); };
@@ -339,7 +342,7 @@ export default function App() {
             trashItem={trashItem} relinkSource={relinkSource} importPackage={imports.importPackage} />
           <Inspector library={library} query={query} selected={selected} setSelected={setSelected} file={file} selectedPackage={selectedPackage} projectFolders={projectFolders}
             modelSelection={modelSelection} setModelSelection={setModelSelection} setSelectedFileId={setSelectedFileId} actionsDisabled={actionsDisabled}
-            act={act} setLibrary={setLibrary} setRevision={setRevision} setNotice={setNotice} trashItem={trashItem} relinkSource={relinkSource} editPackageInfo={editPackageInfo} />
+            act={act} setLibrary={setLibrary} setRevision={setRevision} refreshCatalog={refreshCatalog} setNotice={setNotice} trashItem={trashItem} relinkSource={relinkSource} editPackageInfo={editPackageInfo} />
         </div>
       )}
       {library && showFolderDialog && (

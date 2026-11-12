@@ -25,7 +25,7 @@ type ExportResult =
   | { status: "exported"; path: string; sizeBytes: number };
 
 // Detail aside for the selected asset: variants, preview/properties/origin tabs and export.
-export default function Inspector({ library, query, selected, setSelected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, relinkSource, editPackageInfo }: {
+export default function Inspector({ library, query, selected, setSelected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, refreshCatalog, setNotice, trashItem, relinkSource, editPackageInfo }: {
   library: LibraryInfo;
   query: CatalogQuery;
   selected: Asset | null;
@@ -40,6 +40,8 @@ export default function Inspector({ library, query, selected, setSelected, file,
   act: Act;
   setLibrary: Setter<LibraryInfo | null>;
   setRevision: Setter<number>;
+  // Refreshes catalog and counts once no sound analysis would be discarded.
+  refreshCatalog: () => void;
   setNotice: Setter<Notice | null>;
   trashItem: (kind: "package" | "file", id: number, name: string) => void;
   relinkSource: (sourcePackage: AssetPackage) => void;
@@ -55,8 +57,13 @@ export default function Inspector({ library, query, selected, setSelected, file,
     setCopies([]);
     if (!selected?.duplicates) return;
     let active = true;
-    invoke<DuplicateCopy[]>("asset_duplicates", { assetId: selected.id })
-      .then((result) => { if (active) setCopies(result); })
+    // The check first drops hashes of changed files, which changes counts elsewhere too.
+    invoke<{ copies: DuplicateCopy[]; dropped: number }>("asset_duplicates", { assetId: selected.id })
+      .then((result) => {
+        if (!active) return;
+        setCopies(result.copies);
+        if (result.dropped > 0) refreshCatalog();
+      })
       .catch(() => {});
     return () => { active = false; };
   }, [library.root, selected?.id, selected?.duplicates]);

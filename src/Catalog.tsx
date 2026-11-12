@@ -274,7 +274,16 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
             </select>
           </label>
           <label className="checkbox-filter" title="Assets, deren Datei identisch auch in einem anderen Asset oder Paket liegt">
-            <input type="checkbox" checked={duplicates} onChange={(event) => { setDuplicates(event.target.checked); setOffset(0); }} />
+            <input type="checkbox" checked={duplicates} onChange={async (event) => {
+              const checked = event.target.checked;
+              // Turning the filter on first drops hashes of changed files; a drop changes the counts too.
+              const dropped = checked ? await invoke<number>("verify_duplicates").catch((error: unknown) => {
+                setNotice({ tone: "error", message: errorMessage(error) });
+                return 0;
+              }) : 0;
+              setDuplicates(checked); setOffset(0);
+              if (dropped > 0) setRevision((value) => value + 1);
+            }} />
             Duplikate ({number.format(filters.duplicates)})
           </label>
         </div>

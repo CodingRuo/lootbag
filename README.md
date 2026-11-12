@@ -393,10 +393,15 @@ different assets count as duplicates. Cards show a `2×` chip, `Filter` →
 `Duplikate (n)` lists only assets with a copy, and the inspector's `Herkunft`
 tab lists `Gleicher Inhalt (Stand der letzten Prüfung):` with package and path;
 clicking a copy opens it. A hash belongs to the file's size and modification
-time (for ZIP entries: the archive's identity); before counts, the filter or the
-copy list are shown, the files involved are checked against that and changed
-ones leave their group until the next hashing run, which starts right away. An
-edit that keeps both size and modification time is not noticed. Nothing is deleted automatically – use the trash to remove copies you do not
+time (for ZIP entries: the archive's identity). Files are checked against that
+when the library is opened (every hashed file, at the start of each hashing
+run), when `Duplikate` is turned on (every duplicate group member: about 10 ms
+for the 1,029 members of the test library below, about 0.2 s for 20,000 members
+among 100,000 files) and when the copy list opens (the asset's files and their
+copies). Changed files leave their group, counts and results refresh, and a
+hashing run starts right away to hash them again; offline files keep their
+hash. An edit that keeps both size and modification time is not noticed.
+Nothing is deleted automatically – use the trash to remove copies you do not
 need. On a 6,968-file test library (2.5 GB) 3,439 candidates (370 MB) hash in
 about 2 s and form 513 groups.
 

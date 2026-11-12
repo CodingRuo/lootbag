@@ -1,6 +1,6 @@
 use super::{AssetKind, CatalogQuery, Result};
 
-#[derive(Debug, Default, Clone, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AudioCriteria {
     pub min_duration_seconds: Option<f64>,

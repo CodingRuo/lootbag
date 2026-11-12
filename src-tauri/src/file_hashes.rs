@@ -62,23 +62,35 @@ fn file_stamp(metadata: &fs::Metadata) -> Option<String> {
     ))
 }
 
+/// Scopes for `drop_stale_hashes`, conditions on its hash row `h`. Every duplicate group member:
+/// a hashed file whose size and hash an active file shares.
+const GROUPED: &str =
+    "EXISTS (SELECT 1 FROM file_hashes oh JOIN active_asset_files o ON o.id = oh.file_id
+    WHERE oh.hash = h.hash AND oh.size = h.size AND oh.file_id <> h.file_id)";
+/// The hashed files of asset ?1 and every file sharing their size and hash.
+const ASSET_GROUP: &str =
+    "h.file_id IN (SELECT oh.file_id FROM asset_files af JOIN file_hashes ah ON ah.file_id = af.id
+    JOIN file_hashes oh ON oh.hash = ah.hash AND oh.size = ah.size WHERE af.asset_id = ?1)";
+
 impl Library {
-    /// Forgets hashes whose file or archive changed since hashing, so duplicates leave them; offline
-    /// files keep theirs. With `assets`, only their files that have copies and those copies are
-    /// checked (one stat each). Returns how many were dropped.
-    fn drop_stale_hashes(&self, assets: Option<&[i64]>, cancel: &AtomicBool) -> Result<usize> {
+    /// Forgets hashes in `scope` (SQL on `h`, `f`; ?1 is `asset`) whose file or archive changed
+    /// since hashing, so duplicates leave them; offline files keep theirs. One stat per file.
+    /// Returns how many were dropped.
+    fn drop_stale_hashes(
+        &self,
+        scope: &str,
+        asset: Option<i64>,
+        cancel: &AtomicBool,
+    ) -> Result<usize> {
         let failed = |e: rusqlite::Error| format!("Duplikatsuche fehlgeschlagen: {e}");
         let hashed = self
             .connection
             .prepare(&format!("SELECT h.file_id, h.stamp, f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes
                 FROM file_hashes h JOIN asset_files f ON f.id = h.file_id JOIN assets a ON a.id = f.asset_id JOIN packages p ON p.id = a.package_id
                 LEFT JOIN external_sources s ON s.package_id = p.id LEFT JOIN external_files e ON e.file_id = f.id
-                WHERE ?1 IS NULL OR h.file_id IN (SELECT f.id FROM active_asset_files f JOIN file_hashes h ON h.file_id = f.id {COPIES}
-                    WHERE f.asset_id IN (SELECT value FROM json_each(?1))
-                    UNION SELECT o.id FROM active_asset_files f JOIN file_hashes h ON h.file_id = f.id {COPIES}
-                    WHERE f.asset_id IN (SELECT value FROM json_each(?1)))"))
+                WHERE {scope}"))
             .map_err(failed)?
-            .query_map([assets.map(id_list)], |row| {
+            .query_map(rusqlite::params_from_iter(asset), |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?, location_row(row, 3)?))
             })
             .map_err(failed)?
@@ -130,34 +142,21 @@ impl Library {
         Ok(stale.len())
     }
 
-    /// Drops stale hashes behind the duplicates of `assets` before they are read, so a result never
-    /// counts a file changed since hashing; remembers a drop for `take_stale_hashes`. Read-only
-    /// connections skip the check.
-    pub(super) fn drop_stale_copies(&self, assets: &[i64]) -> Result<usize> {
-        if assets.is_empty()
-            || self
-                .connection
-                .is_readonly(rusqlite::MAIN_DB)
-                .unwrap_or(true)
-        {
-            return Ok(0);
-        }
-        let dropped = self.drop_stale_hashes(Some(assets), &AtomicBool::new(false))?;
-        if dropped > 0 {
-            self.stale_hashes.set(true);
-        }
-        Ok(dropped)
+    /// Drops hashes of duplicate group members changed since hashing, so counts, the filter and
+    /// copy lists only use hashes that still match; returns how many were dropped.
+    pub fn verify_duplicates(&self) -> Result<usize> {
+        self.drop_stale_hashes(GROUPED, None, &AtomicBool::new(false))
     }
 
-    /// Whether a read dropped stale hashes, which a hashing run should now replace.
-    pub fn take_stale_hashes(&self) -> bool {
-        self.stale_hashes.take()
+    /// `verify_duplicates` for the files of one asset and their copies.
+    pub fn verify_asset_duplicates(&self, asset_id: i64) -> Result<usize> {
+        self.drop_stale_hashes(ASSET_GROUP, Some(asset_id), &AtomicBool::new(false))
     }
 
     /// Hashes up to `batch` files after the `after` cursor that share their size with another active
     /// file and have no current hash; returns (hashed, still pending after the cursor, dropped). Like
     /// `inspect_pending_models`, unavailable files get no row and are retried on a later run.
-    /// A run's first batch (`after` 0) first drops hashes of files changed since.
+    /// A run's first batch (`after` 0) first drops hashes of any hashed file changed since.
     pub fn hash_pending_files(
         &self,
         after: &mut i64,
@@ -166,7 +165,7 @@ impl Library {
     ) -> Result<(usize, usize, usize)> {
         let failed = |e: rusqlite::Error| format!("Duplikatsuche fehlgeschlagen: {e}");
         let invalidated = if *after == 0 {
-            self.drop_stale_hashes(None, cancel)?
+            self.drop_stale_hashes("1", None, cancel)?
         } else {
             0
         };
@@ -252,7 +251,6 @@ impl Library {
     /// Active files in other assets with the same content as a file of `asset_id`.
     pub fn asset_duplicates(&self, asset_id: i64) -> Result<Vec<DuplicateCopy>> {
         let failed = |e: rusqlite::Error| format!("Duplikate nicht lesbar: {e}");
-        self.drop_stale_copies(&[asset_id])?;
         self.connection
             .prepare(&format!("SELECT DISTINCT o.id, o.asset_id, p.name, substr(o.relative_path, length(p.relative_path) + 2) AS path
                 FROM active_asset_files f JOIN file_hashes h ON h.file_id = f.id {COPIES}
@@ -421,41 +419,136 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn reads_drop_hashes_of_files_changed_since_hashing() {
-        let root = workspace();
-        let mut library = Library::create(&root.join("library")).unwrap();
-        library
-            .import_folder(&pack(&root, "Pack A", &[("Rock.png", b"AAAAAAAAAA")]))
-            .unwrap();
-        library
-            .import_folder(&pack(&root, "Pack B", &[("Stone.png", b"AAAAAAAAAA")]))
-            .unwrap();
-        assert_eq!(hash_all(&library), 2);
-        let rock = assets(&library, true)
-            .into_iter()
-            .find(|asset| asset.name == "Rock")
-            .unwrap();
-        assert!(!library.take_stale_hashes());
-        let stone = assets(&library, false)
-            .into_iter()
-            .find(|asset| asset.name == "Stone")
-            .unwrap();
-        // Edited without a hashing run: same content length, other bytes and time.
-        let path = library.resolve_preview(stone.files[0].id).unwrap();
-        fs::write(&path, b"BBBBBBBBBB").unwrap();
+    /// Same length, other bytes and time: an edit without a hashing run.
+    fn rewrite(path: &Path) {
+        fs::write(path, b"BBBBBBBBBB").unwrap();
         fs::File::options()
             .write(true)
-            .open(&path)
+            .open(path)
             .unwrap()
             .set_modified(std::time::SystemTime::UNIX_EPOCH)
             .unwrap();
+    }
 
-        assert!(library.asset_duplicates(rock.id).unwrap().is_empty());
-        assert!(library.take_stale_hashes(), "a hashing run is due");
-        assert!(assets(&library, true).is_empty(), "duplicate filter");
-        assert_eq!(duplicates_of(&library, "Rock"), 0, "page counts");
+    fn file_of(library: &Library, name: &str) -> PathBuf {
+        let asset = assets(library, false)
+            .into_iter()
+            .find(|asset| asset.name == name)
+            .unwrap();
+        library.resolve_preview(asset.files[0].id).unwrap()
+    }
+
+    #[test]
+    fn verify_drops_changed_members_of_every_group_and_totals_follow() {
+        let root = workspace();
+        let mut library = Library::create(&root.join("library")).unwrap();
+        let rock = b"AAAAAAAAAA".as_slice();
+        let tree = b"CCCCCCCCCC".as_slice();
+        library
+            .import_folder(&pack(
+                &root,
+                "Pack A",
+                &[("Rock.png", rock), ("Tree.png", tree)],
+            ))
+            .unwrap();
+        library
+            .import_folder(&pack(
+                &root,
+                "Pack B",
+                &[("Stone.png", rock), ("Log.png", tree)],
+            ))
+            .unwrap();
+        assert_eq!(hash_all(&library), 4);
+        assert_eq!(library.catalog_filters(None).unwrap().duplicates, 4);
+        rewrite(&file_of(&library, "Stone"));
+
+        assert_eq!(library.verify_duplicates().unwrap(), 1);
+        assert_eq!(library.catalog_filters(None).unwrap().duplicates, 2);
+        let names = assets(&library, true)
+            .into_iter()
+            .map(|asset| asset.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Log", "Tree"]);
+        assert_eq!(library.verify_duplicates().unwrap(), 0, "nothing left");
         assert_eq!(hash_all(&library), 1, "the dropped file is hashed again");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verify_covers_material_members_that_are_not_the_representative() {
+        let root = workspace();
+        let mut library = Library::create(&root.join("library")).unwrap();
+        library
+            .import_folder(&pack(
+                &root,
+                "Bricks",
+                &[
+                    ("Brick_basecolor.png", b"unique base color"),
+                    ("Brick_normal.png", b"AAAAAAAAAA"),
+                ],
+            ))
+            .unwrap();
+        library
+            .import_folder(&pack(&root, "Other", &[("Wall_normal.png", b"AAAAAAAAAA")]))
+            .unwrap();
+        assert_eq!(hash_all(&library), 2);
+        let materials = |library: &Library| {
+            library
+                .query(CatalogQuery {
+                    workflow: Some(crate::library::ImageWorkflow::Material),
+                    duplicates: true,
+                    ..Default::default()
+                })
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|asset| asset.image_group.unwrap().name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(materials(&library), ["Brick", "Wall"]);
+        rewrite(&file_of(&library, "Brick_normal"));
+
+        assert_eq!(library.verify_duplicates().unwrap(), 1);
+        assert!(materials(&library).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verifying_one_asset_checks_its_files_and_their_copies_only() {
+        let root = workspace();
+        let mut library = Library::create(&root.join("library")).unwrap();
+        let rock = b"AAAAAAAAAA".as_slice();
+        let tree = b"CCCCCCCCCC".as_slice();
+        library
+            .import_folder(&pack(
+                &root,
+                "Pack A",
+                &[("Rock.png", rock), ("Tree.png", tree)],
+            ))
+            .unwrap();
+        library
+            .import_folder(&pack(
+                &root,
+                "Pack B",
+                &[("Stone.png", rock), ("Log.png", tree)],
+            ))
+            .unwrap();
+        assert_eq!(hash_all(&library), 4);
+        rewrite(&file_of(&library, "Stone"));
+        rewrite(&file_of(&library, "Log"));
+        let id = |name: &str| {
+            assets(&library, false)
+                .into_iter()
+                .find(|asset| asset.name == name)
+                .unwrap()
+                .id
+        };
+
+        assert_eq!(library.verify_asset_duplicates(id("Rock")).unwrap(), 1);
+        assert!(library.asset_duplicates(id("Rock")).unwrap().is_empty());
+        assert_eq!(duplicates_of(&library, "Tree"), 1, "other group unchecked");
+        assert_eq!(library.verify_asset_duplicates(id("Log")).unwrap(), 1);
+        assert_eq!(duplicates_of(&library, "Tree"), 0);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -477,9 +570,15 @@ mod tests {
 
         let moved = root.join("moved.zip");
         fs::rename(&archive, &moved).unwrap();
-        assert_eq!(duplicates_of(&library, "step"), 1, "offline: kept");
+        assert_eq!(library.verify_duplicates().unwrap(), 0, "offline: kept");
+        assert_eq!(duplicates_of(&library, "step"), 1);
         fs::create_dir(&archive).unwrap();
-        assert_eq!(duplicates_of(&library, "step"), 0, "present but unreadable");
+        assert_eq!(
+            library.verify_duplicates().unwrap(),
+            2,
+            "present but unreadable"
+        );
+        assert_eq!(duplicates_of(&library, "step"), 0);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -873,29 +873,37 @@ async fn query_catalog(
     query: CatalogQuery,
     audio_criteria: Option<AudioCriteria>,
 ) -> Result<CatalogPage> {
-    read_duplicates(&app, move |library| {
-        library.query_with_audio(query, audio_criteria)
-    })
-    .await
+    let root = active_root(&app)?;
+    background(move || Library::writable(&root)?.query_with_audio(query, audio_criteria)).await
 }
 
-/// Runs a catalog read and, when it dropped hashes of changed files, a hashing run to replace them.
-async fn read_duplicates<T: Send + 'static>(
+/// Runs a duplicate check that returns (hashes dropped, result) and, when it dropped any, a hashing
+/// run to replace them.
+async fn verified<T: Send + 'static>(
     app: &AppHandle,
-    read: impl FnOnce(&Library) -> Result<T> + Send + 'static,
-) -> Result<T> {
+    check: impl FnOnce(&Library) -> Result<(usize, T)> + Send + 'static,
+) -> Result<(usize, T)> {
     let root = active_root(app)?;
     let path = root.clone();
-    let (result, stale) = background(move || {
-        let library = Library::writable(&path)?;
-        let result = read(&library)?;
-        Ok((result, library.take_stale_hashes()))
-    })
-    .await?;
-    if stale && active_root(app)? == root {
+    let result = background(move || check(&Library::writable(&path)?)).await?;
+    if result.0 > 0 && active_root(app)? == root {
         start_backfill(app, root);
     }
     Ok(result)
+}
+
+/// Drops hashes of changed duplicate group members; returns how many.
+#[tauri::command]
+async fn verify_duplicates(app: AppHandle) -> Result<usize> {
+    let (dropped, ()) = verified(&app, |library| Ok((library.verify_duplicates()?, ()))).await?;
+    Ok(dropped)
+}
+
+#[derive(serde::Serialize)]
+struct AssetDuplicates {
+    copies: Vec<DuplicateCopy>,
+    /// Hashes dropped by the check before reading; counts elsewhere changed when > 0.
+    dropped: usize,
 }
 
 #[tauri::command]
@@ -1085,8 +1093,13 @@ async fn delete_saved_search(app: AppHandle, id: i64) -> Result<()> {
 }
 
 #[tauri::command]
-async fn asset_duplicates(app: AppHandle, asset_id: i64) -> Result<Vec<DuplicateCopy>> {
-    read_duplicates(&app, move |library| library.asset_duplicates(asset_id)).await
+async fn asset_duplicates(app: AppHandle, asset_id: i64) -> Result<AssetDuplicates> {
+    let (dropped, copies) = verified(&app, move |library| {
+        let dropped = library.verify_asset_duplicates(asset_id)?;
+        Ok((dropped, library.asset_duplicates(asset_id)?))
+    })
+    .await?;
+    Ok(AssetDuplicates { copies, dropped })
 }
 
 #[tauri::command]
@@ -1525,6 +1538,7 @@ pub fn run() {
             get_package_info,
             set_package_info,
             asset_duplicates,
+            verify_duplicates,
             saved_searches,
             save_search,
             delete_saved_search,

@@ -90,7 +90,10 @@ class Harness {
   annotations: any[] = [];
   references: any[] = [];
   audioTags: any = { status: "ready", title: null, artist: null, album: null, genre: null, message: null };
+  commands: string[] = [];
+  droppedHashes = 0;
   invoke = (command: string, args: any) => {
+    this.commands.push(command);
     if (command === "prepare_audio_analysis") return new Promise((resolve, reject) => this.prepareRequests.push({ args, resolve, reject }));
     if (command === "run_audio_analysis") return new Promise((resolve, reject) => this.populationRequests.push({ args, resolve, reject }));
     if (command === "cancel_audio_analysis") {
@@ -109,7 +112,8 @@ class Harness {
     if (command === "set_package_info") { this.packageInfoSaves.push(args); return Promise.resolve(); }
     if (command === "open_library") return Promise.resolve({ ...library, root: "/owned/reopened" });
     if (command === "catalog_filters") return Promise.resolve({ folders: ["ambience"], formats: ["MP3", "WAV", "OGG", "FLAC", "PNG", "OBJ"], tags: ["wind"], duplicates: 3 });
-    if (command === "asset_duplicates") return Promise.resolve(args.assetId === 1 ? [{ fileId: 31, assetId: 2, packageName: "Other Pack", path: "sfx/match.mp3" }] : []);
+    if (command === "asset_duplicates") return Promise.resolve({ copies: args.assetId === 1 ? [{ fileId: 31, assetId: 2, packageName: "Other Pack", path: "sfx/match.mp3" }] : [], dropped: this.droppedHashes });
+    if (command === "verify_duplicates") return Promise.resolve(this.droppedHashes);
     if (command === "analyze_audio") return new Promise((resolve, reject) => this.analysisRequests.push({ resolve, reject }));
     if (command === "resolve_preview") return Promise.resolve("/owned/sound.wav");
     if (command === "audio_waveform") return Promise.resolve({ durationSeconds: 1, peaks: [] });
@@ -693,6 +697,37 @@ test("duplicates show a card chip, filter the catalog and list selectable copies
     app.latestRequest!.resolve(page([other], 1)); await app.settle();
     assert.equal(app.text(app.find((node) => node.type === "h2" && /Other Sound/.test(app.text(node)))), "Other Sound");
     assert.equal(app.find((node) => node.type === AudioPreview).props.file.id, 31);
+  } finally { app.dispose(); }
+});
+
+test("turning the duplicate filter on verifies duplicates before querying and refreshes counts after a drop", async () => {
+  for (const dropped of [0, 2]) {
+    const app = new Harness();
+    app.droppedHashes = dropped;
+    try {
+      await app.mount();
+      const filters = app.commands.filter((command) => command === "catalog_filters").length;
+      app.commands.length = 0;
+      const filter = app.elements(app.find((node) => node.props.className === "checkbox-filter")).find((node) => node.type === "input")!;
+      await filter.props.onChange({ target: { checked: true } }); await app.settle(); await app.runTimers();
+      assert.deepEqual(app.commands.filter((command) => command !== "catalog_filters"), ["verify_duplicates", "query_catalog"]);
+      assert.equal(app.latestRequest?.args.query.duplicates, true);
+      assert.equal(app.commands.filter((command) => command === "catalog_filters").length, dropped ? 1 : 0, `dropped ${dropped}`);
+      assert.ok(filters > 0);
+    } finally { app.dispose(); }
+  }
+});
+
+test("a copy list check that dropped changed hashes refreshes the Sounds results and counts", async () => {
+  const app = new Harness();
+  app.droppedHashes = 1;
+  try {
+    await app.mount(); await app.chooseType("sound"); await app.runTimers();
+    app.commands.length = 0;
+    app.latestRequest!.resolve(page([{ ...asset, duplicates: 1 }])); await app.settle(); await app.runTimers();
+    assert.deepEqual(app.commands.filter((command) => command.includes("duplicates") || command === "query_catalog" || command === "catalog_filters").slice(0, 3),
+      ["asset_duplicates", "catalog_filters", "query_catalog"]);
+    assert.equal(app.latestRequest!.args.query.kind, "sound");
   } finally { app.dispose(); }
 });
 
