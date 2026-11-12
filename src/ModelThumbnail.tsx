@@ -49,10 +49,12 @@ export function createCatalogModelThumbnails() {
   });
 }
 
-export default function ModelThumbnail({ queue, scope, fileId, format, available, fallback }: {
+export default function ModelThumbnail({ queue, scope, fileId, path, sizeBytes, format, available, fallback }: {
   queue: ModelThumbnailQueue;
   scope: string;
   fileId: number;
+  path: string;
+  sizeBytes: number;
   format: string;
   available: boolean;
   fallback: ReactNode;
@@ -67,7 +69,8 @@ export default function ModelThumbnail({ queue, scope, fileId, format, available
     let active = true;
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting && !unsubscribe) {
-        unsubscribe = queue.request(scope, `${fileId}:${available}`, fileId, (value) => { if (active) setResult(value); });
+        // SQLite may reuse ids after the trash is emptied, so path and size guard the cached image.
+        unsubscribe = queue.request(scope, `${fileId}:${path}:${sizeBytes}:${available}`, fileId, (value) => { if (active) setResult(value); });
       } else if (!entry.isIntersecting && unsubscribe) {
         unsubscribe();
         unsubscribe = null;
@@ -75,7 +78,7 @@ export default function ModelThumbnail({ queue, scope, fileId, format, available
     }, { root: host.current.closest(".catalog-scroll") });
     observer.observe(host.current);
     return () => { active = false; observer.disconnect(); unsubscribe?.(); };
-  }, [queue, scope, fileId, available]);
+  }, [queue, scope, fileId, path, sizeBytes, available]);
 
   const message = !available ? "Modelldatei nicht verfügbar." : result?.error ?? result?.warning;
   return <span ref={host} className="model-thumbnail" title={message ?? undefined}>

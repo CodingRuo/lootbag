@@ -12,6 +12,7 @@ import { ImageTexturePreviewLoader } from "./TgaPreviewLoader.ts";
 import { maxGifBytes } from "./gifPreflight.ts";
 import { resolveModelResource, type ModelResource } from "./modelResources.ts";
 import { modelPreviewBounds } from "./modelAnimation.ts";
+import { errorMessage } from "./errorMessage.ts";
 
 export type ModelResources = {
   snapshotId: string;
@@ -72,14 +73,14 @@ export async function loadModel(snapshot: ModelResources, signal: AbortSignal) {
   const warn = (message: string) => { if (!warnings.includes(message)) warnings.push(message); };
   const textureBudget = { pixels: 0 };
   manager.addHandler(/\.tga(?:$|[?#])/i, new ImageTexturePreviewLoader(manager, signal, "TGA", (reason) => {
-    warn(reason instanceof Error ? reason.message : "Eine TGA-Modelltextur kann nicht angezeigt werden.");
+    warn(errorMessage(reason, "Eine TGA-Modelltextur kann nicht angezeigt werden."));
   }, textureBudget));
   const gifLoader = new ImageTexturePreviewLoader(manager, signal, "GIF", (reason) => {
-    warn(reason instanceof Error ? reason.message : "Eine GIF-Modelltextur kann nicht angezeigt werden.");
+    warn(errorMessage(reason, "Eine GIF-Modelltextur kann nicht angezeigt werden."));
   }, textureBudget);
   manager.addHandler(/(?:\.gif(?:$|[?#])|^data:image\/gif[;,])/i, gifLoader);
   manager.addHandler(/\.(ase|aseprite)(?:$|[?#])/i, new ImageTexturePreviewLoader(manager, signal, "ASEPRITE", (reason) => {
-    warn(reason instanceof Error ? reason.message : "Eine Aseprite-Modelltextur kann nicht angezeigt werden.");
+    warn(errorMessage(reason, "Eine Aseprite-Modelltextur kann nicht angezeigt werden."));
   }, textureBudget));
   let markerEnded = false;
   let disposed = false;

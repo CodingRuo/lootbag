@@ -9,6 +9,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { defaultMaterialChoices, materialRoles, materialSelection, type ImageGroup, type MaterialRole } from "./imageWorkflows";
 import { loadPreviewImage } from "./imagePreviewUrl.ts";
 import type { ModelExportSelection } from "./ModelPreview";
+import { errorMessage } from "./errorMessage.ts";
 
 const labels: Record<MaterialRole, string> = {
   baseColor: "Base Color", normal: "Normal", roughness: "Roughness", metallic: "Metallic", ao: "Ambient Occlusion", height: "Height",
@@ -143,7 +144,7 @@ export default function MaterialPreview({ group, onReady, visible }: {
         textures.clear();
         for (const release of releases.splice(0)) release();
         setLoading(false);
-        setError(reason instanceof Error ? reason.message : "Eine Material-Map kann nicht angezeigt werden.");
+        setError(errorMessage(reason, "Eine Material-Map kann nicht angezeigt werden."));
         onReady(null);
       }
     })();

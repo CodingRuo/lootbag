@@ -65,7 +65,7 @@ test("cancelled queued jobs are skipped and active cancellation frees its late U
   queue.dispose();
 });
 
-test("library/revision reset suppresses stale results without overlapping the new job", async () => {
+test("library switch suppresses stale results without overlapping the new job", async () => {
   const old = deferred();
   const started: number[] = [];
   const observed: ModelThumbnailResult[] = [];
@@ -74,15 +74,15 @@ test("library/revision reset suppresses stale results without overlapping the ne
     started.push(id);
     return id === 1 ? old.promise : thumbnail(id);
   }, (url) => revoked.push(url), () => {});
-  queue.request("old-library:0", "same-id", 1, (value) => observed.push(value));
-  queue.request("new-library:0", "same-id", 2, (value) => observed.push(value));
+  queue.request("old-library", "same-id", 1, (value) => observed.push(value));
+  queue.request("new-library", "same-id", 2, (value) => observed.push(value));
   assert.deepEqual(started, [1]);
   old.resolve(thumbnail(1));
   await flush();
   assert.deepEqual(started, [1, 2]);
   assert.deepEqual(observed, [thumbnail(2)]);
   assert.deepEqual(revoked, ["blob:1"]);
-  queue.reset("new-library:1");
+  queue.reset("other-library");
   assert.deepEqual(revoked, ["blob:1", "blob:2"]);
   queue.dispose();
 });

@@ -777,16 +777,6 @@ p {
 .sound-table th:nth-child(2) {
   width: 34%;
 }
-.sound-table .size-column {
-  text-align: right;
-  color: #92a0b1;
-  font-size: 9px;
-  padding-right: 10px;
-  white-space: nowrap;
-}
-.sound-table th.size-column {
-  font-size: 8px;
-}
 .sound-table tbody tr {
   border-bottom: 1px solid #242f3e;
 }

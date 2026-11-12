@@ -173,3 +173,35 @@ test("a lying content-length cannot allow an oversized stream through to allocat
   await assert.rejects(decodeTgaUrl("https://fixture.invalid/overflow.tga", new AbortController().signal), /64 MiB/);
   assert.equal(cancelled, true); assert.equal(boundary.counts().started, 0);
 });
+
+test("a job waiting behind a stalled decode gets its own full time limit", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const boundary = workerBoundary(t, true);
+  const stalled = decodeTgaUrl(dataUrl(red), new AbortController().signal);
+  const failure = assert.rejects(stalled, /Zeitlimit/);
+  await boundary.firstPost;
+  const waiting = decodeTgaUrl(dataUrl(red), new AbortController().signal);
+  t.mock.timers.tick(30_000);
+  await failure;
+  assert.deepEqual([...new Uint8Array((await waiting).buffer)], [255,0,0,255]);
+});
+
+test("grid thumbnails downscale large PNGs and keep small ones at their original URL", async (t) => {
+  const saved = ["document", "createImageBitmap"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  t.after(() => { for (const [name, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name); } });
+  t.mock.method(globalThis, "fetch", async () => new Response(new Blob(["png"])));
+  let size = { width: 2048, height: 1024 };
+  const canvases: { width: number; height: number }[] = [];
+  Object.defineProperty(globalThis, "createImageBitmap", { configurable: true, value: async () => ({ ...size, close: () => {} }) });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => {
+    const canvas = { width: 0, height: 0, getContext: () => ({ drawImage: () => canvases.push({ width: canvas.width, height: canvas.height }) }), toBlob: (done: (blob: Blob) => void) => done(new Blob(["small"])) };
+    return canvas;
+  } } });
+  const large = await imagePreviewUrl("asset://localhost/Large.png", "Large.png", new AbortController().signal, 512);
+  assert.match(large.url, /^blob:/);
+  assert.deepEqual(canvases, [{ width: 512, height: 256 }]);
+  large.release();
+  size = { width: 300, height: 200 };
+  const small = await imagePreviewUrl("asset://localhost/Small.png", "Small.png", new AbortController().signal, 512);
+  assert.equal(small.url, "asset://localhost/Small.png");
+});

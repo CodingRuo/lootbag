@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { imageFit } from "./imageWorkflows.ts";
 import { loadAsepriteAnimation } from "./imagePreviewUrl.ts";
+import { errorMessage } from "./errorMessage.ts";
 
 type Animation = Awaited<ReturnType<typeof loadAsepriteAnimation>>;
 export default function AsepritePreview({ file }: { file: { id: number; originalFilename: string } }) {
@@ -29,7 +30,7 @@ export default function AsepritePreview({ file }: { file: { id: number; original
       release = preview.release; setAnimation(preview);
       setZoom(imageFit(preview.width, preview.height, viewport.current?.clientWidth ?? 240, viewport.current?.clientHeight ?? 240));
     }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Die Aseprite-Datei ist nicht verfügbar.");
+      if (active) setError(errorMessage(reason, "Die Aseprite-Datei ist nicht verfügbar."));
     });
     return () => { active = false; controller.abort(); release(); };
   }, [file.id, file.originalFilename]);

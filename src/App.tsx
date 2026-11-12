@@ -16,6 +16,7 @@ import { TrashActions, TrashDialog, type TrashEntry } from "./Trash";
 import { FolderDialog, FolderMembershipEditor, folderPath, type ProjectFolder } from "./ProjectFolders";
 import { nextInspectorTab, type InspectorTab } from "./inspectorTabs";
 import { catalogSelection, nextCatalogIndex, type CatalogSelection, type SelectionMode } from "./catalogSelection";
+import { errorMessage } from "./errorMessage.ts";
 
 type AssetPackage = {
   id: number;
@@ -122,6 +123,8 @@ type BulkAction = { kind: "addTags"; tags: string[] } | { kind: "addToFolder"; f
 type BulkResult = { assetCount: number; fileCount: number };
 
 const PAGE_SIZE = 40;
+// Larger models are only parsed on demand in the inspector; BLEND thumbnails have their own 64 MiB cap.
+const MAX_MODEL_THUMBNAIL_BYTES = 32 * 1024 * 1024;
 const native = isTauri();
 const number = new Intl.NumberFormat("de-DE");
 const icons = {
@@ -184,13 +187,6 @@ function bytes(value: number) {
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 }).format(value / 1024 ** index)} ${units[index]}`;
 }
 
-function errorMessage(error: unknown) {
-  return typeof error === "string"
-    ? error
-    : error instanceof Error
-      ? error.message
-      : "Der Vorgang konnte nicht abgeschlossen werden.";
-}
 
 export default function App() {
   const [library, setLibrary] = useState<LibraryInfo | null>(null);
@@ -244,7 +240,7 @@ export default function App() {
   const [offset, setOffset] = useState(0);
   const [revision, setRevision] = useState(0);
   const [modelThumbnails] = useState(createCatalogModelThumbnails);
-  const thumbnailScope = `${library?.root ?? ""}:${revision}`;
+  const thumbnailScope = library?.root ?? "";
   const [page, setPage] = useState<CatalogPage | null>(null);
   const [queryLoading, setQueryLoading] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
@@ -1496,7 +1492,7 @@ export default function App() {
                           }}
                           aria-pressed={assetKey(selected) === assetKey(asset)}>
                           <span className={`asset-poster ${asset.kind === "image" ? "transparency-background" : ""}`}>
-                            {asset.kind === "image" ? <ImageThumbnail key={`${library.root}:${firstFile.id}:${firstFile.available}`} fileId={firstFile.id} available={firstFile.available} filename={firstFile.originalFilename} /> : asset.kind === "model" ? <ModelThumbnail queue={modelThumbnails} scope={thumbnailScope} fileId={firstFile.id} format={firstFile.format} available={firstFile.available} fallback={<Icon name="model" />} /> : <Icon name={asset.kind} />}
+                            {asset.kind === "image" ? <ImageThumbnail key={`${library.root}:${firstFile.id}:${firstFile.available}`} fileId={firstFile.id} available={firstFile.available} filename={firstFile.originalFilename} /> : asset.kind === "model" && (firstFile.format === "BLEND" || firstFile.sizeBytes <= MAX_MODEL_THUMBNAIL_BYTES) ? <ModelThumbnail queue={modelThumbnails} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available={firstFile.available} fallback={<Icon name="model" />} /> : <Icon name={asset.kind} />}
                             <span className="asset-format">{asset.imageGroup ? asset.imageGroup.workflow === "material" ? "MATERIAL" : "SPRITES" : firstFile.format}</span>
                           </span>
                           <span className="asset-card-copy">

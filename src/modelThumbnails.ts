@@ -1,4 +1,5 @@
 export type ModelThumbnailResult = { url: string | null; warning: string | null; error: string | null };
+import { errorMessage } from "./errorMessage.ts";
 type Listener = (result: ModelThumbnailResult) => void;
 type Entry = {
   key: string;
@@ -50,7 +51,7 @@ export function createModelThumbnailQueue(
         } catch (reason) {
           result = {
             url: null, warning: null,
-            error: reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Modellvorschau nicht verfügbar.",
+            error: errorMessage(reason, "Modellvorschau nicht verfügbar."),
           };
         }
         if (controller.signal.aborted || entries.get(entry.key) !== entry) {

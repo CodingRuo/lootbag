@@ -1,4 +1,5 @@
 import { readBlendThumbnail } from "./blendThumbnail.ts";
+import { errorMessage } from "./errorMessage.ts";
 
 const worker = globalThis as unknown as {
   onmessage: (event: MessageEvent<ArrayBuffer>) => void;
@@ -9,6 +10,6 @@ worker.onmessage = ({ data }) => {
     const decoded = readBlendThumbnail(data);
     worker.postMessage(decoded, [decoded.buffer]);
   } catch (reason) {
-    worker.postMessage({ error: reason instanceof Error ? reason.message : "Blender-Vorschaubild ist nicht lesbar." }, []);
+    worker.postMessage({ error: errorMessage(reason, "Blender-Vorschaubild ist nicht lesbar.") }, []);
   }
 };

@@ -278,7 +278,7 @@ test("AudioPreview reports a saved ready or failed analysis once without repeati
   for (const status of ["ready", "error"]) {
     const preview = new Harness();
     let completions = 0;
-    preview.component = () => AudioPreview({ file: matchingFile, onAnalysisComplete: () => { completions++; } });
+    preview.component = () => AudioPreview({ file: { ...matchingFile, audio: null }, onAnalysisComplete: () => { completions++; } });
     try {
       await preview.settle();
       preview.analysisRequests[0].resolve({ ...matchingFile.audio, status, error: status === "error" ? "Owned fixture failure" : null });
@@ -287,6 +287,15 @@ test("AudioPreview reports a saved ready or failed analysis once without repeati
       assert.equal(preview.analysisRequests.length, 1, "A new callback identity cannot restart analysis");
     } finally { preview.dispose(); }
   }
+});
+
+test("AudioPreview reuses saved metadata without re-analyzing on open", async () => {
+  const preview = new Harness();
+  preview.component = () => AudioPreview({ file: matchingFile });
+  try {
+    await preview.settle();
+    assert.equal(preview.analysisRequests.length, 0);
+  } finally { preview.dispose(); }
 });
 
 test("late catalog successes and failures cannot replace results from the current audio scope", async () => {
@@ -314,7 +323,7 @@ test("late catalog successes and failures cannot replace results from the curren
 test("an unmounted audio preview cannot report a late analysis as a current filter change", async () => {
   const preview = new Harness();
   let completions = 0;
-  preview.component = () => AudioPreview({ file: matchingFile, onAnalysisComplete: () => { completions++; } });
+  preview.component = () => AudioPreview({ file: { ...matchingFile, audio: null }, onAnalysisComplete: () => { completions++; } });
   await preview.settle();
   preview.dispose();
   preview.analysisRequests[0].resolve(matchingFile.audio); await preview.settle();

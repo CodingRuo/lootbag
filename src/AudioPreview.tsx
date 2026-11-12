@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { repeatAudioLoop, resolveAudioLoop, seekAudio, type AudioLoop } from "./audioAudition";
+import { errorMessage } from "./errorMessage.ts";
 
 type AudioWaveform = {
   durationSeconds: number;
@@ -40,13 +41,6 @@ function time(value: number | null) {
   return `${minutes.toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`;
 }
 
-function errorMessage(error: unknown) {
-  return typeof error === "string"
-    ? error
-    : error instanceof Error
-      ? error.message
-      : "Die Audiodatei ist nicht verfügbar.";
-}
 
 export default function AudioPreview({ file, onAnalysisComplete }: { file: AudioFile; onAnalysisComplete?: () => void }) {
   const analysisComplete = useRef(onAnalysisComplete);
@@ -60,7 +54,7 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
   const [duration, setDuration] = useState<number | null>(null);
   const [volume, setVolume] = useState(1);
   const [metadata, setMetadata] = useState(file.audio);
-  const [analysisLoading, setAnalysisLoading] = useState(true);
+  const [analysisLoading, setAnalysisLoading] = useState(!file.audio);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [waveform, setWaveform] = useState<AudioWaveform | null>(null);
@@ -102,7 +96,7 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
     setPosition(0);
     setDuration(null);
     setMetadata(file.audio);
-    setAnalysisLoading(true);
+    setAnalysisLoading(!file.audio);
     setAnalysisError(null);
     setPlaybackError(null);
     setWaveform(null);
@@ -126,7 +120,8 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
       .finally(() => {
         if (active) setLoading(false);
       });
-    invoke<AudioMetadata>("analyze_audio", { fileId: file.id })
+    // Saved metadata is reused; only never-analyzed files are analyzed on open.
+    if (!file.audio) invoke<AudioMetadata>("analyze_audio", { fileId: file.id })
       .then((properties) => {
         if (active) {
           setMetadata(properties);

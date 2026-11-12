@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { imageFit, prepareSpriteSequence, spriteFrameLimit, type ImageGroup } from "./imageWorkflows";
 import { loadPreviewImage } from "./imagePreviewUrl.ts";
 import type { ModelExportSelection } from "./ModelPreview";
+import { errorMessage } from "./errorMessage.ts";
 
 type Frame = { index: number; path: string; width: number; height: number; image: HTMLImageElement; filename: string };
 
@@ -58,7 +59,7 @@ export default function SpriteSequencePreview({ group, visible, onReady }: {
         onReady({ snapshotId: group.resources.snapshotId, fileId: group.resources.fileId, resourcePaths: ordered.map((item) => item.path) });
       } catch (reason) {
         for (const release of releases.splice(0)) release();
-        if (active) { setError(reason instanceof Error ? reason.message : "Die Sprite-Sequenz kann nicht angezeigt werden."); onReady(null); }
+        if (active) { setError(errorMessage(reason, "Die Sprite-Sequenz kann nicht angezeigt werden.")); onReady(null); }
       }
     })();
     return () => {

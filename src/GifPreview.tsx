@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { imageFit } from "./imageWorkflows.ts";
 import { loadGifAnimation, loadPreviewImage } from "./imagePreviewUrl.ts";
+import { errorMessage } from "./errorMessage.ts";
 
 export default function GifPreview({ file }: { file: { id: number; originalFilename: string } }) {
   // ponytail: Native image playback has no seek/current-frame pause; use an indexed decoder if GIF editing is added.
@@ -32,7 +33,7 @@ export default function GifPreview({ file }: { file: { id: number; originalFilen
       setImage(preview.image);
       setZoom(imageFit(preview.image.naturalWidth, preview.image.naturalHeight, viewport.current?.clientWidth ?? 240, viewport.current?.clientHeight ?? 240));
     }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Die GIF-Datei ist nicht verfügbar.");
+      if (active) setError(errorMessage(reason, "Die GIF-Datei ist nicht verfügbar."));
     });
     return () => { active = false; controller.abort(); release(); };
   }, [file.id, file.originalFilename, animated]);

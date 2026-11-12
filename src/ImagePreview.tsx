@@ -7,6 +7,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { deliverSpriteExport, spriteExportPlan, packedSpriteExportPlan, type SpriteExportMode } from "./spriteExport.ts";
 import type { ModelResources } from "./loadModel";
 import AsepritePreview from "./AsepritePreview.tsx";
+import { errorMessage } from "./errorMessage.ts";
 
 export function ImageThumbnail({ fileId, available, filename }: { fileId: number; available: boolean; filename: string }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -82,7 +83,7 @@ function StaticImagePreview({ file }: { file: { id: number; originalFilename: st
       setImage(preview.image);
       setZoom(imageFit(preview.image.naturalWidth, preview.image.naturalHeight, viewport.current?.clientWidth ?? 240, viewport.current?.clientHeight ?? 240));
     }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Die Bilddatei ist nicht verfügbar.");
+      if (active) setError(errorMessage(reason, "Die Bilddatei ist nicht verfügbar."));
     });
     return () => { active = false; controller.abort(); exportJob.current?.controller.abort(); exportJob.current = null; if (snapshotId) void invoke("cancel_sprite_export", { snapshotId, dispose: true }).catch(() => {}); release(); };
   }, [file.id, file.originalFilename]);
@@ -93,7 +94,7 @@ function StaticImagePreview({ file }: { file: { id: number; originalFilename: st
     // A delayed cancellation must settle before another export can reuse this sheet pin.
     job.cancellation = Promise.resolve().then(() => invoke<void>("cancel_sprite_export", { snapshotId: job.snapshotId, dispose: false })).catch((reason: unknown) => {
       if (exportJob.current === job) {
-        const detail = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Die native Bestätigung ist nicht verfügbar.";
+        const detail = errorMessage(reason, "Die native Bestätigung ist nicht verfügbar.");
         setExportStatus(`Abbruch konnte nicht bestätigt werden: ${detail} Prüfe den Zielordner vor einem erneuten Export.`);
       }
     });
@@ -120,7 +121,7 @@ function StaticImagePreview({ file }: { file: { id: number; originalFilename: st
         (bytes) => invoke<{ status: string; path?: string }>("export_sprite", bytes));
       if (path && exportJob.current === job) setExportStatus(`Sprite-Export gespeichert: ${path}`);
     } catch (reason) {
-      if (exportJob.current === job && !controller.signal.aborted) setExportStatus(reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Sprite-Export fehlgeschlagen.");
+      if (exportJob.current === job && !controller.signal.aborted) setExportStatus(errorMessage(reason, "Sprite-Export fehlgeschlagen."));
     } finally {
       clearTimeout(timer);
       if (job.cancellation) await job.cancellation;

@@ -4,6 +4,7 @@ import { imageFit } from "./imageWorkflows.ts";
 import { loadPreviewImage } from "./imagePreviewUrl.ts";
 import { blendEntryResource } from "./modelResources.ts";
 import { modelTransportUrl, type ModelResources } from "./loadModel.ts";
+import { errorMessage } from "./errorMessage.ts";
 
 export default function BlendPreview({ file }: { file: { id: number; originalFilename: string } }) {
   const viewport = useRef<HTMLDivElement>(null);
@@ -30,7 +31,7 @@ export default function BlendPreview({ file }: { file: { id: number; originalFil
       setImage(preview.image);
       setZoom(imageFit(preview.image.naturalWidth, preview.image.naturalHeight, viewport.current?.clientWidth ?? 240, viewport.current?.clientHeight ?? 240));
     }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Das gespeicherte Blender-Bild ist nicht verfügbar.");
+      if (active) setError(errorMessage(reason, "Das gespeicherte Blender-Bild ist nicht verfügbar."));
     });
     return () => { active = false; controller.abort(); release(); };
   }, [file.id, file.originalFilename]);

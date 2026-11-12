@@ -8,6 +8,7 @@ type Pixels = { width: number; height: number; buffer: ArrayBuffer };
 type Job = { run: () => Promise<void>; cancel: () => void };
 const queued: Job[] = [];
 let decoding = false;
+let downscaling = Promise.resolve();
 
 async function next() {
   if (decoding) return;
@@ -55,6 +56,7 @@ function previewJob<T>(url: string, signal: AbortSignal, format: PreviewFormat, 
   if (queued.length >= 48) return Promise.reject(new Error("Die Bildvorschau ist ausgelastet. Wähle das Bild erneut aus."));
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const dispose = () => { signal.removeEventListener("abort", abort); clearTimeout(timer); };
     const abort = () => {
       controller.abort(signal.reason);
@@ -63,14 +65,13 @@ function previewJob<T>(url: string, signal: AbortSignal, format: PreviewFormat, 
       dispose();
       reject(signal.reason ?? new DOMException("Abgebrochen", "AbortError"));
     };
-    const timer = setTimeout(() => {
-      controller.abort();
-      const index = queued.indexOf(job);
-      if (index >= 0) queued.splice(index, 1);
-      dispose();
-      reject(new Error(`${format}-Vorschau: Zeitlimit von 30 Sekunden überschritten.`));
-    }, 30_000);
     const job: Job = { cancel: abort, run: async () => {
+      // The limit covers this job's own work, not time spent waiting behind other jobs.
+      timer = setTimeout(() => {
+        controller.abort();
+        dispose();
+        reject(new Error(`${format}-Vorschau: Zeitlimit von 30 Sekunden überschritten.`));
+      }, 30_000);
       try {
         const buffer = await readPreviewFile(url, controller.signal, format);
         controller.signal.throwIfAborted();
@@ -171,7 +172,9 @@ export function decodeGifUrl(url: string, signal: AbortSignal) {
 
 export async function imagePreviewUrl(url: string, filename: string, signal: AbortSignal, maxSide?: number) {
   signal.throwIfAborted();
-  if (!/\.(tga|gif|blend|ase|aseprite)$/i.test(filename)) return { url, release: () => {} };
+  const original = { url, release: () => {} };
+  const decoded = /\.(tga|gif|blend|ase|aseprite)$/i.test(filename);
+  if (!decoded && !(maxSide && /\.(png|jpe?g|webp)$/i.test(filename))) return original;
   const encode = async (canvas: HTMLCanvasElement, jobSignal: AbortSignal) => {
     jobSignal.throwIfAborted();
     let scaled: HTMLCanvasElement | null = null;
@@ -196,6 +199,26 @@ export async function imagePreviewUrl(url: string, filename: string, signal: Abo
       return blob;
     } finally { canvas.width = canvas.height = 0; if (scaled) scaled.width = scaled.height = 0; }
   };
+  if (!decoded) {
+    // Grid thumbnails: decode once, keep only a maxSide copy; serialized so a page of images does not decode at once.
+    const job = downscaling.then(async () => {
+      signal.throwIfAborted();
+      const response = await fetch(url, { signal });
+      if (!response.ok) throw new Error("Die Bilddatei ist nicht verfügbar.");
+      const bitmap = await createImageBitmap(await response.blob());
+      const ratio = maxSide! / Math.max(bitmap.width, bitmap.height);
+      if (ratio >= 1) { bitmap.close(); return null; }
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * ratio)); canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
+      try { canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height); } finally { bitmap.close(); }
+      return encode(canvas, signal);
+    });
+    downscaling = job.then(() => {}, () => {});
+    const small = await job;
+    if (!small) return original;
+    const preview = URL.createObjectURL(small);
+    return { url: preview, release: () => URL.revokeObjectURL(preview) };
+  }
   const blob = /\.gif$/i.test(filename)
     ? await previewJob(url, signal, "GIF", async (buffer, jobSignal) => {
       const preview = await loadGifBytes(buffer, jobSignal);

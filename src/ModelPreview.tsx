@@ -5,6 +5,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { fitModelCamera, loadModel, modelScene, type LoadedModel, type ModelResources } from "./loadModel";
 import { ModelAnimation } from "./modelAnimation";
 import "./modelAnimation.css";
+import { errorMessage } from "./errorMessage.ts";
 
 export type ModelExportSelection = { snapshotId: string; fileId: number; resourcePaths: string[] };
 
@@ -117,7 +118,7 @@ export default function ModelPreview({ file, onReady, visible = true }: {
             setClips(modelClips.map((clip, index) => ({ name: clip.name || `Clip ${index + 1}`, duration: clip.duration })));
             sync();
           } catch (reason: unknown) {
-            setAnimationError(reason instanceof Error ? reason.message : "Diese Animation wird nicht unterstützt.");
+            setAnimationError(errorMessage(reason, "Diese Animation wird nicht unterstützt."));
           }
         }
         fit.current = () => {
@@ -146,7 +147,7 @@ export default function ModelPreview({ file, onReady, visible = true }: {
         setStats(totals);
         if (!warnings.length && !replacements.length) onReady({ snapshotId: snapshot.snapshotId, fileId: snapshot.fileId, resourcePaths });
       } catch (reason: unknown) {
-        if (active) setErrors((previous) => [...previous, reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Die Modellvorschau ist nicht verfügbar."]);
+        if (active) setErrors((previous) => [...previous, errorMessage(reason, "Die Modellvorschau ist nicht verfügbar.")]);
       } finally {
         if (active) setLoading(false);
         else { modelView?.dispose(); loadedModel?.dispose(); }
