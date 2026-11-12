@@ -1507,3 +1507,7 @@ p {
 .audio-analysis > p { font-size: 11px; overflow-wrap: anywhere; }
 .audio-analysis progress { width: 100%; height: 8px; accent-color: var(--amber); }
 .audio-analysis-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+/* Papierkorb is a utility entry of the footer, not a package. */
+.sidebar .trash-link { min-height: 0; margin-top: 8px; padding: 10px 7px 2px; border: 0; border-top: 1px solid var(--line); border-radius: 0; color: #8292a4; }
+.sidebar .trash-link:hover:not(:disabled) { background: transparent; color: var(--amber); }
+.sidebar .trash-link + .storage { border-top: 0; margin-top: 0; }

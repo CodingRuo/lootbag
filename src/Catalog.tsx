@@ -11,7 +11,7 @@ import { folderPath, type ProjectFolder } from "./ProjectFolders";
 import { catalogSelection, nextCatalogIndex, type CatalogSelection, type SelectionMode } from "./catalogSelection";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import type { useAudioAnalysis } from "./useAudioAnalysis.ts";
-import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, number, type Act, type Asset, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, isAnimationOnly, number, type Act, type Asset, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type BulkAction = { kind: "addTags"; tags: string[] } | { kind: "addToFolder"; folderId: number } | { kind: "trash" };
 type BulkResult = { assetCount: number; fileCount: number };
@@ -346,6 +346,8 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
               const name = asset.imageGroup?.name ?? asset.name;
               const showFilename = !asset.imageGroup && firstFile.originalFilename.replace(/\.[^.]+$/, "") !== name;
               const checked = selection.keys.includes(assetKey(asset));
+              const animationOnly = isAnimationOnly(firstFile);
+              const traits = animationOnly ? " · Animation" : firstFile.modelTraits?.hasAnimation && firstFile.modelTraits.hasMesh ? " · animiert" : "";
               return <div role="listitem" key={assetKey(asset)} className={`asset-item ${assetKey(selected) === assetKey(asset) ? "selected" : ""} ${checked ? "bulk-selected" : ""}`}>
                 <input type="checkbox" className="asset-checkbox" checked={checked} onChange={() => {}} disabled={actionsDisabled || queryLoading}
                   aria-label={`${asset.imageGroup?.name ?? asset.name} auswählen${asset.imageGroup ? " · gesamte Bildgruppe" : " · alle Varianten"}`}
@@ -370,12 +372,12 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                     }}
                     aria-pressed={assetKey(selected) === assetKey(asset)}>
                     <span className={`asset-poster ${asset.kind === "image" ? "transparency-background" : ""}`}>
-                      {asset.kind === "image" ? <ImageThumbnail key={`${library.root}:${firstFile.id}:${firstFile.available}`} fileId={firstFile.id} available={firstFile.available} filename={firstFile.originalFilename} /> : asset.kind === "model" && (firstFile.format === "BLEND" || firstFile.sizeBytes <= MAX_MODEL_THUMBNAIL_BYTES) ? <ModelThumbnail queue={modelThumbnails} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available={firstFile.available} fallback={<Icon name="model" />} /> : <Icon name={asset.kind} />}
+                      {asset.kind === "image" ? <ImageThumbnail key={`${library.root}:${firstFile.id}:${firstFile.available}`} fileId={firstFile.id} available={firstFile.available} filename={firstFile.originalFilename} /> : animationOnly ? <Icon name="animation" /> : asset.kind === "model" && (firstFile.format === "BLEND" || firstFile.sizeBytes <= MAX_MODEL_THUMBNAIL_BYTES) ? <ModelThumbnail queue={modelThumbnails} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available={firstFile.available} fallback={<Icon name="model" />} /> : <Icon name={asset.kind} />}
                     </span>
                     <span className="asset-card-copy">
                       <strong>{wrapName(name)}</strong>
                       {showFilename && <span className="asset-filename">{firstFile.originalFilename}</span>}
-                      <span className="asset-facts">{asset.imageGroup ? `${asset.imageGroup.fileCount} ${asset.imageGroup.workflow === "material" ? "Maps" : "Frames"}` : `${firstFile.format}${asset.files.length > 1 ? ` +${asset.files.length - 1}` : ""} · ${bytes(firstFile.sizeBytes)}`}</span>
+                      <span className="asset-facts">{asset.imageGroup ? `${asset.imageGroup.fileCount} ${asset.imageGroup.workflow === "material" ? "Maps" : "Frames"}` : `${firstFile.format}${asset.files.length > 1 ? ` +${asset.files.length - 1}` : ""}${traits} · ${bytes(firstFile.sizeBytes)}`}</span>
                       {asset.imageGroup?.errors.length ? <span className="unavailable">Zuordnung prüfen</span> : null}
                       {!firstFile.available && <span className="unavailable">Nicht verfügbar</span>}
                     </span>

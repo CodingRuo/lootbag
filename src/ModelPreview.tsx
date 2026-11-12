@@ -110,6 +110,8 @@ export default function ModelPreview({ file, onReady, visible = true }: {
             player = { animation, start, stop, render, sync };
             playback.current = player;
             setClips(modelClips.map((clip, index) => ({ name: clip.name || `Clip ${index + 1}`, duration: clip.duration })));
+            // A bare skeleton shows nothing until it moves, so animation-only files start playing.
+            if (!totals.meshes) { animation.play(); start(); }
             sync();
           } catch (reason: unknown) {
             setAnimationError(errorMessage(reason, "Diese Animation wird nicht unterstützt."));

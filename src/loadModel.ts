@@ -279,7 +279,7 @@ export function modelScene(loaded: LoadedModel) {
   let skeleton: SkeletonHelper | null = null;
   if (!loaded.stats.meshes && loaded.stats.bones) {
     skeleton = new SkeletonHelper(loaded.model);
-    skeleton.setColors(new Color("#edb05c"), new Color("#cde3ef"));
+    skeleton.setColors(new Color("#ffc46e"), new Color("#ffffff"));
     if (!skeleton.geometry.getAttribute("position").count || modelPreviewBounds(loaded.model).getSize(new Vector3()).lengthSq() === 0) {
       skeleton.dispose();
       throw new Error("Das Skelett enthält keine darstellbaren Gelenkabstände.");

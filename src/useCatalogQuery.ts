@@ -4,7 +4,7 @@ import { assetKey, type ImageWorkflow } from "./imageWorkflows";
 import type { CatalogSelection } from "./catalogSelection";
 import type { ModelExportSelection } from "./ModelPreview";
 import { errorMessage } from "./errorMessage.ts";
-import { EMPTY_AUDIO_FILTERS, PAGE_SIZE, type Asset, type AssetKind, type AudioFilters, type CatalogPage, type CatalogType, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { EMPTY_AUDIO_FILTERS, PAGE_SIZE, type Asset, type AudioFilters, type CatalogPage, type CatalogType, type LibraryInfo, type Notice, type QueryKind, type Setter } from "./ui.tsx";
 
 type CatalogFilters = {
   folders: string[];
@@ -28,7 +28,7 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
   const [folderId, setFolderId] = useState<number | null>(null);
   const [originalFolder, setOriginalFolder] = useState<string | null>(null);
   const [format, setFormat] = useState<string | null>(null);
-  const [kind, setKind] = useState<AssetKind | null>(null);
+  const [kind, setKind] = useState<QueryKind | null>(null);
   const [workflow, setWorkflow] = useState<ImageWorkflow | null>(null);
   const [audioResultsStale, setAudioResultsStale] = useState(false);
   const [audioFilters, setAudioFilters] = useState(EMPTY_AUDIO_FILTERS);
@@ -177,7 +177,7 @@ export function useCatalogQuery({ library, revision, setSelected, setSelection, 
   function chooseType(value: CatalogType) {
     const grouped = value === "material" || value === "spriteSequence";
     setWorkflow(grouped ? value : null);
-    setKind(grouped ? "image" : value as AssetKind || null);
+    setKind(grouped ? "image" : value as QueryKind || null);
     if (value !== "sound") setAudioFilters(EMPTY_AUDIO_FILTERS);
     setFormat(null); setOffset(0); setSelected(null); setSelectedFileId(null); setModelSelection(null);
   }

@@ -4,8 +4,9 @@ import { folderPath, type ProjectFolder } from "./ProjectFolders";
 import { CATALOG_TYPES, Icon, number, type CatalogType, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 // Library heading, asset type, package and project folder filters, trash, library actions and storage location.
-export default function Sidebar({ library, catalogType, chooseType, packageId, folderId, projectFolders, actionsDisabled, filterPackage, filterFolder, trashItem, refreshSources, setNotice, setShowFolderDialog, setShowTrash, trashGeneration, openLibrary, referenceFolder }: {
+export default function Sidebar({ library, traitsPending, catalogType, chooseType, packageId, folderId, projectFolders, actionsDisabled, filterPackage, filterFolder, trashItem, refreshSources, setNotice, setShowFolderDialog, setShowTrash, trashGeneration, openLibrary, referenceFolder }: {
   catalogType: CatalogType;
+  traitsPending: boolean;
   chooseType: (value: CatalogType) => void;
   library: LibraryInfo;
   packageId: number | null;
@@ -42,10 +43,11 @@ export default function Sidebar({ library, catalogType, chooseType, packageId, f
           {CATALOG_TYPES.map((item) => {
             const active = item.value === "" ? allAssets : catalogType === item.value;
             const count = item.value === "" ? library.assetCount : library.kindCounts[item.value];
+            const detecting = item.value === "animation" && traitsPending;
             return <button key={item.value || "all"} data-type={item.value} className={`package-item ${active ? "active" : ""}`} aria-pressed={active}
-              aria-label={`${item.label} · ${number.format(count)}`}
+              aria-label={`${item.label} · ${number.format(count)}${detecting ? " · werden erkannt" : ""}`}
               onClick={() => { if (item.value === "") filterPackage(null); chooseType(item.value); }}>
-              <Icon name={item.icon} /><span>{item.label}</span><span className="count">{number.format(count)}</span>
+              <Icon name={item.icon} /><span>{item.label}</span><span className="count">{number.format(count)}{detecting && <span title="Animationen werden erkannt"> …</span>}</span>
             </button>;
           })}
         </nav>
@@ -102,7 +104,7 @@ export default function Sidebar({ library, catalogType, chooseType, packageId, f
       </div>
       <div className="sidebar-footer">
         <button className="package-item trash-link" onClick={() => { trashGeneration.current++; setNotice(null); setShowTrash(true); }} disabled={actionsDisabled}>
-          <Icon name="folder" /><span>Papierkorb</span>
+          <Icon name="trash" /><span>Papierkorb</span>
         </button>
         <div className="storage">
           <Icon name="library" />

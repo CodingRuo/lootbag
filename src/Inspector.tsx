@@ -14,7 +14,7 @@ import { TrashActions } from "./Trash";
 import { FolderMembershipEditor, type ProjectFolder } from "./ProjectFolders";
 import { nextInspectorTab, type InspectorTab } from "./inspectorTabs";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
-import { Icon, bytes, type Act, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { Icon, bytes, isAnimationOnly, type Act, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type ExportResult =
   | { status: "cancelled" | "replacementRequired" }
@@ -41,6 +41,7 @@ export default function Inspector({ library, query, selected, file, selectedPack
 }) {
   const { audioFilterCount, queryLoading, queryError, focusAssetId, focusFileId, setAudioResultsStale } = query;
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("preview");
+  const format = file && isAnimationOnly(file) ? `${file.format} · Animation` : file?.format;
   useEffect(() => { setInspectorTab("preview"); }, [assetKey(selected)]);
 
   function exportFile() {
@@ -154,7 +155,7 @@ export default function Inspector({ library, query, selected, file, selectedPack
                 <p>{file.originalFilename}</p>
               </div>
             </TrashActions>
-            <p className="detail-source">{selected.packageName} · {file.format}</p>
+            <p className="detail-source">{selected.packageName} · {format}</p>
             {!selected.imageGroup && selected.files.length > 1 && <section className="variants" aria-label="Formatvarianten">
               <label>
                 Formatvariante für Vorschau und Export
@@ -188,7 +189,7 @@ export default function Inspector({ library, query, selected, file, selectedPack
           <div className="inspector-scroll">
             <section id="preview-panel" className="inspector-panel preview" role="tabpanel" aria-labelledby="preview-tab" hidden={inspectorTab !== "preview"} tabIndex={0}>
               <div className="section-heading">
-                <h3>{selected.imageGroup ? selected.imageGroup.workflow === "material" ? "Material-Vorschau" : "Sprite-Animation" : file.kind === "sound" ? "Anhören" : file.kind === "image" ? file.format === "ASEPRITE" ? "Aseprite-Animation" : "Bild & Spritesheet" : file.format === "BLEND" ? "Gespeichertes Blender-Bild" : "3D-Vorschau"}</h3>
+                <h3>{selected.imageGroup ? selected.imageGroup.workflow === "material" ? "Material-Vorschau" : "Sprite-Animation" : file.kind === "sound" ? "Anhören" : file.kind === "image" ? file.format === "ASEPRITE" ? "Aseprite-Animation" : "Bild & Spritesheet" : file.format === "BLEND" ? "Gespeichertes Blender-Bild" : isAnimationOnly(file) ? "Animation" : "3D-Vorschau"}</h3>
                 <span>{selected.imageGroup ? `${selected.imageGroup.fileCount} Originaldateien` : file.format === "BLEND" ? "Eingebettetes Bild" : "Originaldatei"}</span>
               </div>
               {selected.imageGroup ? <ImageGroupPreview
@@ -253,7 +254,7 @@ export default function Inspector({ library, query, selected, file, selectedPack
                   <div className="file-facts">
                     <div>
                       <dt>Format</dt>
-                      <dd>{file.format}</dd>
+                      <dd>{format}</dd>
                     </div>
                     <div>
                       <dt>Dateigröße</dt>

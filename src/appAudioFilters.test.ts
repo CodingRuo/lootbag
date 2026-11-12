@@ -22,6 +22,7 @@ const mocks: Record<string, string> = {
     export const useId = () => "test-id";`,
   "react/jsx-runtime": `export const jsx = (type, props) => ({ type, props }); export const jsxs = jsx; export const Fragment = "fragment";`,
   "@tauri-apps/api/core": `export const isTauri = () => true; export const invoke = (...args) => globalThis.audioFilterHarness.invoke(...args); export const convertFileSrc = path => path; export class Channel {}`,
+  "@tauri-apps/api/event": `export const listen = async () => () => {};`,
   "@tauri-apps/api/webview": `export const getCurrentWebview = () => ({ onDragDropEvent: async () => () => {} });`,
   "@tauri-apps/plugin-dialog": `export const open = async () => "/owned/reopened"; export const save = async () => null; export const confirm = async () => true;`,
 };
@@ -46,15 +47,16 @@ const hooks = registerHooks({
 });
 const { default: App } = await import(new URL("App.tsx", sourceRoot).href);
 const { default: AudioPreview } = await import(new URL("AudioPreview.tsx", sourceRoot).href);
+const { default: ModelThumbnail } = await import(new URL("ModelThumbnail.tsx", sourceRoot).href);
 // App composes its regions from these function components; the harness renders them inline so their controls stay queryable.
 const regions = new Set(await Promise.all(["Header", "Onboarding", "Sidebar", "Catalog", "Inspector"]
   .map(async (name) => (await import(new URL(`${name}.tsx`, sourceRoot).href)).default)));
 
-const library = { root: "/owned/library", name: "Owned library", packages: [{ id: 1, name: "Fixture", relativePath: "fixture", assetCount: 41, sourceKind: "managed", available: true, externalRoot: null, tags: [] }], folders: [], assetCount: 41, kindCounts: { sound: 41, image: 0, model: 0, material: 0, spriteSequence: 0 } };
+const library = { root: "/owned/library", name: "Owned library", packages: [{ id: 1, name: "Fixture", relativePath: "fixture", assetCount: 41, sourceKind: "managed", available: true, externalRoot: null, tags: [] }], folders: [], assetCount: 41, kindCounts: { sound: 41, image: 0, model: 0, material: 0, spriteSequence: 0, animation: 0 } };
 const matchingFile = { id: 11, originalFilename: "match.mp3", relativePath: "match.mp3", originalFolder: "", format: "MP3", kind: "sound", sizeBytes: 50, audio: { status: "ready", durationSeconds: 1, sampleRate: 44100, channels: 2, codec: "mp3", error: null }, available: true };
 const alternateFile = { ...matchingFile, id: 12, originalFilename: "alternate.wav", format: "WAV", audio: { ...matchingFile.audio, durationSeconds: 9, channels: 1 } };
 const asset = { id: 1, name: "Sound", kind: "sound", packageId: 1, packageName: "Fixture", originalFolder: "", files: [matchingFile, alternateFile], tags: [], folderIds: [] };
-const page = (items = [asset], total = 141, offset = 0) => ({ items, total, offset, limit: 100 });
+const page = (items: any[] = [asset], total = 141, offset = 0) => ({ items, total, offset, limit: 100 });
 
 class Harness {
   private slots: any[] = [];
@@ -72,6 +74,7 @@ class Harness {
   populationCancelError: Error | null = null;
   analysisRequests: { resolve: (metadata: any) => void; reject: (error: unknown) => void }[] = [];
   component: () => Element = App;
+  audioTags: any = { status: "ready", title: null, artist: null, album: null, genre: null, message: null };
   invoke = (command: string, args: any) => {
     if (command === "prepare_audio_analysis") return new Promise((resolve, reject) => this.prepareRequests.push({ args, resolve, reject }));
     if (command === "run_audio_analysis") return new Promise((resolve, reject) => this.populationRequests.push({ args, resolve, reject }));
@@ -86,7 +89,7 @@ class Harness {
     if (command === "analyze_audio") return new Promise((resolve, reject) => this.analysisRequests.push({ resolve, reject }));
     if (command === "resolve_preview") return Promise.resolve("/owned/sound.wav");
     if (command === "audio_waveform") return Promise.resolve({ durationSeconds: 1, peaks: [] });
-    if (command === "audio_tags") return Promise.resolve({ status: "ready", title: null, artist: null, album: null, genre: null, message: null });
+    if (command === "audio_tags") return Promise.resolve(this.audioTags);
     if (command === "cancel_audio_waveform" || command === "cancel_audio_tags") return Promise.resolve(true);
     throw new Error(`Unexpected desktop operation: ${command}`);
   };
@@ -589,4 +592,36 @@ test("unmount cancels pending sound work and never publishes late boundary repli
   running.args.progress.onmessage({ requestId: prepared.args.requestId, total: 3, processed: 3, ready: 3, errors: 0, skipped: 0, cancelled: false });
   running.resolve({ requestId: prepared.args.requestId, total: 3, processed: 3, ready: 3, errors: 0, skipped: 0, cancelled: false }); await app.settle();
   assert.doesNotMatch(app.text(app.tree), /3 analysiert|Analyse abgeschlossen/);
+});
+
+test("the Animationen type queries animation kind and its animation-only cards skip model thumbnails", async () => {
+  const app = new Harness();
+  try {
+    await app.mount();
+    await app.chooseType("animation"); await app.runTimers();
+    assert.equal(app.latestRequest?.args.query.kind, "animation");
+    assert.match(app.text(app.find((node) => node.type === "h1")), /Animationen/);
+    const modelFile = { ...matchingFile, id: 21, originalFilename: "run.fbx", relativePath: "run.fbx", format: "FBX", kind: "model", audio: null };
+    const animation = { ...asset, id: 2, name: "Run", kind: "model", files: [{ ...modelFile, modelTraits: { hasMesh: false, hasAnimation: true } }] };
+    const mixed = { ...asset, id: 3, name: "Hero", kind: "model", files: [{ ...modelFile, id: 22, modelTraits: { hasMesh: true, hasAnimation: true } }] };
+    app.latestRequest!.resolve(page([animation, mixed], 2)); await app.settle();
+    const thumbnails = app.elements(app.tree).filter((node) => node.type === ModelThumbnail);
+    assert.deepEqual(thumbnails.map((node) => node.props.fileId), [22], "Only the mixed model requests a WebGL thumbnail");
+    assert.match(app.text(app.tree), /FBX · Animation ·/);
+    assert.match(app.text(app.tree), /FBX · animiert ·/);
+  } finally { app.dispose(); }
+});
+
+test("AudioPreview hides empty embedded tags and lists only populated ones", async () => {
+  for (const [tags, shown] of [[{}, []], [{ title: "Wind", genre: "Ambience" }, ["Titel", "Genre"]]] as const) {
+    const preview = new Harness();
+    preview.audioTags = { status: "ready", title: null, artist: null, album: null, genre: null, message: null, ...tags };
+    preview.component = () => AudioPreview({ file: matchingFile });
+    try {
+      await preview.settle();
+      const labels = preview.elements(preview.tree).filter((node) => node.type === "dt").map((node) => preview.text(node));
+      assert.equal(/Eingebettete Audio-Tags/.test(preview.text(preview.tree)), shown.length > 0);
+      assert.deepEqual(labels.filter((label) => ["Titel", "Künstler", "Album", "Genre"].includes(label)), shown);
+    } finally { preview.dispose(); }
+  }
 });

@@ -221,6 +221,8 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
   const auditionReady = ready && duration !== null && playbackError === null;
 
   const metadataError = analysisError ?? metadata?.error;
+  // Only populated tags are listed; the block disappears when a file has none.
+  const tagFields = ([["title", "Titel"], ["artist", "Künstler"], ["album", "Album"], ["genre", "Genre"]] as const).filter(([field]) => embeddedTags?.[field]);
   return (
     <>
       <audio
@@ -378,18 +380,18 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
       </div>
       {(loading || (!ready && !playbackError)) && <p className="detail-hint" role="status">{loading ? "Vorschau wird geladen …" : "Audiodaten werden geladen …"}</p>}
       {playbackError && <p className="inline-error" role="alert">{playbackError}</p>}
-      <div className="audio-properties">
+      {(tagsLoading || tagsError || embeddedTags?.message || tagFields.length > 0) && <div className="audio-properties">
         <h3>Eingebettete Audio-Tags</h3>
-        {embeddedTags && <dl>
-          {(["title", "artist", "album", "genre"] as const).map((field, index) => <div key={field}>
-            <dt>{["Titel", "Künstler", "Album", "Genre"][index]}</dt>
-            <dd>{embeddedTags[field] ?? (embeddedTags.status === "ready" ? "Nicht enthalten" : "Nicht verfügbar")}</dd>
+        {tagFields.length > 0 && <dl>
+          {tagFields.map(([field, label]) => <div key={field}>
+            <dt>{label}</dt>
+            <dd>{embeddedTags![field]}</dd>
           </div>)}
         </dl>}
         {tagsLoading && <p className="detail-hint" role="status">Eingebettete Tags werden gelesen …</p>}
         {embeddedTags?.message && <p className="detail-hint" role="status">{embeddedTags.message}</p>}
         {tagsError && <p className="inline-error" role="alert">Eingebettete Tags nicht verfügbar: {tagsError}</p>}
-      </div>
+      </div>}
     </>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import type { ModelExportSelection } from "./ModelPreview";
 import { TrashDialog, type TrashEntry } from "./Trash";
@@ -34,6 +35,7 @@ export default function App() {
   );
   const [showFolderDialog, setShowFolderDialog] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [traitsPending, setTraitsPending] = useState(false);
   const [selected, setSelected] = useState<Asset | null>(null);
   const [selection, setSelection] = useState<CatalogSelection>({ keys: [], anchor: null });
   const operationRunning = useRef(false);
@@ -88,6 +90,28 @@ export default function App() {
     return () => {
       active = false;
     };
+  }, []);
+
+  // Background model inspection: counts refresh at most once per second, the page once it finishes.
+  const catalogKind = useRef(query.kind);
+  catalogKind.current = query.kind;
+  useEffect(() => {
+    if (!native) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    let refreshed = 0;
+    listen<{ done: number; remaining: number }>("model-traits-progress", ({ payload }) => {
+      if (!active) return;
+      setTraitsPending(payload.remaining > 0);
+      if (!payload.done || (payload.remaining > 0 && Date.now() - refreshed < 1000)) return;
+      refreshed = Date.now();
+      invoke<LibraryInfo | null>("get_library")
+        .then((info) => { if (active && info && info.root === currentLibraryRoot.current) setLibrary(info); })
+        .catch(() => {});
+      // Sound results cannot change, and a revision bump would discard a running sound analysis.
+      if (payload.remaining === 0 && catalogKind.current !== "sound") setRevision((value) => value + 1);
+    }).then((stop) => { if (active) unlisten = stop; else stop(); }).catch(() => {});
+    return () => { active = false; unlisten?.(); };
   }, []);
 
   useEffect(() => { setModelSelection(null); }, [library?.root, file?.id, file?.available, selected?.imageGroup?.workflow, selectedPackage?.externalRoot]);
@@ -264,7 +288,7 @@ export default function App() {
         <Onboarding actionsDisabled={actionsDisabled} createLibrary={createLibrary} openLibrary={openLibrary} />
       ) : (
         <div className="workspace">
-          <Sidebar library={library} catalogType={query.workflow ?? query.kind ?? ""} chooseType={query.chooseType} openLibrary={openLibrary} referenceFolder={referenceFolder} packageId={packageId} folderId={folderId} projectFolders={projectFolders} actionsDisabled={actionsDisabled}
+          <Sidebar library={library} traitsPending={traitsPending} catalogType={query.workflow ?? query.kind ?? ""} chooseType={query.chooseType} openLibrary={openLibrary} referenceFolder={referenceFolder} packageId={packageId} folderId={folderId} projectFolders={projectFolders} actionsDisabled={actionsDisabled}
             filterPackage={query.filterPackage} filterFolder={query.filterFolder} trashItem={trashItem} refreshSources={refreshSources}
             setNotice={setNotice} setShowFolderDialog={setShowFolderDialog} setShowTrash={setShowTrash} trashGeneration={trashGeneration} />
           <Catalog library={library} query={query} audio={audio} selected={selected} setSelected={setSelected} selection={selection} setSelection={setSelection}

@@ -27,7 +27,11 @@ export type AssetFile = {
   sizeBytes: number;
   audio: AudioMetadata | null;
   available: boolean;
+  // null until the background inspection has classified this model file.
+  modelTraits?: { hasMesh: boolean | null; hasAnimation: boolean | null } | null;
 };
+// Animation-only model files: skeletal clips without any mesh.
+export const isAnimationOnly = (file: AssetFile) => file.modelTraits?.hasAnimation === true && file.modelTraits.hasMesh === false;
 export type Asset = {
   id: number;
   name: string;
@@ -48,9 +52,11 @@ export type LibraryInfo = {
   assetCount: number;
   kindCounts: KindCounts;
 };
-export type KindCounts = { sound: number; image: number; model: number; material: number; spriteSequence: number };
+export type KindCounts = { sound: number; image: number; model: number; material: number; spriteSequence: number; animation: number };
 // Sidebar asset types: "" is every asset; material and spriteSequence are grouped image workflows.
 export type CatalogType = "" | keyof KindCounts;
+// query_catalog kinds: "animation" selects animation-only model files (their asset kind stays "model").
+export type QueryKind = AssetKind | "animation";
 export const CATALOG_TYPES: { value: CatalogType; label: string; icon: keyof typeof icons }[] = [
   { value: "", label: "Alle Assets", icon: "library" },
   { value: "sound", label: "Sounds", icon: "sound" },
@@ -58,6 +64,7 @@ export const CATALOG_TYPES: { value: CatalogType; label: string; icon: keyof typ
   { value: "spriteSequence", label: "Sprite-Sequenzen", icon: "sprite" },
   { value: "material", label: "Materialien", icon: "material" },
   { value: "model", label: "3D-Modelle", icon: "model" },
+  { value: "animation", label: "Animationen", icon: "animation" },
 ];
 export type CatalogPage = {
   items: Asset[];
@@ -115,6 +122,8 @@ const icons = {
   image: <><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8" cy="8" r="1.5" /><path d="m3 17 6-6 4 4 3-3 5 5" /></>,
   model: <><path d="m12 3 9 5v8l-9 5-9-5V8Z" /><path d="m3 8 9 5 9-5M12 13v8" /></>,
   material: <><path d="m12 3 9 4.5-9 4.5-9-4.5Z" /><path d="m3 12 9 4.5 9-4.5M3 16.5 12 21l9-4.5" /></>,
+  animation: <><circle cx="15" cy="4.5" r="1.6" /><path d="M6 11.5 9.5 8h4l2.5 3h3M13.5 8 11 14l3 3-1 4M11 14l-2 4-4 1" /></>,
+  trash: <><path d="M4 7h16M10 11v6M14 11v6" /><path d="m6 7 1 13h10l1-13M9 7V4h6v3" /></>,
   sprite: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14M15 5v14" /></>,
   play: <path d="M7 4.5v15l12-7.5Z" />,
   pause: <path d="M8 5v14M16 5v14" />,
