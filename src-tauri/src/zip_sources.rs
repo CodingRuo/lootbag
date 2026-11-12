@@ -90,7 +90,7 @@ impl Library {
     /// Catalogues a ZIP in place from its directory; no entry data is read or extracted.
     pub fn reference_zip(&mut self, source: &Path) -> Result<AssetPackage> {
         let source = source
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("ZIP-Datei nicht verfügbar: {e}"))?;
         if source.starts_with(&self.root) {
             return Err("Bitte eine ZIP-Datei außerhalb der Bibliothek auswählen".into());
@@ -314,7 +314,7 @@ mod tests {
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             fs::create_dir_all(&path).unwrap();
-            Self(path.canonicalize().unwrap())
+            Self(path.canonical().unwrap())
         }
     }
     impl Drop for Workspace {
@@ -426,6 +426,10 @@ mod tests {
             ("parent", "a/../escape.wav"),
             ("absolute", "/escape.wav"),
             ("backslash", "..\\escape.wav"),
+            ("drive", "C:/escape.wav"),
+            ("drive-relative", "C:escape.wav"),
+            ("unc", "\\\\server\\share\\escape.wav"),
+            ("stream", "escape.wav:hidden"),
         ] {
             let archive = workspace.0.join(format!("{name}.zip"));
             write_zip(&archive, &[(entry, b"x"), ("ok.wav", b"ok")]);

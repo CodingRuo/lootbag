@@ -14,7 +14,7 @@ import { errorMessage } from "./errorMessage.ts";
 import { exportProject, memberRole } from "./projectExport.ts";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import type { useAudioAnalysis } from "./useAudioAnalysis.ts";
-import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, isAnimationOnly, number, type Act, type Asset, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, isAnimationOnly, mac, number, type Act, type Asset, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type BulkAction = { kind: "addTags"; tags: string[] } | { kind: "addToFolder"; folderId: number } | { kind: "trash" };
 type BulkResult = { assetCount: number; fileCount: number };
@@ -45,7 +45,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   setNotice: Setter<Notice | null>;
   trashItem: (kind: "package" | "file", id: number, name: string) => void;
   relinkSource: (sourcePackage: AssetPackage) => void;
-  importPackage: () => void;
+  importPackage: (zip?: boolean) => void;
 }) {
   const { text, setText, packageId, folderId, originalFolder, setOriginalFolder, format, setFormat, kind, workflow, tag, setTag, duplicates, setDuplicates,
     audioFilters, offset, setOffset, filters, page, queryLoading, queryError, audioFilterCount, audioFilterError,
@@ -481,14 +481,27 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
               : "Versuche einen anderen Suchbegriff oder passe die Filter an."}
           </p>
           {library.assetCount === 0 ? (
-            <button
-              className="button primary"
-              onClick={importPackage}
-              disabled={actionsDisabled}
-            >
-              <Icon name="plus" />
-              Erstes Paket importieren
-            </button>
+            mac ? (
+              <button
+                className="button primary"
+                onClick={() => importPackage()}
+                disabled={actionsDisabled}
+              >
+                <Icon name="plus" />
+                Erstes Paket importieren
+              </button>
+            ) : (
+              <>
+                <button className="button primary" onClick={() => importPackage(false)} disabled={actionsDisabled}>
+                  <Icon name="plus" />
+                  Ordner importieren
+                </button>
+                <button className="button primary" onClick={() => importPackage(true)} disabled={actionsDisabled}>
+                  <Icon name="plus" />
+                  ZIP importieren
+                </button>
+              </>
+            )
           ) : (
             (text || packageId !== null || folderId !== null || originalFolder !== null || format || kind || tag) && (
               <button

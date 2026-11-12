@@ -1,6 +1,6 @@
 use super::{
-    assets, modified_identity, path_text, unique_suffix, zip_sources, AssetKind, ExportOutcome,
-    Library, ReferencedLocation, Result,
+    assets, modified_identity, path_text, unique_suffix, zip_sources, AssetKind, Canonical,
+    ExportOutcome, Library, ReferencedLocation, Result,
 };
 use rusqlite::OptionalExtension;
 use std::{
@@ -314,7 +314,7 @@ impl Library {
         let parent = destination
             .parent()
             .ok_or("Exportziel hat keinen Ordner")?
-            .canonicalize()
+            .canonical()
             .map_err(|error| format!("Exportordner nicht verfügbar: {error}"))?;
         self.validate_export_parent(&parent)?;
         let name = destination

@@ -9,7 +9,7 @@ import { PackageInfoDialog } from "./PackageInfoDialog";
 import { savePackageInfo, type PackageInfo } from "./packageInfo.ts";
 import type { CatalogSelection } from "./catalogSelection";
 import { errorMessage } from "./errorMessage.ts";
-import { native, number, type Asset, type AssetPackage, type LibraryInfo, type Notice } from "./ui.tsx";
+import { ZIP_FILTER, native, number, type Asset, type AssetPackage, type LibraryInfo, type Notice } from "./ui.tsx";
 import { useCatalogQuery } from "./useCatalogQuery.ts";
 import { useAudioAnalysis } from "./useAudioAnalysis.ts";
 import { useImportQueue } from "./useImportQueue.ts";
@@ -21,7 +21,6 @@ import Inspector from "./Inspector";
 
 type EmptiedTrash = { packages: number; files: number; diskErrors: string[] };
 
-const ZIP_FILTER = [{ name: "ZIP-Archiv", extensions: ["zip"] }];
 
 export default function App() {
   const [library, setLibrary] = useState<LibraryInfo | null>(null);

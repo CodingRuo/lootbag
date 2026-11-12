@@ -32,6 +32,9 @@ pub(crate) use audio_tags::EmbeddedAudioTags;
 #[cfg(target_os = "macos")]
 #[path = "volume.rs"]
 mod volume;
+#[cfg(windows)]
+#[path = "volume_windows.rs"]
+mod volume;
 pub use audio::{AudioMetadata, AudioStatus, AudioWaveform, WaveformPeak};
 #[path = "audio_filters.rs"]
 mod audio_filters;
@@ -270,7 +273,7 @@ impl Library {
         fs::create_dir_all(root)
             .map_err(|e| format!("Bibliotheksordner kann nicht erstellt werden: {e}"))?;
         let root = root
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Speicherort nicht verfügbar: {e}"))?;
         let connection = Connection::open(root.join("catalog.sqlite3"))
             .map_err(|e| format!("Katalog kann nicht erstellt werden: {e}"))?;
@@ -293,7 +296,7 @@ impl Library {
 
     fn connect(root: &Path, flags: OpenFlags) -> Result<Self> {
         let root = root
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Bibliotheksordner nicht verfügbar: {e}"))?;
         let catalog = root.join("catalog.sqlite3");
         if fs::symlink_metadata(&catalog)
@@ -620,7 +623,7 @@ impl Library {
 
     pub fn reference_folder(&mut self, source: &Path) -> Result<AssetPackage> {
         let source = source
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Externe Quelle nicht verfügbar: {e}"))?;
         if !source.is_dir() || source.starts_with(&self.root) || self.root.starts_with(&source) {
             return Err("Bitte einen Quellordner außerhalb der Bibliothek auswählen".into());
@@ -708,7 +711,7 @@ impl Library {
 
     pub fn relink_source(&mut self, package_id: i64, source: &Path) -> Result<AssetPackage> {
         let source = source
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Ersatzquelle nicht verfügbar: {e}"))?;
         if source.starts_with(&self.root) || self.root.starts_with(&source) {
             return Err("Externe Quelle und Bibliothek dürfen nicht ineinander liegen".into());
@@ -863,9 +866,9 @@ impl Library {
             || trimmed.chars().count() > 256
             || name
                 .chars()
-                .any(|character| character.is_control() || character == '/' || character == '\\')
+                .any(|character| character.is_control() || matches!(character, '/' | '\\' | ':'))
         {
-            return Err("Der Ordnername muss 1 bis 256 Zeichen enthalten, ohne Steuerzeichen, Schrägstriche, . oder ..".into());
+            return Err("Der Ordnername muss 1 bis 256 Zeichen enthalten, ohne Steuerzeichen, Schrägstriche, Doppelpunkte, . oder ..".into());
         }
         if let Some(parent_id) = parent_id {
             let exists: bool = self
@@ -1750,7 +1753,7 @@ impl Library {
         let parent = destination
             .parent()
             .ok_or("Exportziel hat keinen Ordner")?
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Exportordner nicht verfügbar: {e}"))?;
         let filename = destination
             .file_name()
@@ -1886,10 +1889,27 @@ fn normalized_tags(tags: &[String]) -> Result<Vec<String>> {
     Ok(normalized)
 }
 
+/// `canonicalize` without Windows' `\\?\` prefix where a plain path is equivalent, so stored and
+/// displayed paths match dialog paths and the asset protocol scope.
+trait Canonical {
+    fn canonical(&self) -> io::Result<PathBuf>;
+}
+impl Canonical for Path {
+    fn canonical(&self) -> io::Result<PathBuf> {
+        dunce::canonicalize(self)
+    }
+}
+
 fn path_text(path: &Path) -> Result<String> {
-    path.to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| "Dateiname ist nicht als Unicode lesbar".into())
+    let text = path
+        .to_str()
+        .ok_or("Dateiname ist nicht als Unicode lesbar")?;
+    // Catalog paths are relative and always use '/'; Windows file names cannot contain '\\'.
+    #[cfg(windows)]
+    if path.is_relative() {
+        return Ok(text.replace('\\', "/"));
+    }
+    Ok(text.to_owned())
 }
 
 fn unique_suffix() -> String {
@@ -1997,7 +2017,12 @@ fn file_identity(path: &Path, metadata: &fs::Metadata) -> Result<String> {
         use std::os::unix::fs::MetadataExt;
         Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let _ = metadata;
+        volume::identity(path)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (path, metadata);
         Err("Externe Quellen werden auf diesem Betriebssystem noch nicht unterstützt".into())
@@ -3795,6 +3820,10 @@ mod tests {
             " .. ",
             "a/b",
             "a\\b",
+            "C:",
+            "C:Sounds",
+            "\\\\server\\share",
+            "Sounds:hidden",
             "line\nbreak",
             "\tSounds",
             "sound\0",
@@ -4657,7 +4686,7 @@ mod tests {
         assert_eq!(library.packages().unwrap()[0].tags, ["source"]);
         assert_eq!(
             library.resolve_preview(file_id).unwrap(),
-            moved.join("A001.wav").canonicalize().unwrap()
+            moved.join("A001.wav").canonical().unwrap()
         );
         let exported = workspace.path("selected.wav");
         library.export(file_id, Some(&exported), false).unwrap();
@@ -5337,7 +5366,7 @@ mod tests {
             assert_eq!(retained.original_filename, file.original_filename);
             assert_eq!(
                 library.resolve_preview(file.id).unwrap(),
-                root.join(&file.relative_path).canonicalize().unwrap()
+                root.join(&file.relative_path).canonical().unwrap()
             );
         }
     }
@@ -6589,18 +6618,18 @@ mod tests {
         let workspace = Workspace::new();
         let selected = workspace.path("selected");
         let library = Library::create(&selected).unwrap();
-        assert_eq!(library.root(), selected.canonicalize().unwrap());
+        assert_eq!(library.root(), selected.canonical().unwrap());
         drop(library);
         assert_eq!(
             Library::open(&selected).unwrap().root(),
-            selected.canonicalize().unwrap()
+            selected.canonical().unwrap()
         );
         let home = workspace.path("home");
         fs::create_dir(&home).unwrap();
         let automatic = Library::create_default(&home).unwrap();
         assert_eq!(
             automatic.root(),
-            home.join("Lootbag Library").canonicalize().unwrap()
+            home.join("Lootbag Library").canonical().unwrap()
         );
         drop(automatic);
         assert!(Library::open(&home.join("Lootbag Library")).is_ok());
@@ -6636,7 +6665,7 @@ mod tests {
         assert!(asset.files[0].available);
         assert_eq!(
             library.resolve_preview(asset.files[0].id).unwrap(),
-            sound.canonicalize().unwrap()
+            sound.canonical().unwrap()
         );
         #[cfg(unix)]
         {
@@ -6706,7 +6735,7 @@ mod tests {
         assert!(restored.available);
         assert_eq!(
             restored.external_root.as_deref(),
-            Some(moved_source.canonicalize().unwrap().to_str().unwrap())
+            Some(moved_source.canonical().unwrap().to_str().unwrap())
         );
         let available = library.query(CatalogQuery::default()).unwrap();
         assert_eq!(available.items[0].id, asset_id);
@@ -6752,7 +6781,7 @@ mod tests {
         assert!(library.relink_source(package.id, &unrelated).is_err());
         assert_eq!(
             library.resolve_preview(file_id).unwrap(),
-            sound.canonicalize().unwrap()
+            sound.canonical().unwrap()
         );
         assert!(library
             .relink_source(package.id, &workspace.path("missing"))
@@ -6919,7 +6948,7 @@ mod tests {
         let package = library.import_folder(&source).unwrap();
         assert_eq!(
             package.source_path,
-            source.canonicalize().unwrap().to_str().unwrap()
+            source.canonical().unwrap().to_str().unwrap()
         );
         drop(library);
         let moved = workspace.path("moved-library");
@@ -6928,12 +6957,12 @@ mod tests {
         let packages = library.packages().unwrap();
         assert_eq!(
             packages[0].source_path,
-            source.canonicalize().unwrap().to_str().unwrap()
+            source.canonical().unwrap().to_str().unwrap()
         );
         let page = library.query(CatalogQuery::default()).unwrap();
         assert_eq!(page.items.len(), 1);
         let resolved = library.resolve_preview(page.items[0].files[0].id).unwrap();
-        assert!(resolved.starts_with(moved.canonicalize().unwrap()));
+        assert!(resolved.starts_with(moved.canonical().unwrap()));
         assert_eq!(fs::read(resolved).unwrap(), b"portable original bytes");
         let exported = workspace.path("export.wav");
         library

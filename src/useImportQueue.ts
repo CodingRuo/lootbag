@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { errorMessage } from "./errorMessage.ts";
-import { bytes, native, number, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { ZIP_FILTER, bytes, native, number, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type ZipEstimate = {
   uncompressedBytes: number;
@@ -61,10 +61,16 @@ export function useImportQueue({ library, actionsDisabled, mounted, operationRun
     return () => { active = false; unlisten?.(); };
   }, []);
 
-  function importPackage() {
+  /** `zip` undefined: macOS' combined native picker; otherwise the dialog plugin's folder or ZIP picker. */
+  function importPackage(zip?: boolean) {
     beginImports("Paket zum Importieren auswählen …", async () => {
-      const selected = await invoke<ImportSource | null>("select_import_source");
-      return selected ? [selected] : [];
+      if (zip === undefined) {
+        const selected = await invoke<ImportSource | null>("select_import_source");
+        return selected ? [selected] : [];
+      }
+      const path = await open(zip ? { multiple: false, filters: ZIP_FILTER, title: "ZIP-Paket importieren" }
+        : { directory: true, multiple: false, title: "Ordner importieren" });
+      return path ? [{ path, isZip: zip }] : [];
     });
   }
 

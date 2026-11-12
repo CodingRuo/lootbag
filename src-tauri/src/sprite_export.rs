@@ -1,4 +1,4 @@
-use super::{path_text, ExportOutcome, Library, ModelResources, Result};
+use super::{path_text, Canonical, ExportOutcome, Library, ModelResources, Result};
 use std::{
     fs,
     path::{Component, PathBuf},
@@ -326,7 +326,7 @@ impl Library {
         let parent = destination
             .parent()
             .ok_or("Exportziel hat keinen Ordner")?
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Exportordner nicht verfügbar: {e}"))?;
         self.validate_export_parent(&parent)?;
         let name = destination

@@ -115,6 +115,9 @@ export type Act = (label: string, operation: (isCurrent: () => boolean) => Promi
 
 export const PAGE_SIZE = 100;
 export const native = isTauri();
+// macOS has one native picker for folder or ZIP; other systems pick them with separate buttons.
+export const mac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent);
+export const ZIP_FILTER = [{ name: "ZIP-Archiv", extensions: ["zip"] }];
 export const number = new Intl.NumberFormat("de-DE");
 const icons = {
   folder: <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z" />,

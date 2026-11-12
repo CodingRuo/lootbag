@@ -10,7 +10,7 @@ Source checks, native acceptance, and final review gates are recorded below.
 The application uses Tauri 2, React, TypeScript, and a local SQLite catalog.
 Install Node.js, pnpm, Rust, and the macOS Command Line Tools before building.
 The app targets macOS 15.4 or later for the accepted OGG/Vorbis preview path.
-Native acceptance runs on Apple Silicon; Windows delivery follows separately.
+Native acceptance runs on Apple Silicon; see [Windows](#windows) for its status.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -22,6 +22,23 @@ Create a production app bundle with:
 ```sh
 pnpm tauri build --bundles app
 ```
+
+## Windows
+
+Windows 10/11 x64 builds in CI (`.github/workflows/build.yml`: type check, tests,
+`cargo test` and an unsigned NSIS installer via `pnpm tauri build --bundles nsis`).
+It has not been tested on real Windows hardware yet. Differences from macOS:
+
+- Import uses two buttons, `Ordner importieren` and `ZIP importieren`, with the
+  standard dialogs; macOS keeps its single native folder-or-ZIP picker.
+- External folders and ZIPs are identified by volume serial number plus NTFS file
+  index (`win-volume:…`) instead of the macOS volume UUID and inode. On ReFS only
+  the legacy 64-bit part of the file ID is used.
+- Free space comes from `GetDiskFreeSpaceExW` instead of `df`.
+- OGG/Vorbis preview uses WebView2, which plays it natively; the macOS 15.4
+  minimum does not apply.
+- Catalog paths always use `/`; ZIP entries and project folder names containing
+  `\`, `:` (drive letters, UNC paths, NTFS streams) are rejected on every system.
 
 ## Library storage
 
@@ -396,7 +413,7 @@ material sets, sprite sequences and authored model/skeleton animation. Native
 default/minimum window checks, protected bundles and preservation evidence are
 recorded in the [editor acceptance](.scratch/asset-editor/acceptance.md).
 
-Windows, shared preview links, source-store integrations,
+Native Windows acceptance, shared preview links, source-store integrations,
 engine importers, and cross-computer synchronization are later additions.
 Project-oriented AI selection and export direction is recorded in
 [Product direction](docs/product-direction.md).

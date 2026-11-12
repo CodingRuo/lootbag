@@ -124,7 +124,7 @@ impl Library {
         let result = (|| {
             run.report()?;
             let source = source
-                .canonicalize()
+                .canonical()
                 .map_err(|e| format!("Quellordner nicht verfügbar: {e}"))?;
             if !source.is_dir() {
                 return Err("Bitte einen Quellordner auswählen".into());
@@ -186,7 +186,7 @@ impl Library {
                 return Err("Nicht genug Speicherplatz für ZIP-Inhalt und Reserve".into());
             }
             let source = source
-                .canonicalize()
+                .canonical()
                 .map_err(|e| format!("ZIP-Datei nicht verfügbar: {e}"))?;
             let name = path_text(
                 source
@@ -331,7 +331,9 @@ fn open_zip_file(file: fs::File) -> Result<ZipArchive<fs::File>> {
 pub(super) fn checked_zip_path(entry: &zip::read::ZipFile<'_, fs::File>) -> Result<PathBuf> {
     let path = entry.enclosed_name().ok_or("Unsicherer Dateipfad im ZIP")?;
     if path.as_os_str().is_empty()
-        || entry.name().contains('\\')
+        // '\\' (UNC, Windows separators) and ':' (drive letters, NTFS streams) on every OS,
+        // so one archive is judged the same everywhere.
+        || entry.name().contains(['\\', ':'])
         || Path::new(entry.name())
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
@@ -378,8 +380,11 @@ pub(super) fn required_space(bytes: u64, entries: u64) -> Result<u64> {
         .ok_or_else(|| "Paket ist zu groß".into())
 }
 
+#[cfg(windows)]
+pub(super) use super::volume::available_space;
+
+#[cfg(not(windows))]
 pub(super) fn available_space(root: &Path) -> Result<u64> {
-    // ponytail: macOS df; replace with the Windows volume API when Windows is delivered.
     let output = std::process::Command::new("/bin/df")
         .arg("-Pk")
         .arg(root)

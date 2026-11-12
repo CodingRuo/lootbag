@@ -18,7 +18,7 @@ impl Workspace {
         ));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
-        Self(path.canonicalize().unwrap())
+        Self(path.canonical().unwrap())
     }
     fn path(&self, name: &str) -> PathBuf {
         self.0.join(name)

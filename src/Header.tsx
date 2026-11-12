@@ -1,5 +1,5 @@
 import type { ImportProgress } from "./useImportQueue.ts";
-import { Icon, bytes, number, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { Icon, bytes, mac, number, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 // Drop hint, top bar with the import action, and the notice/import progress banners.
 export default function Header({ library, actionsDisabled, busy, notice, setNotice, dropHover, importActive, importProgress, cancelling, cancelImport, importPackage }: {
@@ -13,7 +13,7 @@ export default function Header({ library, actionsDisabled, busy, notice, setNoti
   importProgress: ImportProgress | null;
   cancelling: boolean;
   cancelImport: () => Promise<void>;
-  importPackage: () => void;
+  importPackage: (zip?: boolean) => void;
 }) {
   return (
     <>
@@ -41,15 +41,28 @@ export default function Header({ library, actionsDisabled, busy, notice, setNoti
         </div>
         {library ? (
           <div className="topbar-actions">
-            <button
-              className="button primary"
-              onClick={importPackage}
-              disabled={actionsDisabled}
-              title="Ordner oder ZIP-Datei importieren"
-            >
-              <Icon name="plus" />
-              Paket importieren
-            </button>
+            {mac ? (
+              <button
+                className="button primary"
+                onClick={() => importPackage()}
+                disabled={actionsDisabled}
+                title="Ordner oder ZIP-Datei importieren"
+              >
+                <Icon name="plus" />
+                Paket importieren
+              </button>
+            ) : (
+              <>
+                <button className="button primary" onClick={() => importPackage(false)} disabled={actionsDisabled}>
+                  <Icon name="plus" />
+                  Ordner importieren
+                </button>
+                <button className="button primary" onClick={() => importPackage(true)} disabled={actionsDisabled}>
+                  <Icon name="plus" />
+                  ZIP importieren
+                </button>
+              </>
+            )}
           </div>
         ) : (
           <span className="local-badge">

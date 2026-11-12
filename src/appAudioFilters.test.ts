@@ -463,7 +463,7 @@ test("a prepared sound job reports progress and retains partial measurements on 
     assert.equal(app.control("Fortschritt der Sound-Analyse").props.value, 5);
     assert.equal(app.control("Fortschritt der Sound-Analyse").props.max, 87);
     assert.match(app.text(app.tree), /3 analysiert.*1 Analysefehler.*1 übersprungen/);
-    assert.equal(app.find((node) => node.type === "button" && app.text(node).trim() === "Paket importieren").props.disabled, true, "File mutations stay inside the existing operation boundary");
+    assert.equal(app.find((node) => node.type === "button" && /^(Paket|Ordner) importieren$/.test(app.text(node).trim())).props.disabled, true, "File mutations stay inside the existing operation boundary");
     assert.equal(app.control("Assets durchsuchen").props.disabled, undefined, "Reading and search remain usable");
     await app.click("Analyse abbrechen");
     assert.deepEqual(app.populationCancellations, [requestId]);
@@ -472,7 +472,7 @@ test("a prepared sound job reports progress and retains partial measurements on 
     await app.settle(); await app.runTimers();
     assert.match(app.text(app.tree), /Abgebrochen.*6.*87/);
     assert.match(app.text(app.tree), /Bereits gespeicherte Analysen bleiben erhalten/);
-    assert.equal(app.find((node) => node.type === "button" && app.text(node).trim() === "Paket importieren").props.disabled, false);
+    assert.equal(app.find((node) => node.type === "button" && /^(Paket|Ordner) importieren$/.test(app.text(node).trim())).props.disabled, false);
     assert.equal(app.requests.length, catalogRequests, "Completed analysis must not trigger an implicit catalogue scan");
     await app.click("Analyseergebnisse aktualisieren"); await app.runTimers();
     assert.equal(app.requests.length, catalogRequests + 1);
@@ -525,7 +525,7 @@ test("a changed search cancels sound work and discards its late progress, succes
       await app.settle();
       assert.doesNotMatch(app.text(app.tree), /9 analysiert|Abgebrochen|Obsolete run failure/);
       assert.equal(app.elements(app.tree).some((node) => node.props["aria-label"] === "Fortschritt der Sound-Analyse"), false);
-      assert.equal(app.find((node) => node.type === "button" && app.text(node).trim() === "Paket importieren").props.disabled, false);
+      assert.equal(app.find((node) => node.type === "button" && /^(Paket|Ordner) importieren$/.test(app.text(node).trim())).props.disabled, false);
       await app.click("Analyse vorbereiten"); const replacement = app.prepareRequests[1];
       replacement.resolve({ requestId: replacement.args.requestId, total: 2 }); await app.settle();
       running.args.progress.onmessage({ requestId: prepared.args.requestId, total: 9, processed: 9, ready: 9, errors: 0, skipped: 0, cancelled: false }); await app.settle();

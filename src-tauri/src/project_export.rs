@@ -1,5 +1,6 @@
 use super::{
-    path_text, AssetFile, AssetKind, ExportOutcome, Library, ModelResources, PackageInfo, Result,
+    path_text, AssetFile, AssetKind, Canonical, ExportOutcome, Library, ModelResources,
+    PackageInfo, Result,
 };
 use serde_json::json;
 use std::{
@@ -194,7 +195,7 @@ impl Library {
     pub fn export_project(&self, folder_id: i64, parent: &Path) -> Result<ExportOutcome> {
         let (project, members) = self.project_members(folder_id)?;
         let parent = parent
-            .canonicalize()
+            .canonical()
             .map_err(|e| format!("Exportordner nicht verfügbar: {e}"))?;
         self.validate_export_parent(&parent)?;
         let root = parent.join(&project);
