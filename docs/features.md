@@ -87,18 +87,17 @@ member files. Every item is prepared on its own before the drag starts:
   nothing is left, the drag does not start and the notice says why.
 
 On macOS Lootbag owns the gesture natively, because AppKit only starts a drag
-from the real mouse event. While the pointer is over a card, the page reports
-that card to Rust: what it would drag (the card, or the whole selection if the
-card is selected), its rect in the webview and a growing version. The report
-is refreshed when the pointer moves onto another card, the selection or results
-change, or the catalog scrolls, and cleared when the pointer leaves the cards.
-A Lootbag event monitor sees the real mouse press and, synchronously, binds the
-pressed window's current card only if the press lies inside that card's rect
-(page zoom 1 is assumed); otherwise the press drags nothing. No page script
-runs between press and binding, and later reports never change a held press.
-Nothing is copied on a mere click: once the pointer moves 6 points with the
-button still held, the payload is prepared in the background, and the next
-move of that press after it is ready starts the drag from that real drag event.
+from the real mouse event. A Lootbag event monitor records each real mouse
+press with an id, its window and the press point in the webview (page zoom 1 is
+assumed). Nothing is copied on a mere click: once the pointer moves 6 points
+with the button still held, Rust asks that window's page which card lies under
+the press point. With the button still down the page shows what was pressed, so
+it answers at once from `elementFromPoint` and the current state: the card's
+file, or the whole selection if the card is selected, or nothing. Only the
+first answer for the still held press of that window is prepared in the
+background; answers for another press or window, late answers after release
+and repeated answers are dropped. The next move of that press after the payload
+is ready starts the drag from that real drag event.
 Releasing the button, any key (Escape, `⌘A`, arrows) and opening another
 library disarm the press, so a drag never starts after release or with a stale
 selection. WebKit's own image and text dragging is switched off inside cards.
@@ -115,8 +114,11 @@ Copies no drag used (refused, ready too late, never dragged, failed) are
 removed right away. All removal runs on a background thread, never inside the
 mouse or drag callbacks. The folder holds at most 2 GiB: a drag whose copies
 would exceed that is refused with a notice that the cache is full and is
-cleared at the next start. Drags of originals need no copies and are not
-affected.
+cleared at the next start. A copy or bundle that fails gives its share of the
+budget back. Drags of originals need no copies and are not affected.
+
+Lootbag runs as a single instance: a second launch focuses the open window and
+quits before it touches the drag-out cache or the catalog.
 
 ## ZIP-Pakete ohne Entpacken
 
