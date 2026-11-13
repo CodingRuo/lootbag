@@ -10,6 +10,7 @@ import { assetKey } from "./imageWorkflows";
 import { TrashActions } from "./Trash";
 import { folderPath, type ProjectFolder } from "./ProjectFolders";
 import { catalogSelection, nextCatalogIndex, storeCatalogView, storedCatalogView, type CatalogSelection, type CatalogView, type SelectionMode } from "./catalogSelection";
+import { dragOutHandlers } from "./dragOut.ts";
 import { createSoundWaveformQueue } from "./soundWaveforms.ts";
 import { createCatalogAudition, formatDuration, stopAuditionOnPagePlay } from "./audioAudition";
 import { errorMessage } from "./errorMessage.ts";
@@ -426,7 +427,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                 <TrashActions label={`Datei ${firstFile.originalFilename}`} disabled={actionsDisabled}
                   onTrash={() => trashItem("file", firstFile.id, firstFile.originalFilename)}
                   onOpenFile={(reveal) => openFile(firstFile, asset.packageId, reveal)}>
-                  <button className="asset-select" disabled={queryLoading} title={`${name}\n${firstFile.originalFilename}\n${asset.packageName} · ${folders}`}
+                  <button className="asset-select" disabled={queryLoading} {...dragOutHandlers(firstFile.id, actionsDisabled, (reason) => setNotice({ tone: "error", message: errorMessage(reason, "Die Datei kann nicht herausgezogen werden.") }))} title={`${name}\n${firstFile.originalFilename}\n${asset.packageName} · ${folders}`}
                     onClick={(event) => chooseAsset(asset, event.shiftKey ? (event.metaKey || event.ctrlKey ? "addRange" : "range") : event.metaKey || event.ctrlKey ? "toggle" : "single")}
                     onKeyUp={(event) => { if (sound && event.key === " ") event.preventDefault(); }}
                     onKeyDown={(event) => {
