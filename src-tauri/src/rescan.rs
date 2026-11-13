@@ -183,7 +183,12 @@ impl Library {
             }
         }
         // Derived data is recomputed by the backfill (models, hashes, auto-tags) or on open (audio, card waveforms).
-        for table in ["audio_metadata", "model_traits", "file_hashes", "audio_waveforms"] {
+        for table in [
+            "audio_metadata",
+            "model_traits",
+            "file_hashes",
+            "audio_waveforms",
+        ] {
             self.connection
                 .execute(
                     &format!(
