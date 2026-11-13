@@ -6,6 +6,7 @@ import { ImageThumbnail } from "./ImagePreview";
 import { FontThumbnail } from "./FontPreview.tsx";
 import type { ModelExportSelection } from "./ModelPreview";
 import ModelThumbnail, { createCatalogModelThumbnails } from "./ModelThumbnail";
+import { previewScope } from "./modelThumbnails.ts";
 import { assetKey } from "./imageWorkflows";
 import { TrashActions } from "./Trash";
 import { folderPath, type ProjectFolder } from "./ProjectFolders";
@@ -28,7 +29,7 @@ const MAX_MODEL_THUMBNAIL_BYTES = 32 * 1024 * 1024;
 const wrapName = (name: string) => name.replace(/[_-]/g, "$&\u200b");
 
 // Catalog column: search, filter/view tools, audio analysis, bulk actions, results and paging.
-export default function Catalog({ library, query, audio, selected, setSelected, selection, setSelection, setSelectedFileId, setModelSelection, filteredPackage, filteredFolderPath, projectFolders, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, openFile, relinkSource, importPackage }: {
+export default function Catalog({ library, query, audio, selected, setSelected, selection, setSelection, setSelectedFileId, setModelSelection, filteredPackage, filteredFolderPath, projectFolders, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, openFile, relinkSource, importPackage, previewGeneration }: {
   library: LibraryInfo;
   query: CatalogQuery;
   audio: ReturnType<typeof useAudioAnalysis>;
@@ -50,6 +51,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   openFile: (file: AssetFile, packageId: number, reveal: boolean) => void;
   relinkSource: (sourcePackage: AssetPackage) => void;
   importPackage: (zip?: boolean) => void;
+  previewGeneration: number;
 }) {
   const { text, setText, packageId, folderId, originalFolder, setOriginalFolder, format, setFormat, kind, workflow, tag, setTag, duplicates, setDuplicates,
     audioFilters, offset, setOffset, filters, page, queryLoading, queryError, audioFilterCount, audioFilterError,
@@ -67,7 +69,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
     async (fileId) => convertFileSrc(await invoke<string>("resolve_preview", { fileId })), setAuditionFileId, document));
   const [modelThumbnails] = useState(createCatalogModelThumbnails);
   const [soundWaveforms] = useState(() => createSoundWaveformQueue((fileId) => invoke<number[]>("card_waveform", { fileId })));
-  const thumbnailScope = library?.root ?? "";
+  const thumbnailScope = previewScope(library?.root ?? "", previewGeneration);
   const [bulkTags, setBulkTags] = useState("");
   const [bulkFolderId, setBulkFolderId] = useState<number | null>(null);
   const activeFilterCount = [originalFolder, format, tag].filter((value) => value !== null).length + Number(duplicates) + audioFilterCount;
@@ -449,7 +451,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                     }}
                     aria-pressed={assetKey(selected) === assetKey(asset)}>
                     <span className={`asset-poster ${asset.kind === "image" ? "transparency-background" : ""}`}>
-                      {asset.kind === "font" ? <FontThumbnail key={`${library.root}:${firstFile.id}`} file={firstFile} /> : asset.kind === "image" ? <ImageThumbnail key={`${library.root}:${firstFile.id}:${firstFile.available}`} fileId={firstFile.id} available={firstFile.available} filename={firstFile.originalFilename} /> : animationOnly ? <Icon name="animation" /> : asset.kind === "model" && (firstFile.format === "BLEND" || firstFile.sizeBytes <= MAX_MODEL_THUMBNAIL_BYTES) ? <ModelThumbnail queue={modelThumbnails} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available={firstFile.available} fallback={<Icon name="model" />} /> : sound && catalogView === "cards" && firstFile.available ? <ModelThumbnail queue={soundWaveforms} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available fallback={<Icon name="sound" />} /> : <Icon name={asset.kind} />}
+                      {asset.kind === "font" ? <FontThumbnail key={`${thumbnailScope}:${firstFile.id}`} file={firstFile} /> : asset.kind === "image" ? <ImageThumbnail key={`${thumbnailScope}:${firstFile.id}:${firstFile.available}`} fileId={firstFile.id} available={firstFile.available} filename={firstFile.originalFilename} /> : animationOnly ? <Icon name="animation" /> : asset.kind === "model" && (firstFile.format === "BLEND" || firstFile.sizeBytes <= MAX_MODEL_THUMBNAIL_BYTES) ? <ModelThumbnail queue={modelThumbnails} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available={firstFile.available} fallback={<Icon name="model" />} /> : sound && catalogView === "cards" && firstFile.available ? <ModelThumbnail queue={soundWaveforms} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available fallback={<Icon name="sound" />} /> : <Icon name={asset.kind} />}
                     </span>
                     <span className="asset-card-copy">
                       <strong>{wrapName(name)}</strong>

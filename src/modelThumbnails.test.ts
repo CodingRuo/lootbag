@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createModelThumbnailQueue, type ModelThumbnailResult } from "./modelThumbnails.ts";
+import { createModelThumbnailQueue, previewScope, type ModelThumbnailResult } from "./modelThumbnails.ts";
 
 const thumbnail = (id: number): ModelThumbnailResult => ({ url: `blob:${id}`, warning: null, error: null });
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -127,5 +127,25 @@ test("bounded cache preserves subscribed images, evicts unused URLs and can rest
   queue.request("library", "4", 4, (value) => observed.push(value));
   await flush();
   assert.deepEqual(observed, [thumbnail(4)]);
+  queue.dispose();
+});
+
+test("a rescan's preview generation renders the same file key again", async () => {
+  const rendered: number[] = [];
+  const revoked: string[] = [];
+  const queue = createModelThumbnailQueue(async (id) => { rendered.push(id); return thumbnail(rendered.length); }, (url) => revoked.push(url), () => {});
+  const results: (string | null)[] = [];
+  const key = "7:Fx/Hit.glb:3:true";
+  queue.request(previewScope("/lib", 0), key, 7, (value) => results.push(value.url));
+  await flush();
+  queue.request(previewScope("/lib", 0), key, 7, (value) => results.push(value.url));
+  await flush();
+  assert.deepEqual(rendered, [7], "cached within one generation");
+  queue.request(previewScope("/lib", 1), key, 7, (value) => results.push(value.url));
+  await flush();
+  assert.deepEqual(rendered, [7, 7]);
+  assert.deepEqual(results, ["blob:1", "blob:1", "blob:2"]);
+  assert.deepEqual(revoked, ["blob:1"], "the stale thumbnail is released");
+  assert.notEqual(previewScope("/lib", 0), previewScope("/lib", 1));
   queue.dispose();
 });

@@ -455,7 +455,9 @@ recomputes those files' derived data, but does not count them as "geändert",
 because an earlier change cannot be told from no change. Background passes
 (model traits, hashes) that read a file before a rescan changed it discard
 their result instead of storing it, and a cancelled pass stores nothing; the
-auto-tag pass reads names and writes tags in one catalog transaction. A renamed or moved file counts as missing plus new. Missing files keep
+auto-tag pass reads names and writes tags in one catalog transaction. After a
+manual or watched rescan, catalog thumbnails, card waveforms and the
+inspector preview are rendered again, also for files whose size stayed the same. A renamed or moved file counts as missing plus new. Missing files keep
 their catalog entry and annotations and show as unavailable until they return or
 are moved to the trash; trashed files stay in the trash. New files join an
 existing asset only when exactly one asset of the same folder, name and kind is

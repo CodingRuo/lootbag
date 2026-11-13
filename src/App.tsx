@@ -41,6 +41,8 @@ export default function App() {
   const [infoPackageId, setInfoPackageId] = useState<number | null>(null);
   const infoPackage = library?.packages.find((item) => item.id === infoPackageId);
   const [revision, setRevision] = useState(0);
+  // Advanced by rescans, which may change file content under the same id, path and size.
+  const [previewGeneration, setPreviewGeneration] = useState(0);
   const [traitsPending, setTraitsPending] = useState(false);
   const [selected, setSelected] = useState<Asset | null>(null);
   const [selection, setSelection] = useState<CatalogSelection>({ keys: [], anchor: null });
@@ -155,6 +157,7 @@ export default function App() {
             const info = await invoke<LibraryInfo>("get_library");
             if (currentLibraryRoot.current !== root) return;
             setLibrary(info);
+            setPreviewGeneration((value) => value + 1);
             refreshCatalog();
           }
           setNotice({ tone: notices.some((notice) => !notice.summary) ? "error" : "success", message: notices.map((notice) => notice.message).join(" ") });
@@ -289,6 +292,7 @@ export default function App() {
     void act("Paket wird neu eingelesen …", async () => {
       const summary = await invoke<RescanSummary>("rescan_package", { packageId: id });
       setLibrary(await invoke<LibraryInfo>("get_library"));
+      setPreviewGeneration((value) => value + 1);
       setRevision((value) => value + 1);
       const ambiguous = summary.ambiguous.length ? ` · Mehrdeutige Gruppen: ${summary.ambiguous.join(", ")}` : "";
       setNotice({ tone: "success", message: `${name} neu eingelesen · ${number.format(summary.added)} neu, ${number.format(summary.changed)} geändert, ${number.format(summary.missing)} fehlen${ambiguous}.` });
@@ -394,10 +398,10 @@ export default function App() {
           <Catalog library={library} query={query} audio={audio} selected={selected} setSelected={setSelected} selection={selection} setSelection={setSelection}
             setSelectedFileId={setSelectedFileId} setModelSelection={setModelSelection} filteredPackage={filteredPackage} filteredFolderPath={filteredFolderPath}
             projectFolders={projectFolders} actionsDisabled={actionsDisabled} act={act} setLibrary={setLibrary} setRevision={setRevision} setNotice={setNotice}
-            trashItem={trashItem} openFile={openFile} relinkSource={relinkSource} importPackage={imports.importPackage} />
+            trashItem={trashItem} openFile={openFile} relinkSource={relinkSource} importPackage={imports.importPackage} previewGeneration={previewGeneration} />
           <Inspector library={library} query={query} selected={selected} setSelected={setSelected} file={file} selectedPackage={selectedPackage} projectFolders={projectFolders}
             modelSelection={modelSelection} setModelSelection={setModelSelection} setSelectedFileId={setSelectedFileId} actionsDisabled={actionsDisabled}
-            act={act} setLibrary={setLibrary} setRevision={setRevision} refreshCatalog={refreshCatalog} setNotice={setNotice} trashItem={trashItem} openFile={openFile} relinkSource={relinkSource} editPackageInfo={editPackageInfo} />
+            act={act} setLibrary={setLibrary} setRevision={setRevision} refreshCatalog={refreshCatalog} setNotice={setNotice} trashItem={trashItem} openFile={openFile} relinkSource={relinkSource} editPackageInfo={editPackageInfo} previewGeneration={previewGeneration} />
         </div>
       )}
       {library && showFolderDialog && (

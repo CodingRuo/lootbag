@@ -9,6 +9,9 @@ type Entry = {
   controller?: AbortController;
 };
 
+/** Thumbnail queue scope and preview key prefix: a new library or a rescan starts fresh previews. */
+export const previewScope = (root: string, generation: number) => `${root}#${generation}`;
+
 export function createModelThumbnailQueue(
   render: (fileId: number, signal: AbortSignal) => Promise<ModelThumbnailResult>,
   revoke: (url: string) => void,

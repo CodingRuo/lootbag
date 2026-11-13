@@ -16,6 +16,7 @@ import { saveFolderMember, type FolderMember } from "./projectExport.ts";
 import { originFacts } from "./packageInfo.ts";
 import FontPreview from "./FontPreview.tsx";
 import { nextInspectorTab, type InspectorTab } from "./inspectorTabs";
+import { previewScope } from "./modelThumbnails.ts";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import { Icon, archiveName, bytes, isAnimationOnly, zipEntryPath, type Act, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
@@ -26,7 +27,7 @@ type ExportResult =
   | { status: "exported"; path: string; sizeBytes: number };
 
 // Detail aside for the selected asset: variants, preview/properties/origin tabs and export.
-export default function Inspector({ library, query, selected, setSelected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, refreshCatalog, setNotice, trashItem, openFile, relinkSource, editPackageInfo }: {
+export default function Inspector({ library, query, selected, setSelected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, refreshCatalog, setNotice, trashItem, openFile, relinkSource, editPackageInfo, previewGeneration }: {
   library: LibraryInfo;
   query: CatalogQuery;
   selected: Asset | null;
@@ -48,6 +49,7 @@ export default function Inspector({ library, query, selected, setSelected, file,
   openFile: (file: AssetFile, packageId: number, reveal: boolean) => void;
   relinkSource: (sourcePackage: AssetPackage) => void;
   editPackageInfo: (id: number) => void;
+  previewGeneration: number;
 }) {
   const { audioFilterCount, queryLoading, queryError, focusAssetId, focusFileId, setAudioResultsStale } = query;
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("preview");
@@ -243,20 +245,20 @@ export default function Inspector({ library, query, selected, setSelected, file,
                 <span>{selected.imageGroup ? `${selected.imageGroup.fileCount} Originaldateien` : file.format === "BLEND" ? "Eingebettetes Bild" : "Originaldatei"}</span>
               </div>
               {selected.imageGroup ? <ImageGroupPreview
-                key={`${library.root}:${selected.imageGroup.workflow}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} fileId={file.id}
+                key={`${previewScope(library.root, previewGeneration)}:${selected.imageGroup.workflow}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} fileId={file.id}
                 workflow={selected.imageGroup.workflow} visible={inspectorTab === "preview"} onReady={setModelSelection}
               /> : file.format === "BLEND" ? inspectorTab === "preview" && <BlendPreview
-                key={`${library.root}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
+                key={`${previewScope(library.root, previewGeneration)}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
               /> : file.kind === "model" ? <ModelPreview
-                key={`${library.root}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file} onReady={setModelSelection}
+                key={`${previewScope(library.root, previewGeneration)}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file} onReady={setModelSelection}
                 {...{ visible: inspectorTab === "preview" }}
               /> : inspectorTab === "preview" && (file.kind === "sound" ? <AudioPreview
-                key={`${library.root}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
+                key={`${previewScope(library.root, previewGeneration)}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
                 onAnalysisComplete={() => { if (audioFilterCount > 0) setAudioResultsStale(true); }}
               /> : file.kind === "font" ? <FontPreview
-                key={`${library.root}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
+                key={`${previewScope(library.root, previewGeneration)}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
               /> : <ImagePreview
-                key={`${library.root}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
+                key={`${previewScope(library.root, previewGeneration)}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
               />)}
             </section>
             <section id="properties-panel" className="inspector-panel" role="tabpanel" aria-labelledby="properties-tab" hidden={inspectorTab !== "properties"} tabIndex={0}>
