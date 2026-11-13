@@ -6,8 +6,7 @@ A dedicated game development asset library.
 
 ### Issue tracker
 
-Track specs and implementation tickets as local Markdown files in `.scratch/`.
-See `docs/agents/issue-tracker.md`.
+Track issues on GitHub: https://github.com/CodingRuo/lootbag/issues (`gh issue`).
 
 ### Triage labels
 
