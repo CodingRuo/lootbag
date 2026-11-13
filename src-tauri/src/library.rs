@@ -38,6 +38,8 @@ mod volume;
 pub use audio::{AudioMetadata, AudioStatus, AudioWaveform, WaveformPeak};
 #[path = "audio_filters.rs"]
 mod audio_filters;
+#[path = "audio_waveforms.rs"]
+mod audio_waveforms;
 pub(crate) use audio_filters::AudioCriteria;
 use std::{
     collections::HashMap,
@@ -313,8 +315,9 @@ impl Library {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| format!("Katalogformat nicht lesbar: {e}"))?;
-        // Version 2 marks the one-time macOS metadata repair; 3 adds folder member variants and roles.
-        if !(1..=3).contains(&version) {
+        // Version 2 marks the one-time macOS metadata repair; 3 adds folder member variants and roles;
+        // 4 adds card waveforms.
+        if !(1..=4).contains(&version) {
             return Err(format!("Nicht unterstütztes Katalogformat: {version}"));
         }
         connection
@@ -391,6 +394,9 @@ impl Library {
             )
             .map_err(|e| format!("Projektordner können nicht geöffnet werden: {e}"))?;
         search::create_schema(&connection)?;
+        connection
+            .execute_batch(audio_waveforms::SCHEMA)
+            .map_err(|e| format!("Wellenformen können nicht geöffnet werden: {e}"))?;
         let mut library = Self { root, connection };
         library.remove_import_leftovers();
         library.trim_zip_cache();
@@ -423,6 +429,12 @@ impl Library {
                     "BEGIN; {columns} PRAGMA user_version = 3; COMMIT;"
                 ))
                 .map_err(|e| format!("Projektordner können nicht aktualisiert werden: {e}"))?;
+        }
+        if version < 4 {
+            library
+                .connection
+                .pragma_update(None, "user_version", 4)
+                .map_err(|e| format!("Katalogformat kann nicht gespeichert werden: {e}"))?;
         }
         // Cheap when every source is migrated; offline legacy sources retry on the next activation.
         library.migrate_external_identities()?;
@@ -6617,7 +6629,7 @@ mod tests {
             catalog
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         catalog.execute("INSERT INTO asset_files(asset_id, original_filename, relative_path, format, size_bytes) SELECT asset_id, '._tone.wav', relative_path || '.sidecar/._tone.wav', 'WAV', 4 FROM asset_files", []).unwrap();
         drop(catalog);

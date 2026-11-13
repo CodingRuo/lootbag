@@ -251,6 +251,24 @@ Opening a sound again rereads its source; no new tag cache or catalog schema is
 introduced. Source and browser boundary checks passed; native macOS and Windows
 acceptance for this increment remain pending.
 
+## Waveforms on sound cards
+
+In the card view, sound cards show a small waveform of their first file variant,
+so one-shots and ambiences are recognizable without playing them. Only cards
+scrolled into view are analysed, one at a time, with the same limits as the
+inspector waveform (WAV/PCM, MP3, OGG/Vorbis, native FLAC, at most 512 MiB and
+30 seconds). Cards scrolled away before their turn are skipped; switching the
+library cancels the queue. The inspector's own waveform runs separately and is
+never cancelled by cards.
+
+Results, including failures, are kept in the catalog per source state, so an
+unchanged sound is not decoded again; a changed file or ZIP archive is analysed
+anew, and a result whose source changed during analysis is discarded. A ZIP entry
+is read through a temporary copy that is deleted right after analysis. Emptying
+the trash removes the stored waveform with its file. A failed card shows
+`Keine Vorschau` with the reason as tooltip. This adds catalog format 4; older
+catalogs are upgraded when opened, and older app versions cannot open it again.
+
 ## Sound discovery
 
 Open `Filter` and use `Gespeicherte Audioanalyse` to restrict sounds by duration

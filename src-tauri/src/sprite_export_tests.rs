@@ -191,7 +191,8 @@ impl Drop for Fixture {
 #[test]
 fn every_precommit_failure_leaves_no_final_folder_and_recovers_without_changing_sources() {
     let fixture = Fixture::new(false);
-    for phase in ["write"] {
+    {
+        let phase = "write";
         let destination = fixture.root.join(phase);
         let bytes = fixture.bytes(&destination, "frames");
         let payload = SpritePayload::parse(&bytes).unwrap();

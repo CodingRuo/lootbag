@@ -97,10 +97,7 @@ struct TagSource<'a> {
 impl TagSource<'_> {
     fn check(&self) -> io::Result<()> {
         if self.cancelled.load(Ordering::Relaxed) {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Audio-Tag-Analyse abgebrochen",
-            ))
+            Err(io::Error::other("Audio-Tag-Analyse abgebrochen"))
         } else if self.started.elapsed() > MAX_WORK {
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -509,11 +506,11 @@ fn id3_text(bytes: &[u8]) -> Result<()> {
             if bytes.len() & 1 != 0 {
                 return Err("ID3-UTF-16-Tag ist unvollständig".into());
             }
-            let units = bytes.chunks_exact(2).map(|pair| {
+            let units = bytes.as_chunks::<2>().0.iter().map(|pair| {
                 if little {
-                    u16::from_le_bytes(pair.try_into().unwrap())
+                    u16::from_le_bytes(*pair)
                 } else {
-                    u16::from_be_bytes(pair.try_into().unwrap())
+                    u16::from_be_bytes(*pair)
                 }
             });
             if char::decode_utf16(units).any(|value| value.is_err()) {

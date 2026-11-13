@@ -76,10 +76,7 @@ struct HeaderSource<'a> {
 impl HeaderSource<'_> {
     fn check(&self) -> io::Result<()> {
         if self.cancelled.load(Ordering::Relaxed) {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Audioanalyse abgebrochen",
-            ))
+            Err(io::Error::other("Audioanalyse abgebrochen"))
         } else if self.started.elapsed() > MAX_WORK {
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -201,29 +198,32 @@ impl Library {
         if AssetKind::for_format(&format) != Some(AssetKind::Sound) {
             return Err("Diese Asset-Datei ist kein Sound".into());
         }
-        let source = open_source(&path)?;
-        let guard = source.try_clone().map_err(|error| error.to_string())?;
-        let before = source_stamp(&guard.metadata().map_err(|error| error.to_string())?)?;
-        if before != source_stamp(&fs::symlink_metadata(&path).map_err(|error| error.to_string())?)?
-        {
-            return Err("Sound wurde vor der Analyse ersetzt".into());
-        }
-        if before.0 > MAX_AUDIO_BYTES {
-            return Err("Wellenform nicht verfügbar: Die Datei überschreitet 512 MiB. Wiedergabe bleibt möglich.".into());
-        }
-        let waveform = waveform(source, &path, cancelled)?;
-        let resolved = self.resolve_preview(file_id)?;
-        if resolved != path
-            || before != source_stamp(&guard.metadata().map_err(|error| error.to_string())?)?
-            || before
-                != source_stamp(
-                    &fs::symlink_metadata(resolved).map_err(|error| error.to_string())?,
-                )?
-        {
+        let waveform = path_waveform(&path, cancelled)?;
+        if self.resolve_preview(file_id)? != path {
             return Err("Sound wurde während der Wellenform-Analyse geändert".into());
         }
         Ok(waveform)
     }
+}
+
+/// Decodes the peaks of `path`; fails if the file is replaced or changed while it is read.
+pub(super) fn path_waveform(path: &Path, cancelled: &AtomicBool) -> Result<AudioWaveform> {
+    let source = open_source(path)?;
+    let guard = source.try_clone().map_err(|error| error.to_string())?;
+    let before = source_stamp(&guard.metadata().map_err(|error| error.to_string())?)?;
+    if before != source_stamp(&fs::symlink_metadata(path).map_err(|error| error.to_string())?)? {
+        return Err("Sound wurde vor der Analyse ersetzt".into());
+    }
+    if before.0 > MAX_AUDIO_BYTES {
+        return Err("Wellenform nicht verfügbar: Die Datei überschreitet 512 MiB. Wiedergabe bleibt möglich.".into());
+    }
+    let waveform = waveform(source, path, cancelled)?;
+    if before != source_stamp(&guard.metadata().map_err(|error| error.to_string())?)?
+        || before != source_stamp(&fs::symlink_metadata(path).map_err(|error| error.to_string())?)?
+    {
+        return Err("Sound wurde während der Wellenform-Analyse geändert".into());
+    }
+    Ok(waveform)
 }
 
 pub(super) fn open_source(path: &std::path::Path) -> Result<File> {

@@ -24,6 +24,8 @@ struct Session {
     model_preview: Mutex<PreviewState>,
     audio_waveform: Mutex<Option<(String, Arc<AtomicBool>)>>,
     audio_gate: Mutex<()>,
+    // Shared by all card waveform jobs; independent of the inspector's `audio_waveform`.
+    card_waveforms: Mutex<Option<Arc<AtomicBool>>>,
     audio_tags: Mutex<Option<(String, Arc<AtomicBool>)>>,
     audio_tags_gate: Mutex<()>,
     sprite_export: Mutex<Option<(String, Arc<AtomicBool>)>>,
@@ -357,10 +359,33 @@ impl Session {
         {
             cancelled.store(true, Ordering::Relaxed);
         }
+        if let Some(cancelled) = self
+            .card_waveforms
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            cancelled.store(true, Ordering::Relaxed);
+        }
         self.cancel_audio_tags(None)?;
         self.cancel_audio_analysis(None)?;
         self.replace_model_traits(None);
         Ok(())
+    }
+
+    /// The active root and the card waveform token, read together so a library switch cancels both.
+    fn card_waveform_job(&self) -> Result<(PathBuf, Arc<AtomicBool>)> {
+        let current = self.root.lock().unwrap_or_else(PoisonError::into_inner);
+        let root = current
+            .clone()
+            .ok_or("Bitte zuerst eine Bibliothek öffnen")?;
+        let token = self
+            .card_waveforms
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(Default::default)
+            .clone();
+        Ok((root, token))
     }
 
     /// Cancels the running background inspection and makes `next` the current one.
@@ -1459,6 +1484,12 @@ async fn audio_waveform(app: AppHandle, file_id: i64, request_id: String) -> Res
 }
 
 #[tauri::command]
+async fn card_waveform(app: AppHandle, file_id: i64) -> Result<Vec<u8>> {
+    let (root, cancelled) = app.state::<Session>().card_waveform_job()?;
+    background(move || Library::writable(&root)?.card_waveform(file_id, &cancelled)).await
+}
+
+#[tauri::command]
 fn cancel_audio_waveform(app: AppHandle, request_id: String) -> Result<()> {
     let state = app.state::<Session>();
     let mut current = state
@@ -1553,6 +1584,7 @@ pub fn run() {
             cancel_audio_tags,
             audio_waveform,
             cancel_audio_waveform,
+            card_waveform,
             model_resources,
             model_thumbnail_resources,
             image_group,
@@ -1828,6 +1860,21 @@ mod tests {
         assert!(replacement.load(Ordering::Relaxed));
         drop(held);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_library_switch_cancels_card_waveforms_but_not_the_next_library() {
+        let session = Session::default();
+        assert!(session.card_waveform_job().is_err());
+        session.set_root(PathBuf::from("/owned/first")).unwrap();
+        let (_, first) = session.card_waveform_job().unwrap();
+        let (_, shared) = session.card_waveform_job().unwrap();
+        assert!(Arc::ptr_eq(&first, &shared));
+        session.set_root(PathBuf::from("/owned/next")).unwrap();
+        assert!(first.load(Ordering::Relaxed));
+        let (root, next) = session.card_waveform_job().unwrap();
+        assert_eq!(root, PathBuf::from("/owned/next"));
+        assert!(!next.load(Ordering::Relaxed));
     }
 
     #[test]
