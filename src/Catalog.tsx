@@ -508,7 +508,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                 </button>
                 <button className="button primary" onClick={() => importPackage(true)} disabled={actionsDisabled}>
                   <Icon name="plus" />
-                  ZIP importieren
+                  ZIP/Unity importieren
                 </button>
               </>
             )

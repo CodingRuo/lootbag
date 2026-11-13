@@ -4,13 +4,14 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { draggingOut } from "./dragOut.ts";
 import { errorMessage } from "./errorMessage.ts";
-import { ZIP_FILTER, bytes, native, number, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { UNITY_FILTER, ZIP_FILTER, bytes, native, number, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type ZipEstimate = {
   uncompressedBytes: number;
   requiredBytes: number;
   availableBytes: number;
   entryCount: number;
+  skippedEntries: number;
   hasSpace: boolean;
 };
 type ImportSource = { path: string; isZip: boolean };
@@ -69,7 +70,7 @@ export function useImportQueue({ library, actionsDisabled, mounted, operationRun
         const selected = await invoke<ImportSource | null>("select_import_source");
         return selected ? [selected] : [];
       }
-      const path = await open(zip ? { multiple: false, filters: ZIP_FILTER, title: "ZIP-Paket importieren" }
+      const path = await open(zip ? { multiple: false, filters: [...ZIP_FILTER, ...UNITY_FILTER], title: "ZIP- oder Unity-Paket importieren" }
         : { directory: true, multiple: false, title: "Ordner importieren" });
       return path ? [{ path, isZip: zip }] : [];
     });
@@ -107,15 +108,23 @@ export function useImportQueue({ library, actionsDisabled, mounted, operationRun
     })();
   }
   async function importSource(owner: ImportOwner, source: ImportSource) {
+    // Unity packages are extracted as raw assets only; the summary names what was left out.
+    const unity = /\.unitypackage$/i.test(source.path);
+    const archive = unity ? "Unity-Paket" : "ZIP-Paket";
+    let skipped = "";
     if (source.isZip) {
-      setBusy("ZIP-Paket wird geprüft …");
+      setBusy(`${archive} wird geprüft …`);
       const estimate = await invoke<ZipEstimate>("estimate_zip", { source: source.path });
       if (!ownsImport(owner) || owner.stopped) return;
       if (!estimate.hasSpace) throw new Error(`Nicht genug Speicherplatz: ${bytes(estimate.requiredBytes)} mit Reserve benötigt, ${bytes(estimate.availableBytes)} verfügbar.`);
-      setBusy("ZIP-Paket wartet auf die Speicherbestätigung …");
+      if (unity) skipped = ` · Roh-Assets extrahiert, .meta-Dateien${estimate.skippedEntries ? ` und ${number.format(estimate.skippedEntries)} Skripte/Unity-YAML-Dateien` : ""} übersprungen`;
+      setBusy(`${archive} wartet auf die Speicherbestätigung …`);
+      const what = unity
+        ? `Roh-Asset-Extraktion: ${number.format(estimate.entryCount)} Dateien werden mit ihrer Ordnerstruktur entpackt. .meta-Dateien${estimate.skippedEntries ? `, ${number.format(estimate.skippedEntries)} Skripte und Unity-YAML-Dateien (Prefabs, Materialien, Szenen …)` : ", Skripte und Unity-YAML"} werden übersprungen; nichts wird als Unity-Projekt nachgebaut.`
+        : `${number.format(estimate.entryCount)} ZIP-Einträge werden vollständig entpackt.`;
       const proceed = await confirm(
-        `${number.format(estimate.entryCount)} ZIP-Einträge werden vollständig entpackt.\n\nInhalt: ${bytes(estimate.uncompressedBytes)}\nMit Speicherreserve: ${bytes(estimate.requiredBytes)}\nAm Bibliotheksort verfügbar: ${bytes(estimate.availableBytes)}\n\nDas Originalarchiv bleibt erhalten.`,
-        { title: "ZIP-Paket importieren?", okLabel: "Importieren", cancelLabel: "Abbrechen" },
+        `${what}\n\nInhalt: ${bytes(estimate.uncompressedBytes)}\nMit Speicherreserve: ${bytes(estimate.requiredBytes)}\nAm Bibliotheksort verfügbar: ${bytes(estimate.availableBytes)}\n\nDas Originalarchiv bleibt erhalten.`,
+        { title: `${archive} importieren?`, okLabel: "Importieren", cancelLabel: "Abbrechen" },
       );
       if (!ownsImport(owner) || owner.stopped) return;
       if (!proceed) { owner.skipped++; return; }
@@ -135,7 +144,7 @@ export function useImportQueue({ library, actionsDisabled, mounted, operationRun
       if (!ownsImport(owner)) return;
       if (info.root !== owner.root) throw new Error("Die aktive Bibliothek wurde geändert.");
       setLibrary(info); setRevision((value) => value + 1);
-      setNotice({ tone: "success", message: `${imported.name} importiert · ${number.format(imported.assetCount)} ${imported.assetCount === 1 ? "Asset" : "Assets"}.` });
+      setNotice({ tone: "success", message: `${imported.name} importiert · ${number.format(imported.assetCount)} ${imported.assetCount === 1 ? "Asset" : "Assets"}${skipped}.` });
     } catch (error: unknown) {
       if (owner.stopped) return;
       throw error;

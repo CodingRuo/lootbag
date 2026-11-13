@@ -297,6 +297,8 @@ fn unity_payload(relative: &str, location: &ReferencedLocation) -> Result<unity:
         guid: location.modified.clone(),
         size: location.size as u64,
         crc: location.identity.clone(),
+        // Only managed imports look at it.
+        yaml: false,
     })
 }
 

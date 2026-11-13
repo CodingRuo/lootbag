@@ -8,8 +8,8 @@ Windows 10/11 x64 builds on a Windows machine with `pnpm tauri build --bundles n
 (unsigned NSIS installer).
 It has not been tested on real Windows hardware yet. Differences from macOS:
 
-- Import uses two buttons, `Ordner importieren` and `ZIP importieren`, with the
-  standard dialogs; macOS keeps its single native folder-or-ZIP picker.
+- Import uses two buttons, `Ordner importieren` and `ZIP/Unity importieren`, with the
+  standard dialogs; macOS keeps its single native folder-or-archive picker.
 - External folders and ZIPs are identified by volume serial number plus NTFS file
   index (`win-volume:…`) instead of the macOS volume UUID and inode. On ReFS only
   the legacy 64-bit part of the file ID is used.
@@ -29,11 +29,11 @@ preserving original folders and companion files. Referenced sources retain
 their files at the external location. The catalog stores names, tags, and
 provenance without renaming original files.
 
-Use `Paket importieren` to select either a folder or a ZIP in the same native
-dialog. The whole package is copied through the importer; ZIP imports first show
-an extraction-space estimate and confirmation.
-Native drops of folders or ZIP files use the same progress, cancellation
-and ZIP confirmation; up to 32 sources are processed sequentially. A failure
+Use `Paket importieren` to select a folder, a ZIP or a `.unitypackage` in the
+same native dialog. The whole package is copied through the importer; ZIP and
+Unity imports first show an extraction-space estimate and confirmation.
+Native drops of folders, ZIP files or Unity packages use the same progress,
+cancellation and confirmation; up to 32 sources are processed sequentially. A failure
 stops the queue and reports any earlier successful imports.
 macOS companion files (`._*` and files inside `__MACOSX`) remain in the
 package storage but do not appear as assets. Existing catalogs are corrected
@@ -157,6 +157,19 @@ build, Apple M5 Max, 4096 payloads of 256 KiB, half incompressible and half
 low-entropy, 1 GiB decompressed / 795 MiB on disk): adding the package took
 1.8 s, the cold preview of the first payload 2 ms, of the last one 1.7 s, and a
 cached preview 0.1 ms.
+
+### Unity-Pakete importieren
+
+`Paket importieren` (or a drop) with a `.unitypackage` is a raw asset
+extraction into library storage, labelled so in the confirmation and the
+import notice. The package gets the same full scan, bounds and path checks as
+above; every payload is then written at its Unity `pathname` (folder structure
+kept, model companions like `.bin` included) in one forward pass, each checked
+against the scanned size and CRC. `.meta` files, scripts (`.cs`, `.js`, `.boo`,
+`.dll`, `.asmdef`, `.asmref`) and Unity YAML (payloads starting with `%YAML`:
+prefabs, materials, scenes, …) are skipped; the confirmation and the import
+notice give their count. Space estimate, progress and cancellation work as for
+ZIP imports; the scan from the estimate is reused by the import.
 
 ## Images, sprites and models
 

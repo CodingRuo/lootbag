@@ -12,12 +12,14 @@ pub struct ZipEstimate {
     pub required_bytes: u64,
     pub available_bytes: u64,
     pub entry_count: usize,
+    /// Unity packages only: payloads left out of a raw extraction (scripts, Unity YAML).
+    pub skipped_entries: usize,
     pub has_space: bool,
 }
 
 #[derive(Default)]
 pub struct ImportControl {
-    cancelled: AtomicBool,
+    pub(super) cancelled: AtomicBool,
 }
 
 impl ImportControl {
@@ -60,6 +62,10 @@ impl<'a> ImportRun<'a> {
                 current_path: None,
             },
         }
+    }
+
+    pub(super) fn control(&self) -> &'a ImportControl {
+        self.control
     }
 
     pub(super) fn check(&self) -> Result<()> {
@@ -107,6 +113,9 @@ impl Library {
         source: &Path,
         run: &mut ImportRun<'_>,
     ) -> Result<ZipEstimate> {
+        if unity_packages::is_unity_path(source) {
+            return unity_packages::estimate(&self.root, source);
+        }
         estimate_open_zip(&self.root, open_zip(source)?, run)
     }
 
@@ -183,16 +192,16 @@ impl Library {
             run.report()?;
             let estimate = self.inspect_zip(source, &mut run)?;
             if !estimate.has_space {
-                return Err("Nicht genug Speicherplatz für ZIP-Inhalt und Reserve".into());
+                return Err("Nicht genug Speicherplatz für Archivinhalt und Reserve".into());
             }
             let source = source
                 .canonical()
-                .map_err(|e| format!("ZIP-Datei nicht verfügbar: {e}"))?;
+                .map_err(|e| format!("Archiv nicht verfügbar: {e}"))?;
             let name = path_text(
                 source
                     .file_stem()
                     .map(Path::new)
-                    .ok_or("ZIP-Datei hat keinen Namen")?,
+                    .ok_or("Archiv hat keinen Namen")?,
             )?;
             run.progress.total_bytes = estimate.uncompressed_bytes;
             run.progress.total_entries = estimate.entry_count as u64;
@@ -200,29 +209,11 @@ impl Library {
             run.report()?;
             let (staging, relative_path) = self.prepare_import()?;
             let result = (|| {
-                let mut archive = open_zip(&source)?;
-                if archive.len() != estimate.entry_count {
-                    return Err("ZIP-Datei wurde während des Imports verändert".into());
-                }
-                let mut files = Vec::new();
-                for index in 0..archive.len() {
-                    run.check()?;
-                    let mut entry = archive
-                        .by_index(index)
-                        .map_err(|e| format!("ZIP-Eintrag nicht lesbar: {e}"))?;
-                    let path = checked_zip_path(&entry)?;
-                    run.progress.current_path = Some(path_text(&path)?);
-                    if entry.is_dir() {
-                        create_safe_directories(&staging, &path)?;
-                    } else {
-                        create_safe_directories(&staging, path.parent().unwrap_or(Path::new("")))?;
-                        let size = entry.size();
-                        copy_checked(&mut entry, &staging.join(&path), size, &mut run)?;
-                        record_asset(path, size, &mut files)?;
-                    }
-                    run.progress.completed_entries += 1;
-                    run.report()?;
-                }
+                let files = if unity_packages::is_unity_path(&source) {
+                    unity_packages::extract(&source, &staging, &mut run)?
+                } else {
+                    extract_zip(&source, &staging, estimate.entry_count, &mut run)?
+                };
                 self.finish_import(
                     name,
                     path_text(&source)?,
@@ -282,6 +273,38 @@ impl Library {
     }
 }
 
+fn extract_zip(
+    source: &Path,
+    staging: &Path,
+    entry_count: usize,
+    run: &mut ImportRun<'_>,
+) -> Result<Vec<ImportedFile>> {
+    let mut archive = open_zip(source)?;
+    if archive.len() != entry_count {
+        return Err("ZIP-Datei wurde während des Imports verändert".into());
+    }
+    let mut files = Vec::new();
+    for index in 0..archive.len() {
+        run.check()?;
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| format!("ZIP-Eintrag nicht lesbar: {e}"))?;
+        let path = checked_zip_path(&entry)?;
+        run.progress.current_path = Some(path_text(&path)?);
+        if entry.is_dir() {
+            create_safe_directories(staging, &path)?;
+        } else {
+            create_safe_directories(staging, path.parent().unwrap_or(Path::new("")))?;
+            let size = entry.size();
+            copy_checked(&mut entry, &staging.join(&path), size, run)?;
+            record_asset(path, size, &mut files)?;
+        }
+        run.progress.completed_entries += 1;
+        run.report()?;
+    }
+    Ok(files)
+}
+
 fn estimate_open_zip(
     root: &Path,
     mut archive: ZipArchive<fs::File>,
@@ -307,6 +330,7 @@ fn estimate_open_zip(
         required_bytes,
         available_bytes,
         entry_count: archive.len(),
+        skipped_entries: 0,
         has_space: available_bytes >= required_bytes,
     })
 }

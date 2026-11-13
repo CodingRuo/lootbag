@@ -49,6 +49,8 @@ pub(super) struct Payload {
     pub guid: String,
     pub size: u64,
     pub crc: String,
+    /// Starts with a `%YAML` header: a Unity-serialized asset (prefab, material, scene, ...).
+    pub yaml: bool,
 }
 
 /// Decompressed bytes from the archive start; fails past the byte budget or the deadline.
@@ -147,7 +149,7 @@ pub(super) fn checked_path(text: &str) -> Result<PathBuf> {
 struct Record {
     order: usize,
     pathname: Option<String>,
-    payload: Option<(u64, String)>,
+    payload: Option<(u64, String, bool)>,
 }
 
 /// Reads the whole archive within `limits` and lists its payloads in archive order. Rejects links
@@ -196,15 +198,20 @@ pub(super) fn scan(source: &Path, limits: &Limits) -> Result<Vec<Payload>> {
             }
             let size = entry.size();
             let mut hasher = crc32fast::Hasher::new();
+            let mut head = Vec::new();
             let mut buffer = vec![0; 1 << 16];
             loop {
                 match entry.read(&mut buffer).map_err(failed)? {
                     0 => break,
-                    read => hasher.update(&buffer[..read]),
+                    read => {
+                        hasher.update(&buffer[..read]);
+                        let missing = YAML_HEADER.len().saturating_sub(head.len()).min(read);
+                        head.extend_from_slice(&buffer[..missing]);
+                    }
                 }
             }
             record.order = count;
-            record.payload = Some((size, crc_text(hasher.finalize())));
+            record.payload = Some((size, crc_text(hasher.finalize()), head == YAML_HEADER));
         }
     }
     let mut records: Vec<_> = records.into_iter().collect();
@@ -226,12 +233,13 @@ pub(super) fn scan(source: &Path, limits: &Limits) -> Result<Vec<Payload>> {
                 "Unity-Paket enthält Pfade, die sich nur in Groß-/Kleinschreibung unterscheiden oder Datei und Ordner zugleich sind: {pathname}"
             ));
         }
-        if let Some((size, crc)) = record.payload {
+        if let Some((size, crc, yaml)) = record.payload {
             payloads.push(Payload {
                 path,
                 guid,
                 size,
                 crc,
+                yaml,
             });
         }
     }
@@ -294,6 +302,66 @@ pub(super) fn payloads(source: &Path, identity: &str) -> Result<Arc<Vec<Payload>
         return Err("Unity-Paket wurde verschoben oder verändert. Bitte neu verknüpfen".into());
     }
     Ok(payloads)
+}
+
+const YAML_HEADER: &[u8] = b"%YAML";
+/// Code a raw extraction leaves out, by extension.
+const SCRIPTS: [&str; 6] = ["cs", "js", "boo", "dll", "asmdef", "asmref"];
+
+/// Whether a managed import writes the payload: all but scripts and Unity YAML. `.meta` files
+/// are never payloads.
+fn is_raw(payload: &Payload) -> bool {
+    !payload.yaml
+        && !payload
+            .path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| SCRIPTS.iter().any(|s| s.eq_ignore_ascii_case(ext)))
+}
+
+/// Space needed to extract the raw payloads; the scan is remembered for the import that follows.
+pub(super) fn estimate(root: &Path, source: &Path) -> Result<ZipEstimate> {
+    let all = payloads(source, &archive_identity(source)?)?;
+    let raw: Vec<_> = all.iter().filter(|payload| is_raw(payload)).collect();
+    let uncompressed_bytes = raw
+        .iter()
+        .try_fold(0_u64, |sum, payload| sum.checked_add(payload.size))
+        .ok_or("Unity-Paket ist zu groß")?;
+    let required_bytes = imports::required_space(uncompressed_bytes, raw.len() as u64)?;
+    let available_bytes = imports::available_space(root)?;
+    Ok(ZipEstimate {
+        uncompressed_bytes,
+        required_bytes,
+        available_bytes,
+        entry_count: raw.len(),
+        skipped_entries: all.len() - raw.len(),
+        has_space: available_bytes >= required_bytes,
+    })
+}
+
+/// Writes the raw payloads at their Unity pathnames below `staging` in one forward pass.
+pub(super) fn extract(
+    source: &Path,
+    staging: &Path,
+    run: &mut ImportRun<'_>,
+) -> Result<Vec<ImportedFile>> {
+    let all = payloads(source, &archive_identity(source)?)?;
+    let mut cursor = Cursor::new(source);
+    let mut files = Vec::new();
+    for payload in all.iter().filter(|payload| is_raw(payload)) {
+        run.check()?;
+        run.progress.current_path = Some(path_text(&payload.path)?);
+        imports::create_safe_directories(staging, payload.path.parent().unwrap_or(Path::new("")))?;
+        let target = staging.join(&payload.path);
+        let cancel = &run.control().cancelled;
+        cursor.read(payload, cancel, |mut input| {
+            imports::copy_checked(&mut input, &target, payload.size, run)
+        })??;
+        imports::record_asset(payload.path.clone(), payload.size, &mut files)?;
+        run.progress.completed_entries += 1;
+        run.report()?;
+    }
+    Ok(files)
 }
 
 /// Passes size and CRC errors to the reader at the payload's end.
@@ -702,7 +770,7 @@ mod tests {
                 ("Assets/Tree/tree.gltf", Some(GLTF)),
                 ("Assets/Tree/tree.bin", Some(b"mesh bytes")),
                 ("Assets/Tree/tex/leaf.png", Some(b"leaf png")),
-                ("Assets/Tree/Tree.prefab", Some(b"prefab yaml")),
+                ("Assets/Tree/Tree.prefab", Some(b"%YAML 1.1\n--- !u!1 &1")),
                 ("Assets/Scripts/Tree.cs", Some(b"class Tree {}")),
             ],
         );
@@ -783,6 +851,74 @@ mod tests {
         library.empty_trash().unwrap();
         assert!(!root.join(".cache").join(&referenced.relative_path).exists());
         assert_eq!(fs::read(&package).unwrap(), package_bytes);
+    }
+
+    #[test]
+    fn a_managed_import_writes_raw_assets_in_their_folders_and_can_be_cancelled() {
+        let workspace = Workspace::new();
+        let package = forest(&workspace);
+        let root = workspace.0.join("library");
+        let mut library = Library::create(&root).unwrap();
+
+        let estimate = library.estimate_zip(&package).unwrap();
+        assert_eq!((estimate.entry_count, estimate.skipped_entries), (5, 2));
+        let mut last = None;
+        let imported = library
+            .import_zip_with_progress(&package, &ImportControl::default(), |p| last = Some(p))
+            .unwrap();
+
+        assert_eq!(
+            (imported.name.as_str(), imported.asset_count),
+            ("Forest", 4)
+        );
+        assert_eq!(imported.source_kind, "managed");
+        let stored = root.join(&imported.relative_path);
+        let mut written: Vec<_> = files_below(&stored)
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&stored)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        written.sort();
+        assert_eq!(
+            written,
+            [
+                "Assets/Sfx/copy.wav",
+                "Assets/Sfx/hit.wav",
+                "Assets/Tree/tex/leaf.png",
+                "Assets/Tree/tree.bin",
+                "Assets/Tree/tree.gltf"
+            ],
+            "no .meta, prefab or script"
+        );
+        assert_eq!(
+            fs::read(stored.join("Assets/Sfx/hit.wav")).unwrap(),
+            b"hit audio"
+        );
+        let last = last.unwrap();
+        assert_eq!(last.stage, "completed");
+        assert_eq!(last.completed_bytes, estimate.uncompressed_bytes);
+        assert_eq!(last.completed_entries, 5);
+        let (_, model) = file_id(&library, "tree.gltf");
+        assert!(library.model_resources(model).unwrap().errors.is_empty());
+
+        let control = ImportControl::default();
+        let error = library
+            .import_zip_with_progress(&package, &control, |p| {
+                if p.completed_entries == 1 {
+                    control.cancel();
+                }
+            })
+            .unwrap_err();
+        assert!(error.contains("abgebrochen"), "{error}");
+        write_package(&package, &[("Assets/../evil.wav", Some(b"x"))]);
+        assert!(library.import_zip(&package).is_err());
+        assert_eq!(library.packages().unwrap().len(), 1);
+        assert_eq!(fs::read_dir(root.join("packages")).unwrap().count(), 1);
     }
 
     #[test]

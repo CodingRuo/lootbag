@@ -17,7 +17,7 @@ export default function Header({ library, actionsDisabled, busy, notice, setNoti
 }) {
   return (
     <>
-      {dropHover && <div className="native-drop-hint" role="status">{library && !actionsDisabled ? "Ordner oder ZIP-Pakete hier zum Importieren ablegen" : library ? "Bitte den laufenden Vorgang abwarten" : "Bitte zuerst eine Bibliothek öffnen"}</div>}
+      {dropHover && <div className="native-drop-hint" role="status">{library && !actionsDisabled ? "Ordner, ZIP- oder Unity-Pakete hier zum Importieren ablegen" : library ? "Bitte den laufenden Vorgang abwarten" : "Bitte zuerst eine Bibliothek öffnen"}</div>}
       <header className="topbar">
         <div className="brand">
           <svg className="brand-mark" viewBox="0 0 64 64" aria-hidden="true">
@@ -46,7 +46,7 @@ export default function Header({ library, actionsDisabled, busy, notice, setNoti
                 className="button primary"
                 onClick={() => importPackage()}
                 disabled={actionsDisabled}
-                title="Ordner oder ZIP-Datei importieren"
+                title="Ordner, ZIP-Datei oder Unity-Paket importieren"
               >
                 <Icon name="plus" />
                 Paket importieren
@@ -59,7 +59,7 @@ export default function Header({ library, actionsDisabled, busy, notice, setNoti
                 </button>
                 <button className="button primary" onClick={() => importPackage(true)} disabled={actionsDisabled}>
                   <Icon name="plus" />
-                  ZIP importieren
+                  ZIP/Unity importieren
                 </button>
               </>
             )}

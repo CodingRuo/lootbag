@@ -690,12 +690,13 @@ fn describe_import_source(source: String) -> Result<ImportSource> {
     let path = Path::new(&source);
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|error| format!("Importquelle nicht verfügbar: {error}"))?;
+    // Unity packages take the archive path too; the backend tells them apart by extension.
     let is_zip = metadata.is_file()
-        && path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"));
+        && path.extension().is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("zip") || ext.eq_ignore_ascii_case("unitypackage")
+        });
     if !metadata.is_dir() && !is_zip {
-        return Err("Bitte einen Ordner oder eine ZIP-Datei auswählen".into());
+        return Err("Bitte einen Ordner, eine ZIP-Datei oder ein Unity-Paket auswählen".into());
     }
     Ok(ImportSource {
         path: source,
@@ -707,7 +708,7 @@ fn describe_import_source(source: String) -> Result<ImportSource> {
 async fn dropped_import_sources(app: AppHandle, sources: Vec<String>) -> Result<Vec<ImportSource>> {
     active_root(&app)?;
     if sources.is_empty() || sources.len() > 32 {
-        return Err("Bitte 1 bis 32 Ordner oder ZIP-Pakete gleichzeitig ablegen".into());
+        return Err("Bitte 1 bis 32 Ordner, ZIP- oder Unity-Pakete gleichzeitig ablegen".into());
     }
     for source in &sources {
         selected_path(&app, Path::new(source))?;

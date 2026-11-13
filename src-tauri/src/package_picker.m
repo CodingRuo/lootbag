@@ -7,9 +7,10 @@
 char *select_import_path(void *parent) {
     @autoreleasepool {
         NSOpenPanel *panel = [NSOpenPanel openPanel];
-        panel.message = @"Ordner oder ZIP-Paket zum Importieren auswählen";
+        panel.message = @"Ordner, ZIP- oder Unity-Paket zum Importieren auswählen";
         panel.prompt = @"Auswählen";
-        panel.allowedContentTypes = @[UTTypeFolder, UTTypeZIP];
+        panel.allowedContentTypes = @[UTTypeFolder, UTTypeZIP,
+                                       [UTType typeWithFilenameExtension:@"unitypackage"]];
         panel.allowsOtherFileTypes = NO;
         // Set these after the content types: macOS 27 also derives them from types.
         panel.canChooseFiles = YES;
