@@ -87,20 +87,28 @@ member files. Every item is prepared on its own before the drag starts:
   nothing is left, the drag does not start and the notice says why.
 
 On macOS Lootbag owns the gesture natively, because AppKit only starts a drag
-from the real mouse event. Pressing the primary button on a card prepares the
-payload right away in the background, bound to that press. A Lootbag event
-monitor sees the real mouse events; once the pointer moves 6 points with the
-button still held and the payload is ready, it starts the drag from that real
-drag event. Releasing the button, any key (Escape, `⌘A`, arrows) and opening
-another library disarm the press, so a drag never starts after release or
-with a stale selection; if preparation is not ready before the release,
-nothing happens and the next drag works. WebKit's own image and text dragging
-is switched off inside cards. On Windows the drag starts after the pointer
-moved past the threshold, as before.
+from the real mouse event. A Lootbag event monitor sees the real mouse events
+and numbers every press; before WebKit sees the press it tells the pressed
+webview that number, and the card's pointerdown sends it back with the cards it
+holds. Rust accepts the cards only for that same, still held press in the same
+window, so a delayed request from an earlier click never arms a later press.
+Nothing is copied on a mere click: once the pointer moves 6 points with the
+button still held, the payload is prepared in the background, and the next
+move of that press after it is ready starts the drag from that real drag event.
+Releasing the button, any key (Escape, `⌘A`, arrows) and opening another
+library disarm the press, so a drag never starts after release or with a stale
+selection; a payload that is ready too late or never dragged has its copies
+removed right away. WebKit's own image and text dragging is switched off
+inside cards. On Windows the drag starts after the pointer moved past the
+threshold, as before.
 
-Copies and bundles are staged in Lootbag's cache folder (`drag-out`) and are
-only removed when Lootbag next opens a library (on launch or when switching),
-never while the recipient may still be reading them.
+A self-contained model is handed over only if it is still the file whose
+companions were checked; a model that changed in between is left out.
+
+Copies and bundles are staged in Lootbag's cache folder (`drag-out`). The three
+most recent drags' copies are always kept; older ones are removed 10 minutes
+after their drag ended, so a recipient still copying after the drop can read
+them. Opening a library (on launch or when switching) clears the folder.
 
 ## ZIP-Pakete ohne Entpacken
 
