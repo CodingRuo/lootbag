@@ -1,9 +1,10 @@
 use crate::library::{
     AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform, BulkAction, BulkResult,
-    BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DuplicateCopy, EmbeddedAudioTags,
-    EmptiedTrash, ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress,
-    KindCounts, Library, ModelResources, PackageInfo, PackageInfoDetails, ProjectExportPlan,
-    ProjectFolder, RescanSummary, Result, SavedSearch, TrashEntry, WatchNotice, ZipEstimate,
+    BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DragSource, DragStage, DuplicateCopy,
+    EmbeddedAudioTags, EmptiedTrash, ExportOutcome, ImageGroup, ImageWorkflow, ImportControl,
+    ImportProgress, KindCounts, Library, ModelResources, PackageInfo, PackageInfoDetails,
+    ProjectExportPlan, ProjectFolder, RescanSummary, Result, SavedSearch, TrashEntry, WatchNotice,
+    ZipEstimate,
 };
 use std::{
     fs,
@@ -600,6 +601,10 @@ fn activate(app: &AppHandle, library: &Library) -> Result<LibraryInfo> {
     }
     app.state::<Session>().set_root(library.root().to_owned())?;
     crate::library::forget_verified_zip_cache();
+    // Earlier drags' staged copies are only removed here, never while a recipient may still read them.
+    if let Ok(staging) = drag_staging(app) {
+        let _ = fs::remove_dir_all(staging);
+    }
     start_backfill(app, library.root().to_owned());
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = fs::create_dir_all(&dir).and_then(|()| {
@@ -1287,17 +1292,37 @@ async fn open_file(app: AppHandle, file_id: i64, reveal: bool) -> Result<()> {
     .await
 }
 
-/// Drags one file out of the window as a copy; resolves with `true` once dropped, `false` when cancelled.
+#[derive(serde::Serialize)]
+struct DragOutcome {
+    dropped: bool,
+    problems: Vec<String>,
+}
+
+/// Lootbag's own folder for staged drag copies and model bundles.
+fn drag_staging(app: &AppHandle) -> Result<PathBuf> {
+    app.path()
+        .app_cache_dir()
+        .map(|dir| dir.join("drag-out"))
+        .map_err(|error| format!("Zwischenablage-Ordner nicht verfügbar: {error}"))
+}
+
+/// Drags the given items out of the window as copies; `dropped` is false when cancelled.
 #[tauri::command]
-async fn drag_file(window: tauri::WebviewWindow, file_id: i64) -> Result<bool> {
+async fn drag_assets(
+    window: tauri::WebviewWindow,
+    sources: Vec<DragSource>,
+) -> Result<DragOutcome> {
     let app = window.app_handle().clone();
     let root = active_root(&app)?;
-    let file = background(move || {
-        let file = Library::writable(&root)?.resolve_preview(file_id)?;
+    let staging = drag_staging(&app)?;
+    let DragStage { paths, problems } = background(move || {
+        let state = app.state::<Session>();
+        let _gate = file_gate(&state.import_gate)?;
+        let stage = Library::writable(&root)?.stage_drag(&sources, &staging)?;
         if active_root(&app)? != root {
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
-        Ok(file)
+        Ok(stage)
     })
     .await?;
     let (done, finished) = std::sync::mpsc::channel();
@@ -1307,7 +1332,7 @@ async fn drag_file(window: tauri::WebviewWindow, file_id: i64) -> Result<bool> {
         .run_on_main_thread(move || {
             let started = drag::start_drag(
                 &target,
-                drag::DragItem::Files(vec![file]),
+                drag::DragItem::Files(paths),
                 drag::Image::Raw(include_bytes!("../icons/128x128.png").to_vec()),
                 move |result, _| {
                     let _ = done.send(Ok(matches!(result, drag::DragResult::Dropped)));
@@ -1326,12 +1351,13 @@ async fn drag_file(window: tauri::WebviewWindow, file_id: i64) -> Result<bool> {
         })
         .map_err(|error| format!("Ziehen konnte nicht gestartet werden: {error}"))?;
     // All senders drop if the session never starts, so this cannot hang.
-    background(move || {
+    let dropped = background(move || {
         finished
             .recv()
             .map_err(|_| "Ziehen wurde vom System beendet".to_string())?
     })
-    .await
+    .await?;
+    Ok(DragOutcome { dropped, problems })
 }
 
 #[tauri::command]
@@ -1742,7 +1768,7 @@ pub fn run() {
             assign_variant,
             resolve_preview,
             open_file,
-            drag_file,
+            drag_assets,
             analyze_audio,
             prepare_audio_analysis,
             run_audio_analysis,

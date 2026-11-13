@@ -62,9 +62,12 @@ mod watch;
 pub use watch::{watch_due, WatchNotice};
 #[path = "bulk.rs"]
 mod bulk;
+#[path = "drag_out.rs"]
+mod drag_out;
 #[path = "project_export.rs"]
 mod project_export;
 pub use bulk::{BulkAction, BulkResult, BulkSelection};
+pub use drag_out::{DragSource, DragStage};
 pub use project_export::ProjectExportPlan;
 #[path = "package_info.rs"]
 mod package_info;

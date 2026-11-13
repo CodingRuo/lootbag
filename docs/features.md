@@ -71,6 +71,24 @@ never moved. Only the catalog file ID crosses to Rust, which resolves it like
 offline, changed or trashed files show a German error instead of a drag. A
 drop back onto Lootbag itself is ignored by the import drop zone.
 
+Dragging a card that is part of the catalog selection drags the whole
+selection with all variants; a material set or sprite sequence drags its
+member files. Every item is prepared on its own before the drag starts:
+
+- Files whose names are unique are handed over as originals. A repeated name
+  (compared case-insensitively) gets a renamed copy such as `Hit-2.wav`.
+- A model (except `.blend`, which drags as its original) becomes a bundle
+  folder named after it, built by the model export with the same companions
+  as the project export, so textures, `.bin` and `.mtl` keep their relative
+  paths.
+- Incomplete models, offline or trashed files and sources that change during
+  preparation are left out and listed in a German notice after the drag; if
+  nothing is left, the drag does not start.
+
+Copies and bundles are staged in Lootbag's cache folder (`drag-out`) and are
+only removed when Lootbag next opens a library (on launch or when switching),
+never while the recipient may still be reading them.
+
 ## ZIP-Pakete ohne Entpacken
 
 `ZIP einbinden` (sidebar, next to `Externen Ordner einbinden`) registers a ZIP

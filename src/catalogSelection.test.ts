@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { catalogSelection, nextCatalogIndex, storeCatalogView, storedCatalogView } from "./catalogSelection.ts";
+import { catalogSelection, dragSources, nextCatalogIndex, storeCatalogView, storedCatalogView } from "./catalogSelection.ts";
 
 const keys = ["asset:1", "asset:2", "material:3", "asset:4"];
 
@@ -38,4 +38,13 @@ test("the catalog view is remembered per type and falls back to cards when stora
   const broken = { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } };
   assert.doesNotThrow(() => storeCatalogView("animation", "list", broken));
   assert.equal(storedCatalogView("animation", broken), "cards");
+});
+
+test("dragging a selected card takes the whole selection, any other card only itself", () => {
+  const sound = { id: 1, files: [{ id: 11 }, { id: 12 }] };
+  const material = { id: 2, files: [{ id: 21 }], imageGroup: { workflow: "material" as const, fileId: 21, name: "Stone", fileCount: 2, errors: [] } };
+  const other = { id: 3, files: [{ id: 31 }, { id: 32 }] };
+  assert.deepEqual(dragSources(sound, [sound, material]), [{ fileId: 11 }, { fileId: 12 }, { fileId: 21, workflow: "material" }]);
+  assert.deepEqual(dragSources(other, [sound, material]), [{ fileId: 31 }]);
+  assert.deepEqual(dragSources(material, []), [{ fileId: 21, workflow: "material" }]);
 });
