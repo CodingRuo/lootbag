@@ -65,6 +65,8 @@ pub use bulk::{BulkAction, BulkResult, BulkSelection};
 pub use project_export::ProjectExportPlan;
 #[path = "package_info.rs"]
 mod package_info;
+#[path = "unity_packages.rs"]
+mod unity_packages;
 #[path = "zip_sources.rs"]
 mod zip_sources;
 pub use package_info::{PackageInfo, PackageInfoDetails};
@@ -82,8 +84,10 @@ pub struct AssetPackage {
     pub source_kind: String,
     pub available: bool,
     pub external_root: Option<String>,
-    /// External source that is a ZIP archive used in place.
+    /// External source that is an archive used in place (ZIP or Unity package).
     pub zip: bool,
+    /// The archive used in place is a Unity package.
+    pub unity: bool,
     pub tags: Vec<String>,
     pub info: PackageInfo,
 }
@@ -638,6 +642,7 @@ impl Library {
             available: true,
             external_root: None,
             zip: false,
+            unity: false,
             tags: Vec::new(),
             info: PackageInfo::default(),
         })
@@ -725,7 +730,8 @@ impl Library {
             asset_count: groups.len() as i64,
             source_kind: "external".into(),
             available: true,
-            zip: kind == "zip",
+            zip: kind != "external",
+            unity: kind == "unity",
             tags: Vec::new(),
             info: PackageInfo::default(),
         })
@@ -835,6 +841,7 @@ impl Library {
                     available,
                     external_root,
                     zip,
+                    unity: identity.as_deref().is_some_and(unity_packages::is_unity),
                     tags: Vec::new(),
                     info: PackageInfo::default(),
                 })
@@ -1093,7 +1100,7 @@ impl Library {
             .collect::<std::result::Result<_, _>>()
             .map_err(failed)?;
         let zip_caches: Vec<String> = transaction
-            .prepare("SELECT p.relative_path FROM trash t JOIN packages p ON p.id = t.package_id JOIN external_sources s ON s.package_id = p.id WHERE s.identity LIKE 'zip:%'")
+            .prepare("SELECT p.relative_path FROM trash t JOIN packages p ON p.id = t.package_id JOIN external_sources s ON s.package_id = p.id WHERE s.identity LIKE 'zip:%' OR s.identity LIKE 'unitypackage:%'")
             .map_err(failed)?
             .query_map([], |row| row.get(0))
             .map_err(failed)?

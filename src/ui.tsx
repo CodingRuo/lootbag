@@ -16,8 +16,9 @@ export type AssetPackage = {
   sourceKind: "managed" | "external";
   available: boolean;
   externalRoot: string | null;
-  // External source that is a ZIP archive used without extracting it.
+  // External source that is an archive used without extracting it (ZIP or Unity package).
   zip: boolean;
+  unity: boolean;
   tags: string[];
   info: PackageInfo;
 };
@@ -119,6 +120,9 @@ export const native = isTauri();
 // macOS has one native picker for folder or ZIP; other systems pick them with separate buttons.
 export const mac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent);
 export const ZIP_FILTER = [{ name: "ZIP-Archiv", extensions: ["zip"] }];
+export const UNITY_FILTER = [{ name: "Unity-Paket", extensions: ["unitypackage"] }];
+export type ArchiveKind = "zip" | "unity";
+export const archiveName = (source: AssetPackage) => source.unity ? "Unity-Paket" : "ZIP";
 export const number = new Intl.NumberFormat("de-DE");
 const icons = {
   folder: <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z" />,

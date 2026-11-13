@@ -93,6 +93,43 @@ it exceeds 4 GiB. It can be deleted by hand while the app is closed and is not
 needed in backups. To turn a ZIP package into a managed one, import the same
 ZIP with `Paket importieren`.
 
+## Unity-Pakete ohne Entpacken
+
+`Unity-Paket einbinden` (sidebar, next to `ZIP einbinden`) registers a
+`.unitypackage` in place for browsing its supported assets (sounds, images,
+models, fonts) as raw files. It is not a Unity project import: prefabs,
+materials, scenes and scripts are neither catalogued nor rebuilt, and Unity's
+import settings are ignored. The package row shows a `Unity` badge;
+`Herkunft` shows `Aus Unity-Paket <package>/<pathname>`.
+
+A Unity package is a gzip tar of `<guid>/asset` payloads with their
+`<guid>/pathname`, in any order, so adding one reads the whole package once.
+That scan is bounded (64 GiB decompressed, 1,000,000 tar entries, 4 KiB
+`pathname` files, 1024-byte paths with at most 255 bytes per name, 30 minutes)
+and rejects the whole package for links or special entries, a GUID with two
+payloads or pathnames, a payload without pathname, a supported file without
+payload, absolute, `.`/`..`, backslash, drive, UNC or stream (`:`) paths,
+Windows device names (`CON`, `nul.wav`, `COM1`, …), names ending in a dot or
+space, reserved or control characters, and paths that collide by case or as
+file and folder. A GUID with a pathname but no payload is a folder.
+
+Identity, offline state, relinking (choose the moved original), the extraction
+cache (`<library>/.cache/unity/<key>/<pathname>`, size and CRC checked), trash
+cleanup, duplicate hashing, model traits, previews, exports, model companions
+and project exports work as for ZIP packages. The GUIDs found by the scan are
+stored with the files, so a cache miss reads the package front to back once and
+extracts every requested model companion in that same pass; such extractions run
+one at a time, and a second request for the same file finds the first one's
+copy. Background passes read the package forward in catalog order without
+filling the cache. License and README hints are not read from Unity packages.
+
+Cold reads are proportional to the payload's position in the package, because
+gzip cannot seek. Measured with the ignored `cold_read_latency` test (release
+build, Apple M5 Max, 4096 payloads of 256 KiB, half incompressible and half
+low-entropy, 1 GiB decompressed / 795 MiB on disk): adding the package took
+1.8 s, the cold preview of the first payload 2 ms, of the last one 1.7 s, and a
+cached preview 0.1 ms.
+
 ## Images, sprites and models
 
 New imports and external references discover PNG/JPEG/WebP/TGA/GIF/Aseprite images and
@@ -387,6 +424,8 @@ it was added (unsafe, encrypted or colliding paths, unreadable archives), and an
 invalid, missing or meanwhile changed archive is refused and changes nothing.
 Entries are matched by path; changes are detected by size and CRC. The package's
 extracted cache copies are removed, so previews extract the new entries again.
+Unity packages cannot be rescanned yet: `Neu einlesen` refuses them with a
+message and changes nothing; add the updated package anew instead.
 
 ## Paketinfos und Credits
 

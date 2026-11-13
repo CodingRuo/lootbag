@@ -3,7 +3,7 @@ import { TrashActions } from "./Trash";
 import { folderPath, type ProjectFolder } from "./ProjectFolders";
 import type { SavedSearch } from "./useCatalogQuery.ts";
 import { errorMessage } from "./errorMessage.ts";
-import { CATALOG_TYPES, Icon, number, type CatalogType, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { CATALOG_TYPES, Icon, archiveName, number, type ArchiveKind, type CatalogType, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 // Library heading, asset type, package and project folder filters, trash, library actions and storage location.
 export default function Sidebar({ savedSearches, searchJson, applySavedSearch, deleteSavedSearch, library, traitsPending, catalogType, chooseType, packageId, folderId, projectFolders, actionsDisabled, filterPackage, filterFolder, trashItem, editPackageInfo, rescanPackage, refreshSources, setNotice, setShowFolderDialog, setShowTrash, trashGeneration, openLibrary, referenceFolder }: {
@@ -30,7 +30,7 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
   setShowTrash: Setter<boolean>;
   trashGeneration: RefObject<number>;
   openLibrary: () => void;
-  referenceFolder: (zip?: boolean) => void;
+  referenceFolder: (archive?: ArchiveKind) => void;
 }) {
   const allAssets = catalogType === "" && packageId === null && folderId === null;
   return (
@@ -91,7 +91,7 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
                 <button
                   className={`package-item ${packageId === item.id ? "active" : ""}`}
                   aria-pressed={packageId === item.id}
-                  aria-label={`${item.name} · ${number.format(item.assetCount)} Assets${item.sourceKind === "external" ? ` · ${item.zip ? "ZIP" : "Externe Quelle"} ${item.available ? "erreichbar" : "offline"}` : ""}`}
+                  aria-label={`${item.name} · ${number.format(item.assetCount)} Assets${item.sourceKind === "external" ? ` · ${item.zip ? archiveName(item) : "Externe Quelle"} ${item.available ? "erreichbar" : "offline"}` : ""}`}
                   title={`${item.name}${item.sourceKind === "external" ? ` · Externe Quelle ${item.available ? "erreichbar" : "offline"}` : ""}`}
                   onClick={() => filterPackage(item.id)}
                 >
@@ -100,7 +100,7 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
                   <span className="count">
                     {number.format(item.assetCount)}
                   </span>
-                  {item.zip && <span className="package-zip-badge" aria-hidden="true">ZIP</span>}
+                  {item.zip && <span className="package-zip-badge" aria-hidden="true">{item.unity ? "Unity" : "ZIP"}</span>}
                   {item.sourceKind === "external" && <span className={`package-source-status ${item.available ? "" : "unavailable"}`} aria-hidden="true">↗</span>}
                 </button>
               </TrashActions>
@@ -143,8 +143,10 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
             <div className="storage-actions">
               <button className="text-button" onClick={openLibrary} disabled={actionsDisabled}>Bibliothek öffnen</button>
               <button className="text-button" onClick={() => referenceFolder()} disabled={actionsDisabled}>Externen Ordner einbinden</button>
-              <button className="text-button" onClick={() => referenceFolder(true)} disabled={actionsDisabled}
+              <button className="text-button" onClick={() => referenceFolder("zip")} disabled={actionsDisabled}
                 title="Nutzt das Archiv an Ort und Stelle; Dateien werden erst bei Vorschau oder Export entpackt">ZIP einbinden</button>
+              <button className="text-button" onClick={() => referenceFolder("unity")} disabled={actionsDisabled}
+                title="Zeigt die unterstützten Assets eines .unitypackage an Ort und Stelle; Prefabs, Materialien und Skripte werden nicht nachgebaut">Unity-Paket einbinden</button>
             </div>
           </div>
         </div>

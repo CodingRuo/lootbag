@@ -72,6 +72,9 @@ impl Library {
             )
             .map_err(|_| "Nur aktive Pakete können neu eingelesen werden")?;
         if let Some((root, identity)) = &external {
+            if super::unity_packages::is_unity(identity) {
+                return Err("Unity-Pakete können noch nicht neu eingelesen werden. Bitte das geänderte Paket neu einbinden. Es wurde nichts geändert.".into());
+            }
             if zip_sources::is_zip(identity) {
                 return self.rescan_zip(package_id, &prefix, root);
             }

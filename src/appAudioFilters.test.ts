@@ -89,6 +89,7 @@ class Harness {
   savedSearchCalls: [string, any][] = [];
   annotations: any[] = [];
   references: any[] = [];
+  unityReference = false;
   audioTags: any = { status: "ready", title: null, artist: null, album: null, genre: null, message: null };
   commands: string[] = [];
   droppedHashes = 0;
@@ -107,7 +108,7 @@ class Harness {
       this.savedSearchCalls.push([command, args]);
       return Promise.resolve(command === "save_search" ? { id: 9, name: args.name.trim(), queryJson: args.queryJson } : undefined);
     }
-    if (command === "reference_zip") { this.references.push(args); return Promise.resolve({ ...library.packages[0], id: 2, name: "Forest", zip: true }); }
+    if (command === "reference_zip") { this.references.push(args); return Promise.resolve({ ...library.packages[0], id: 2, name: "Forest", zip: true, unity: this.unityReference }); }
     if (command === "annotate_asset") { this.annotations.push(args); return Promise.resolve(); }
     if (command === "set_package_info") { this.packageInfoSaves.push(args); return Promise.resolve(); }
     if (command === "open_library") return Promise.resolve({ ...library, root: "/owned/reopened" });
@@ -830,6 +831,23 @@ test("a ZIP package shows its badge and archive entry, and ZIP einbinden referen
     assert.deepEqual(app.references, [{ source: "/owned/reopened" }]);
     await app.settle();
     assert.match(app.text(app.tree), /Forest als ZIP eingebunden/);
+  } finally { app.dispose(); }
+});
+
+test("a Unity package shows its own badge and labels and is referenced like a ZIP", async () => {
+  const app = new Harness();
+  const unityPackage = { ...library.packages[0], relativePath: "unity/k1", sourceKind: "external", externalRoot: "/Assets/Forest.unitypackage", zip: true, unity: true };
+  app.libraryInfo = { ...library, packages: [unityPackage] };
+  app.unityReference = true;
+  try {
+    await app.settle(); await app.runTimers();
+    app.requests[0].resolve(page([{ ...asset, files: [{ ...matchingFile, relativePath: "unity/k1/Assets/Sounds/match.mp3" }] }])); await app.settle();
+    assert.equal(app.text(app.find((node) => node.props.className === "package-zip-badge")), "Unity");
+    assert.match(app.text(app.tree), /Aus Unity-Paket\s+\/Assets\/Forest\.unitypackage\/Assets\/Sounds\/match\.mp3/);
+    await app.click("Unity-Paket einbinden");
+    assert.deepEqual(app.references, [{ source: "/owned/reopened" }]);
+    await app.settle();
+    assert.match(app.text(app.tree), /Forest als Unity-Paket eingebunden/);
   } finally { app.dispose(); }
 });
 
