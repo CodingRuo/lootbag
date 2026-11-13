@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { PACKAGE_INFO_FIELDS, type PackageInfo, type PackageInfoDetails } from "./packageInfo.ts";
+import { adoptLicense, PACKAGE_INFO_FIELDS, type LicenseSuggestion, type PackageInfo, type PackageInfoDetails } from "./packageInfo.ts";
 import type { AssetPackage, Notice } from "./ui.tsx";
 
 // "Paketinfo bearbeiten…": shop, link, licence, author, purchase date, version and notes of one package.
@@ -14,11 +14,14 @@ export function PackageInfoDialog({ pkg, disabled, notice, onSave, onClose }: {
   const dialog = useRef<HTMLDialogElement>(null);
   const [form, setForm] = useState(() => Object.fromEntries(PACKAGE_INFO_FIELDS.map(({ key }) => [key, pkg.info[key] ?? ""])) as Record<keyof PackageInfo, string>);
   const [licenseFiles, setLicenseFiles] = useState<string[]>([]);
+  const [suggestions, setSuggestions] = useState<LicenseSuggestion[]>([]);
   useEffect(() => { dialog.current?.showModal(); }, []);
   useEffect(() => {
     let active = true;
     invoke<PackageInfoDetails>("get_package_info", { packageId: pkg.id })
-      .then((details) => { if (active) setLicenseFiles(details.licenseFiles); })
+      .then((details) => {
+        if (active) { setLicenseFiles(details.licenseFiles); setSuggestions(details.licenseSuggestions); }
+      })
       .catch(() => {});
     return () => { active = false; };
   }, [pkg.id]);
@@ -44,6 +47,14 @@ export function PackageInfoDialog({ pkg, disabled, notice, onSave, onClose }: {
           </label>;
         })}
         {licenseFiles.length > 0 && <p className="detail-hint">Im Paket gefunden: {licenseFiles.join(", ")}</p>}
+        {suggestions.map(({ license, file, excerpt }) => (
+          <p key={license} className="detail-hint license-suggestion">
+            <span>Vorschlag: {license} – aus {file}: »{excerpt}«</span>
+            <button type="button" className="button outlined" disabled={disabled || form.license.trim() !== ""}
+              title={form.license.trim() ? "Das Lizenzfeld ist bereits ausgefüllt" : undefined}
+              onClick={() => setForm((current) => adoptLicense(current, license))}>Übernehmen</button>
+          </p>
+        ))}
         {notice?.tone === "error" && <p className="inline-error" role="alert">{notice.message}</p>}
         <button className="button primary" type="submit" disabled={disabled}>Speichern</button>
       </form>

@@ -1,6 +1,9 @@
-use super::{Library, Result};
+use super::{file_identity, zip_sources, Library, Result};
 use rusqlite::{params, OptionalExtension};
 use std::{fs, path::Path};
+#[path = "license_detection.rs"]
+mod license_detection;
+pub use license_detection::LicenseSuggestion;
 
 /// User-entered record of where a package came from and under which licence; every field optional.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -21,8 +24,10 @@ pub struct PackageInfo {
 pub struct PackageInfoDetails {
     #[serde(flatten)]
     pub info: PackageInfo,
-    /// Licence/readme files near the package root (relative paths), only for managed packages.
+    /// Licence/readme files near the package root (relative paths); empty if the source is unavailable.
     pub license_files: Vec<String>,
+    /// Licences named in the plain-text ones; several entries mean the package names several.
+    pub license_suggestions: Vec<LicenseSuggestion>,
 }
 
 const MAX_SCAN_ENTRIES: usize = 2_000;
@@ -52,22 +57,51 @@ impl Library {
     }
 
     pub fn get_package_info(&self, package_id: i64) -> Result<PackageInfoDetails> {
-        // External sources are skipped: reading their tree goes beyond what is catalogued.
-        let directory: Option<String> = self
+        let source: Option<(String, Option<String>, Option<String>)> = self
             .connection
             .query_row(
-                "SELECT p.relative_path FROM active_packages p WHERE p.id = ?1
-                    AND NOT EXISTS (SELECT 1 FROM external_sources s WHERE s.package_id = p.id)",
+                "SELECT p.relative_path, s.root, s.identity FROM active_packages p
+                    LEFT JOIN external_sources s ON s.package_id = p.id WHERE p.id = ?1",
                 [package_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(|e| format!("Paket nicht lesbar: {e}"))?;
+        let folder = |base: &Path| {
+            let files = license_files(base);
+            let texts = license_detection::folder_texts(base, &files);
+            (files, texts)
+        };
+        // External roots are read only while they are still the catalogued folder or archive.
+        let (license_files, texts) = match source {
+            Some((relative, None, _)) => folder(&self.root.join(relative)),
+            Some((_, Some(root), Some(identity))) if zip_sources::is_zip(&identity) => {
+                let root = Path::new(&root);
+                if zip_sources::archive_identity(root).ok() == Some(identity) {
+                    license_detection::zip_hints(root).unwrap_or_default()
+                } else {
+                    Default::default()
+                }
+            }
+            Some((_, Some(root), Some(identity))) => {
+                let root = Path::new(&root);
+                let verified = fs::symlink_metadata(root).is_ok_and(|metadata| {
+                    metadata.is_dir()
+                        && !metadata.file_type().is_symlink()
+                        && file_identity(root, &metadata).ok() == Some(identity)
+                });
+                if verified {
+                    folder(root)
+                } else {
+                    Default::default()
+                }
+            }
+            _ => Default::default(),
+        };
         Ok(PackageInfoDetails {
             info: self.package_info(package_id)?,
-            license_files: directory
-                .map(|relative| license_files(&self.root.join(relative)))
-                .unwrap_or_default(),
+            license_suggestions: license_detection::suggestions(&texts),
+            license_files,
         })
     }
 
@@ -177,7 +211,7 @@ fn valid_date(date: &str) -> bool {
 }
 
 /// LICENSE*/Licence*, *license*.txt|md|pdf and README* files in the package root and its direct subfolders.
-/// Bounded and never follows links; the user reads them, nothing is parsed.
+/// Bounded and never follows links.
 fn license_files(package: &Path) -> Vec<String> {
     let mut found = Vec::new();
     let mut scanned = 0;
@@ -202,6 +236,11 @@ fn license_files(package: &Path) -> Vec<String> {
             }
         }
     }
+    sorted_hints(found)
+}
+
+/// Root files first, then by name; at most `MAX_HINTS`.
+fn sorted_hints(mut found: Vec<String>) -> Vec<String> {
     found.sort_by_key(|path| (path.matches('/').count(), path.to_lowercase()));
     found.truncate(MAX_HINTS);
     found

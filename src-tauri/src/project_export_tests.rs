@@ -655,3 +655,90 @@ fn credits_write_names_and_package_info_as_literal_markdown() {
          - Lizenz: \\<b\\>CC0\\</b\\> \\| \\*MIT\\* &amp;copy;\n- Assets:\n  - a\\`b\\\\c\\-1\\.0\\+\n"
     );
 }
+
+#[test]
+fn licence_suggestions_come_from_managed_external_and_zip_packages() {
+    use std::io::Write;
+    let workspace = Workspace::new();
+    let mut library = fixture(&workspace);
+    let suggested = |library: &Library, id: i64| -> Vec<(String, String)> {
+        library
+            .get_package_info(id)
+            .unwrap()
+            .license_suggestions
+            .into_iter()
+            .map(|s| (s.license, s.file))
+            .collect()
+    };
+    for name in ["Managed", "External"] {
+        write(workspace.path(&format!("{name}/Beep.wav")), b"beep");
+        write(
+            workspace.path(&format!("{name}/License.txt")),
+            b"Creative Commons Zero, CC0",
+        );
+        write(
+            workspace.path(&format!("{name}/Docs/README.md")),
+            b"Code: The MIT License",
+        );
+        write(
+            workspace.path(&format!("{name}/Docs/License.pdf")),
+            b"CC BY 4.0",
+        );
+        write(
+            workspace.path(&format!("{name}/Docs/Deep/License.txt")),
+            b"CC BY-SA 4.0",
+        );
+    }
+    let expected = [
+        ("CC0 1.0".to_owned(), "License.txt".to_owned()),
+        ("MIT".to_owned(), "Docs/README.md".to_owned()),
+    ];
+    let managed = library.import_folder(&workspace.path("Managed")).unwrap();
+    assert_eq!(suggested(&library, managed.id), expected);
+    let external = library
+        .reference_folder(&workspace.path("External"))
+        .unwrap();
+    // A link added later is listed by nobody and never read.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        workspace.path("Pack/Hit.wav"),
+        workspace.path("External/Docs/Linked-license.txt"),
+    )
+    .unwrap();
+    assert_eq!(suggested(&library, external.id), expected);
+
+    let archive = workspace.path("Pack.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    for (name, text) in [
+        ("Beep.wav", "beep"),
+        (
+            "Pack/LICENSE",
+            "https://creativecommons.org/licenses/by/4.0/",
+        ),
+        ("Pack/Readme.txt", "Royalty free, made by Kenney"),
+        ("Pack/Deep/License.txt", "CC0"),
+        ("__MACOSX/License.txt", "MIT License"),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(text.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    let zipped = library.reference_zip(&archive).unwrap();
+    let details = library.get_package_info(zipped.id).unwrap();
+    assert_eq!(details.license_files, ["Pack/LICENSE", "Pack/Readme.txt"]);
+    assert_eq!(
+        suggested(&library, zipped.id),
+        [("CC BY 4.0".to_owned(), "Pack/LICENSE".to_owned())]
+    );
+    assert!(details.license_suggestions[0]
+        .excerpt
+        .contains("licenses/by/4.0"));
+    // A replaced source is not read.
+    fs::write(&archive, b"changed").unwrap();
+    assert!(library
+        .get_package_info(zipped.id)
+        .unwrap()
+        .license_files
+        .is_empty());
+}
