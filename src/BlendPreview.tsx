@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import { imageFit } from "./imageWorkflows.ts";
 import { loadPreviewImage } from "./imagePreviewUrl.ts";
 import { blendEntryResource } from "./modelResources.ts";
@@ -25,7 +26,7 @@ export default function BlendPreview({ file }: { file: { id: number; originalFil
     void invoke<ModelResources>("model_resources", { fileId: file.id }).then(async (snapshot) => {
       controller.signal.throwIfAborted();
       const entry = blendEntryResource(snapshot);
-      const preview = await loadPreviewImage(modelTransportUrl(convertFileSrc(entry.path), snapshot.snapshotId), entry.relativePath, controller.signal, 4 * 1024 * 1024);
+      const preview = await loadPreviewImage(modelTransportUrl(fileSrc(entry.path), snapshot.snapshotId), entry.relativePath, controller.signal, 4 * 1024 * 1024);
       if (!active) { preview.release(); return; }
       release = preview.release;
       setImage(preview.image);

@@ -157,15 +157,26 @@ struct Record {
 /// payload, unsafe paths and paths that collide on case-insensitive disks.
 /// Stops with an error once `cancel` is set, checked per entry and per decompressed chunk.
 pub(super) fn scan(source: &Path, limits: &Limits, cancel: &AtomicBool) -> Result<Vec<Payload>> {
-    let failed = |e: io::Error| format!("Unity-Paket ist beschädigt oder nicht lesbar: {e}");
+    const CANCELLED: &str = "Einlesen des Unity-Pakets abgebrochen";
+    let failed = |e: io::Error| {
+        if cancel.load(Ordering::Relaxed) {
+            CANCELLED.to_string()
+        } else {
+            format!("Unity-Paket ist beschädigt oder nicht lesbar: {e}")
+        }
+    };
     let cancelled = || -> Result<()> {
         if cancel.load(Ordering::Relaxed) {
-            Err("Einlesen des Unity-Pakets abgebrochen".into())
+            Err(CANCELLED.into())
         } else {
             Ok(())
         }
     };
-    let mut archive = tar::Archive::new(Stream::open(source, limits.bytes, Some(limits.time))?);
+    // Checked inside the stream too, so skipping a large ignored entry also stops on cancel.
+    let mut archive = tar::Archive::new(zip_sources::Cancellable(
+        cancel,
+        Stream::open(source, limits.bytes, Some(limits.time))?,
+    ));
     let mut records: HashMap<String, Record> = HashMap::new();
     for (count, entry) in archive.entries().map_err(failed)?.enumerate() {
         if count >= limits.entries {

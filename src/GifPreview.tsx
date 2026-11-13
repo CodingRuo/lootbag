@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import { imageFit } from "./imageWorkflows.ts";
 import { loadGifAnimation, loadPreviewImage } from "./imagePreviewUrl.ts";
 import { errorMessage } from "./errorMessage.ts";
@@ -24,7 +25,7 @@ export default function GifPreview({ file }: { file: { id: number; originalFilen
     let release = () => {};
     setImage(null); setError(null); setFrames(null);
     void invoke<string>("resolve_preview", { fileId: file.id }).then(async (path) => {
-      const source = convertFileSrc(path);
+      const source = fileSrc(path);
       const preview = animated ? await loadGifAnimation(source, controller.signal)
         : await loadPreviewImage(source, file.originalFilename, controller.signal);
       if (!active) { preview.release(); return; }

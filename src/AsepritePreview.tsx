@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import { imageFit } from "./imageWorkflows.ts";
 import { loadAsepriteAnimation } from "./imagePreviewUrl.ts";
 import { errorMessage } from "./errorMessage.ts";
@@ -25,7 +26,7 @@ export default function AsepritePreview({ file }: { file: { id: number; original
     setAnimation(null); setError(null); setFrame(0); setPlaying(false);
     if (canvas.current) canvas.current.width = canvas.current.height = 1;
     void invoke<string>("resolve_preview", { fileId: file.id }).then(async (path) => {
-      const preview = await loadAsepriteAnimation(convertFileSrc(path), controller.signal);
+      const preview = await loadAsepriteAnimation(fileSrc(path), controller.signal);
       if (!active) { preview.release(); return; }
       release = preview.release; setAnimation(preview);
       setZoom(imageFit(preview.width, preview.height, viewport.current?.clientWidth ?? 240, viewport.current?.clientHeight ?? 240));

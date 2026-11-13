@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import { imageFit, prepareSpriteSequence, spriteFrameLimit, type ImageGroup } from "./imageWorkflows";
 import { loadPreviewImage } from "./imagePreviewUrl.ts";
 import type { ModelExportSelection } from "./ModelPreview";
@@ -46,7 +46,7 @@ export default function SpriteSequencePreview({ group, visible, onReady }: {
           if (!active) return;
           const resource = group.resources.resources.find((item) => item.relativePath === member.resourcePath);
           if (!member.file.available || !resource || member.frameIndex === null) throw new Error(`Sprite-Bild ist nicht verfügbar: ${member.file.originalFilename}`);
-          const preview = await loadPreviewImage(convertFileSrc(resource.path), member.file.originalFilename, controller.signal, 32 * 1024 * 1024 - retainedPixels);
+          const preview = await loadPreviewImage(fileSrc(resource.path), member.file.originalFilename, controller.signal, 32 * 1024 * 1024 - retainedPixels);
           if (!active) { preview.release(); return; }
           releases.push(preview.release);
           const image = preview.image;

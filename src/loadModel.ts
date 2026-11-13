@@ -1,4 +1,4 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import {
   Bone, Box3, BufferAttribute, BufferGeometry, Color, DataTexture, DirectionalLight, FileLoader, HemisphereLight, Line, LoadingManager,
   Material, Mesh, Object3D, PerspectiveCamera, Points, PointsMaterial, Scene, SkeletonHelper, Texture, Vector3,
@@ -157,7 +157,7 @@ export async function loadModel(snapshot: ModelResources, signal: AbortSignal) {
       used.add(resource.relativePath);
       if (/\.gif$/i.test(resource.relativePath)) staticGifTextures = true;
       if (/\.(ase|aseprite)$/i.test(resource.relativePath)) staticAsepriteTextures = true;
-      return modelTransportUrl(convertFileSrc(resource.path), snapshot.snapshotId);
+      return modelTransportUrl(fileSrc(resource.path), snapshot.snapshotId);
     });
     let model: Object3D;
     let clips: AnimationClip[] = [];

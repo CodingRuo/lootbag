@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { bumpPreviewGeneration } from "./fileSrc.ts";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import type { ModelExportSelection } from "./ModelPreview";
 import { TrashDialog, type TrashEntry } from "./Trash";
@@ -157,6 +158,7 @@ export default function App() {
             const info = await invoke<LibraryInfo>("get_library");
             if (currentLibraryRoot.current !== root) return;
             setLibrary(info);
+            bumpPreviewGeneration();
             setPreviewGeneration((value) => value + 1);
             refreshCatalog();
           }
@@ -292,6 +294,7 @@ export default function App() {
     void act("Paket wird neu eingelesen …", async () => {
       const summary = await invoke<RescanSummary>("rescan_package", { packageId: id });
       setLibrary(await invoke<LibraryInfo>("get_library"));
+      bumpPreviewGeneration();
       setPreviewGeneration((value) => value + 1);
       setRevision((value) => value + 1);
       const ambiguous = summary.ambiguous.length ? ` · Mehrdeutige Gruppen: ${summary.ambiguous.join(", ")}` : "";

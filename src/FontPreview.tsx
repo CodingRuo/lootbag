@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import { loadFontFace } from "./fontFace.ts";
 import { errorMessage } from "./errorMessage.ts";
 import { Icon } from "./ui.tsx";
@@ -16,7 +17,7 @@ function useFont(file: FontFile, enabled: boolean) {
     let active = true;
     let release = () => {};
     invoke<string>("resolve_preview", { fileId: file.id })
-      .then((path) => loadFontFace(convertFileSrc(path), file.sizeBytes))
+      .then((path) => loadFontFace(fileSrc(path), file.sizeBytes))
       .then((font) => { if (!active) { font.release(); return; } release = font.release; setState({ family: font.family }); })
       .catch((error) => { if (active) setState({ error: errorMessage(error, "Schrift nicht lesbar.") }); });
     return () => { active = false; release(); };

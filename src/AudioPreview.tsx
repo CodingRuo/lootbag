@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import { repeatAudioLoop, resolveAudioLoop, seekAudio, type AudioLoop } from "./audioAudition";
 import { errorMessage } from "./errorMessage.ts";
 import { Icon } from "./ui.tsx";
@@ -115,7 +116,7 @@ export default function AudioPreview({ file, onAnalysisComplete }: { file: Audio
     waveformRequest.current = requestId;
     invoke<string>("resolve_preview", { fileId: file.id })
       .then((path) => {
-        if (active) setUrl(convertFileSrc(path));
+        if (active) setUrl(fileSrc(path));
       })
       .catch((error: unknown) => {
         if (active) setPlaybackError(errorMessage(error));

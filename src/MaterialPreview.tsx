@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import {
   Color, DirectionalLight, HemisphereLight, Mesh, MeshStandardMaterial,
   PerspectiveCamera, PlaneGeometry, RepeatWrapping, Scene, SphereGeometry,
@@ -95,7 +95,7 @@ export default function MaterialPreview({ group, onReady, visible }: {
           controller.signal.throwIfAborted();
           const member = group.members.find((item) => item.resourcePath === path)!;
           const resource = group.resources.resources.find((item) => item.relativePath === path)!;
-          const preview = await loadPreviewImage(convertFileSrc(resource.path), member.file.originalFilename, controller.signal, 32 * 1024 * 1024 - retainedPixels);
+          const preview = await loadPreviewImage(fileSrc(resource.path), member.file.originalFilename, controller.signal, 32 * 1024 * 1024 - retainedPixels);
           if (!active) { preview.release(); return; }
           releases.push(preview.release);
           retainedPixels += preview.image.naturalWidth * preview.image.naturalHeight;

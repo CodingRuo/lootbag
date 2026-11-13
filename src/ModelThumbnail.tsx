@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import { PerspectiveCamera, WebGLRenderer } from "three";
 import { fitModelCamera, loadModel, modelScene, modelTransportUrl, type ModelResources } from "./loadModel";
 import { createModelThumbnailQueue, type ModelThumbnailQueue, type ModelThumbnailResult } from "./modelThumbnails";
@@ -13,7 +14,7 @@ export function createCatalogModelThumbnails() {
     signal.throwIfAborted();
     if (snapshot.format === "BLEND") {
       const entry = blendEntryResource(snapshot);
-      const preview = await imagePreviewUrl(modelTransportUrl(convertFileSrc(entry.path), snapshot.snapshotId), entry.relativePath, signal, 192);
+      const preview = await imagePreviewUrl(modelTransportUrl(fileSrc(entry.path), snapshot.snapshotId), entry.relativePath, signal, 192);
       if (signal.aborted) { preview.release(); signal.throwIfAborted(); }
       return { url: preview.url, warning: ["Gespeichertes Blender-Bild; kann älter als die Szene sein. Keine interaktive 3D-Vorschau.", ...snapshot.errors].join("\n"), error: null };
     }

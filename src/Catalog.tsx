@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import AnnotationEditor from "./AnnotationEditor";
 import { ImageThumbnail } from "./ImagePreview";
@@ -66,7 +67,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   const setCatalogView = (view: CatalogView) => { setChosenViews((views) => ({ ...views, [catalogType]: view })); storeCatalogView(catalogType, view); };
   const [auditionFileId, setAuditionFileId] = useState<number | null>(null);
   const [audition] = useState(() => createCatalogAudition(new Audio(),
-    async (fileId) => convertFileSrc(await invoke<string>("resolve_preview", { fileId })), setAuditionFileId, document));
+    async (fileId) => fileSrc(await invoke<string>("resolve_preview", { fileId })), setAuditionFileId, document));
   const [modelThumbnails] = useState(createCatalogModelThumbnails);
   const [soundWaveforms] = useState(() => createSoundWaveformQueue((fileId) => invoke<number[]>("card_waveform", { fileId })));
   const thumbnailScope = previewScope(library?.root ?? "", previewGeneration);

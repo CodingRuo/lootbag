@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
+import { fileSrc } from "./fileSrc.ts";
 import { imageFit, spriteSheetFrame, type SpriteSheetLayout } from "./imageWorkflows";
 import { imagePreviewUrl, loadPreviewImage } from "./imagePreviewUrl.ts";
 import GifPreview from "./GifPreview.tsx";
@@ -17,7 +18,7 @@ export function ImageThumbnail({ fileId, available, filename }: { fileId: number
     let release = () => {};
     setUrl(null);
     if (available) void invoke<string>("resolve_preview", { fileId }).then(async (path) => {
-      const preview = await imagePreviewUrl(convertFileSrc(path), filename, controller.signal, 512);
+      const preview = await imagePreviewUrl(fileSrc(path), filename, controller.signal, 512);
       if (!active) { preview.release(); return; }
       release = preview.release;
       setUrl(preview.url);
@@ -76,7 +77,7 @@ function StaticImagePreview({ file }: { file: { id: number; originalFilename: st
       if (!active) return;
       snapshotId = prepared.snapshotId;
       if (prepared.errors.length || prepared.resources.length !== 1 || prepared.resources[0].relativePath !== prepared.entryPath) throw new Error("Keine eindeutig vorbereitete Bilddatei verfügbar.");
-      const preview = await loadPreviewImage(convertFileSrc(prepared.resources[0].path), file.originalFilename, controller.signal);
+      const preview = await loadPreviewImage(fileSrc(prepared.resources[0].path), file.originalFilename, controller.signal);
       if (!active) { preview.release(); return; }
       release = preview.release;
       setSnapshot(prepared);
