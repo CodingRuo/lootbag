@@ -16,11 +16,13 @@ mod image_groups;
 #[path = "search.rs"]
 mod search;
 pub use search::SavedSearch;
+#[cfg(any(feature = "desktop", test))]
 #[path = "sprite_export.rs"]
 mod sprite_export;
 pub use image_groups::{
     ImageGroup, ImageGroupMember, ImageGroupSummary, ImageWorkflow, KindCounts, MaterialRole,
 };
+#[cfg(feature = "desktop")]
 pub(crate) use sprite_export::SpritePayload;
 #[path = "audio.rs"]
 mod audio;
@@ -1396,6 +1398,7 @@ impl Library {
         })
     }
 
+    #[cfg(any(feature = "desktop", test))]
     pub(crate) fn prepare_audio_analysis(
         &self,
         query: CatalogQuery,
@@ -1764,6 +1767,7 @@ impl Library {
         Ok(candidate)
     }
 
+    #[cfg(any(feature = "desktop", test))]
     pub(crate) fn audio_analysis_busy_timeout(&self) -> Result<()> {
         self.connection
             .busy_timeout(Duration::from_millis(100))

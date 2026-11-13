@@ -86,12 +86,14 @@ impl Library {
         self.resource_snapshot(file_id, Some(members))
     }
 
+    #[cfg(any(feature = "desktop", test))]
     pub(crate) fn sheet_resources(&self, file_id: i64) -> Result<ModelResources> {
         let snapshot = self.image_resources(file_id, &[file_id])?;
         self.validate_sheet_source(&snapshot)?;
         Ok(snapshot)
     }
 
+    #[cfg(any(feature = "desktop", test))]
     pub(super) fn validate_sheet_source(&self, snapshot: &ModelResources) -> Result<()> {
         if snapshot.library_root != self.root
             || snapshot.include_entry

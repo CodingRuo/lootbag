@@ -65,6 +65,7 @@ pub(crate) struct SpritePayload<'a> {
 }
 
 impl<'a> SpritePayload<'a> {
+    #[cfg(feature = "desktop")]
     pub(crate) fn request_plan(bytes: &[u8]) -> Result<SpritePlan> {
         Self::header(bytes).map(|(plan, _)| plan)
     }

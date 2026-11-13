@@ -118,6 +118,7 @@ fn forget_verified(dir: Option<&Path>) {
 }
 
 /// On library activation: entries of another library or an earlier session are not trusted.
+#[cfg(any(feature = "desktop", test))]
 pub(crate) fn forget_verified_zip_cache() {
     forget_verified(None);
 }
