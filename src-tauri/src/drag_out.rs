@@ -214,12 +214,20 @@ impl<'a> Staging<'a> {
         let stem = entry
             .file_stem()
             .map_or("Modell".into(), |stem| stem.to_string_lossy());
-        self.reserve(snapshot.export_size(&extra))?;
+        let size = snapshot.export_size(&extra);
+        self.reserve(size)?;
         let name = unique_name(&mut self.used, "", &stem, "");
-        let destination = self.batch()?.join(name);
-        // Rejects incomplete models and re-checks every resource stamp while copying.
-        self.library
-            .export_model(snapshot, &extra, Some(&destination))?;
+        let destination = self.batch.join(name);
+        // Rejects incomplete models and re-checks every resource stamp while copying; a failed
+        // export removes its own partial output.
+        let exported = self.batch().and_then(|_| {
+            self.library
+                .export_model(snapshot, &extra, Some(&destination))
+        });
+        if let Err(error) = exported {
+            self.budget += size;
+            return Err(error);
+        }
         self.stage.items.push(DragItem {
             path: destination,
             directory: true,
@@ -250,9 +258,11 @@ impl<'a> Staging<'a> {
             return Ok(());
         }
         // A repeated name gets a renamed copy, so the recipient never sees two items called the same.
-        self.reserve(input.metadata().map_err(|error| error.to_string())?.len())?;
-        let target = self.batch()?.join(name);
+        let size = input.metadata().map_err(|error| error.to_string())?.len();
+        self.reserve(size)?;
+        let target = self.batch.join(name);
         let copied = (|| {
+            self.batch()?;
             let mut output = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -267,6 +277,7 @@ impl<'a> Staging<'a> {
         })();
         if let Err(error) = copied {
             let _ = fs::remove_file(&target);
+            self.budget += size;
             return Err(error);
         }
         self.stage.items.push(DragItem {

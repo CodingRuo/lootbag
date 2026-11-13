@@ -511,3 +511,32 @@ fn a_published_batch_survives_switching_to_and_dragging_from_another_library() {
     assert_ne!(next.batch, published.batch);
     assert_eq!(fs::read(&copy).unwrap(), b"other");
 }
+
+#[test]
+fn failed_copies_and_exports_give_their_budget_back() {
+    let workspace = Workspace::new();
+    write(workspace.path("Pack/Hit.wav"), &[0; 600]);
+    write(workspace.path("Other/hit.wav"), &[0; 600]);
+    write(workspace.path("Box/Box.obj"), b"mtllib box.mtl\nv 0 0 0\n");
+    write(workspace.path("Box/box.mtl"), b"newmtl a\n");
+    let mut library = Library::create(&workspace.path("library")).unwrap();
+    for pack in ["Pack", "Other", "Box"] {
+        library.import_folder(&workspace.path(pack)).unwrap();
+    }
+    let mut staging = Staging::new(&library, &workspace.path("staging"), 1000);
+    // Something already occupies each target, so the reserved copy and export both fail.
+    write(staging.batch.join("hit-2.wav"), b"taken");
+    fs::create_dir_all(staging.batch.join("Box")).unwrap();
+    staging.file(file(&library, "Hit.wav", "Pack"));
+    staging.file(file(&library, "hit.wav", "Other"));
+    staging.file(file(&library, "Box.obj", "Box"));
+    assert_eq!(
+        staging.stage.problems.len(),
+        2,
+        "{:?}",
+        staging.stage.problems
+    );
+    assert!(staging.stage.problems[1].contains("existiert bereits"));
+    assert!(!staging.full);
+    assert_eq!(staging.budget, 1000, "failed work keeps no reservation");
+}
