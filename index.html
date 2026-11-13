@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="lootbag-mark.svg" type="image/svg+xml">
+<title>Lootbag</title>
+<meta name="description" content="Lootbag: die kostenlose Open-Source-Bibliothek für alle Game-Assets, die du schon besitzt.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an inventory screen. Hero = item grid with one inspected slot; below, sections set like item tooltips. */
+:root {
+  --bg: #0f1420; --panel: #161d2c; --slot: #1c2538; --line: #2a3550;
+  --fg: #ece6d8; --muted: #a1a9bd; --gold: #e6b456; --on-gold: #241a06;
+  --t-sound: #7fb3e8; --t-image: #e6b456; --t-model: #8fcfa2; --t-anim: #ec9572;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --body: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --bg: #f1f2f5; --panel: #ffffff; --slot: #e8eaf0; --line: #d3d8e3;
+  --fg: #161b27; --muted: #555e73; --gold: #b07a1f; --on-gold: #fff8ea;
+  --t-sound: #2f6fb4; --t-image: #a26d12; --t-model: #2f8a4f; --t-anim: #c2552c;
+  color-scheme: light } }
+:root[data-theme="light"] {
+  --bg: #f1f2f5; --panel: #ffffff; --slot: #e8eaf0; --line: #d3d8e3;
+  --fg: #161b27; --muted: #555e73; --gold: #b07a1f; --on-gold: #fff8ea;
+  --t-sound: #2f6fb4; --t-image: #a26d12; --t-model: #2f8a4f; --t-anim: #c2552c;
+  color-scheme: light }
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 400 1.0625rem/1.6 var(--body); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+a { color: var(--gold); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; border-radius: 6px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+p { margin: 0; }
+code { font: 500 0.9em/1 var(--mono); }
+.label { font: 500 0.75rem/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+header.bar { padding-block: 22px; }
+header.bar .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--fg); text-decoration: none; font: 800 1.35rem/1 var(--display); }
+.brand svg { width: 36px; height: 36px; flex: none; }
+.bar-right { display: flex; align-items: center; gap: 24px; }
+.bar nav { display: flex; gap: 20px; font-size: 0.95rem; flex-wrap: wrap; }
+.bar nav a { color: var(--muted); text-decoration: none; }
+.bar nav a:hover { color: var(--fg); }
+.lang { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.lang button { font: 500 0.8rem/1 var(--mono); letter-spacing: .06em; padding: 8px 10px; background: transparent; color: var(--muted); border: 0; cursor: pointer; }
+.lang button[aria-pressed="true"] { background: var(--gold); color: var(--on-gold); }
+
+.hero { padding-block: 40px 72px; }
+.hero .wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 56px; align-items: center; }
+.hero h1 { font-size: clamp(2.6rem, 6vw, 4.6rem); line-height: 0.98; font-weight: 800; margin-top: 16px; }
+.hero h1 em { font-style: normal; color: var(--gold); }
+.hero .lede { margin-top: 22px; max-width: 36ch; font-size: 1.2rem; color: var(--muted); }
+.cta { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.btn { display: inline-flex; align-items: center; gap: 10px; padding: 13px 20px; border-radius: 10px; font: 600 1rem/1 var(--body); text-decoration: none; border: 1px solid transparent; }
+.btn.primary { background: var(--gold); color: var(--on-gold); }
+.btn.ghost { border-color: var(--line); color: var(--fg); }
+.cta small { flex-basis: 100%; color: var(--muted); font-size: 0.9rem; }
+.price-tag { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-top: 26px; font: 500 0.95rem/1.3 var(--mono); color: var(--muted); }
+.price-tag b { font: 800 1.6rem/1 var(--display); color: var(--fg); }
+
+.inventory { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; box-shadow: 0 30px 60px -30px rgba(0,0,0,0.55); }
+.inv-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+.inv-head strong { font: 700 1rem/1 var(--display); }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.slot { position: relative; aspect-ratio: 1; max-width: 100%; background: var(--slot); border: 1px solid var(--line); border-radius: 10px; display: grid; place-items: center; color: var(--c, var(--muted)); transition: transform .15s ease, border-color .15s ease; }
+.slot:hover { transform: translateY(-2px); border-color: var(--c); }
+.slot svg { width: 42%; height: 42%; }
+.slot::after { content: attr(data-fmt); position: absolute; left: 6px; bottom: 5px; font: 500 0.6rem/1 var(--mono); letter-spacing: .06em; color: var(--muted); }
+.slot .dup { position: absolute; right: 5px; top: 5px; font: 600 0.6rem/1 var(--mono); padding: 3px 5px; border-radius: 5px; background: var(--line); color: var(--fg); }
+.slot.sel { border: 2px solid var(--gold); }
+.slot.empty { background: transparent; border-style: dashed; }
+.s-sound { --c: var(--t-sound); } .s-image { --c: var(--t-image); } .s-model { --c: var(--t-model); } .s-anim { --c: var(--t-anim); }
+.tooltip { margin-top: 14px; background: var(--slot); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; gap: 10px; }
+.tooltip .name { font: 500 0.95rem/1.3 var(--mono); word-break: break-word; }
+.tooltip .meta { display: flex; flex-wrap: wrap; gap: 6px 16px; font: 400 0.8rem/1.2 var(--mono); color: var(--muted); }
+.wave { width: 100%; height: 46px; display: block; color: var(--t-sound); }
+.play { display: flex; align-items: center; gap: 10px; }
+.play button { width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--gold); color: var(--on-gold); display: grid; place-items: center; cursor: pointer; flex: none; }
+.play button svg { width: 14px; height: 14px; }
+.play .time { font: 500 0.8rem/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+section.block { padding-block: 72px; border-top: 1px solid var(--line); }
+.block h2 { font-size: clamp(1.8rem, 3.6vw, 2.6rem); line-height: 1.05; font-weight: 700; max-width: 24ch; margin-top: 12px; }
+.block .intro { margin-top: 14px; max-width: 60ch; color: var(--muted); }
+.types { margin-top: 40px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 28px 32px; }
+.type { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 4px 14px; align-items: start; }
+.type .ico { grid-row: span 2; width: 44px; height: 44px; border-radius: 10px; background: var(--slot); border: 1px solid var(--line); display: grid; place-items: center; color: var(--c, var(--gold)); }
+.type .ico svg { width: 22px; height: 22px; }
+.type h3 { font-size: 1.15rem; font-weight: 700; }
+.type p { color: var(--muted); font-size: 0.98rem; }
+
+.steps { margin-top: 40px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.step { padding: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; display: grid; gap: 10px; align-content: start; }
+.step .label { color: var(--gold); }
+.step h3 { font-size: 1.15rem; }
+.step p { color: var(--muted); font-size: 0.97rem; }
+.files { margin-top: 24px; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 20px; }
+.file { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow-x: auto; }
+.file .label { display: block; padding: 12px 20px 0; }
+.file pre { margin: 0; padding: 10px 20px 18px; font: 400 0.82rem/1.6 var(--mono); color: var(--muted); }
+.file .k { color: var(--fg); } .file .s { color: var(--t-model); } .file .h { color: var(--gold); }
+
+.nots { margin-top: 36px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.not { display: flex; gap: 12px; align-items: baseline; padding: 14px 16px; border: 1px dashed var(--line); border-radius: 12px; }
+.not b { font: 600 1rem/1.3 var(--body); display: block; }
+.not span { color: var(--muted); font-size: 0.92rem; display: block; }
+.not .x { font: 700 1rem/1 var(--mono); color: var(--t-anim); flex: none; }
+
+.table-wrap { margin-top: 36px; overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+table { width: 100%; border-collapse: collapse; min-width: 720px; font-size: 0.95rem; }
+th, td { text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 500 0.72rem/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+tr:last-child td { border-bottom: 0; }
+td:first-child { font-weight: 600; }
+tr.us td { background: color-mix(in srgb, var(--gold) 10%, transparent); }
+td.num { font-variant-numeric: tabular-nums; }
+.footnote { margin-top: 12px; color: var(--muted); font-size: 0.85rem; }
+
+.roadmap { margin-top: 36px; border-left: 2px solid var(--line); }
+.road { position: relative; padding: 0 0 22px 24px; }
+.road::before { content: ""; position: absolute; left: -7px; top: 6px; width: 12px; height: 12px; border-radius: 50%; background: var(--bg); border: 2px solid var(--muted); }
+.road.done::before { background: var(--gold); border-color: var(--gold); }
+.road h3 { font-size: 1.05rem; font-weight: 700; }
+.road p { color: var(--muted); font-size: 0.95rem; max-width: 62ch; }
+.road .label { display: block; margin-bottom: 6px; }
+
+footer { padding-block: 48px 64px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.92rem; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 16px 32px; justify-content: space-between; align-items: center; }
+
+@media (max-width: 860px) {
+  .hero .wrap, .steps, .files { grid-template-columns: minmax(0, 1fr); }
+  .hero .wrap { gap: 40px; }
+  .bar nav { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .slot { transition: none; } .slot:hover { transform: none; } }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-sound" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 9v6M8 6v12M12 3v18M16 7v10M20 10v4"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m3 16 5-5 4 4 3-3 6 6"/><circle cx="16" cy="9" r="1.6"/></g></symbol>
+    <symbol id="i-sprite" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="5" height="12" rx="1"/><rect x="9.5" y="6" width="5" height="12" rx="1"/><rect x="16" y="6" width="5" height="12" rx="1"/></g></symbol>
+    <symbol id="i-material" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></g></symbol>
+    <symbol id="i-model" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="m12 2 9 5v10l-9 5-9-5V7z"/><path d="m3 7 9 5 9-5M12 12v10"/></g></symbol>
+    <symbol id="i-anim" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="14" cy="4" r="2"/><path d="m8 21 3-6 3 2v5M11 15l1-6 4 3h3M12 9l-4 1-2 3"/></g></symbol>
+    <symbol id="i-zip" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M11 3v2h2v2h-2v2h2v2h-2v3"/></g></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></g></symbol>
+    <symbol id="i-license" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4z"/><path d="M9 8h6M9 12h4"/></g></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></g></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M7 4v16l13-8z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M6 4h4v16H6zM14 4h4v16h-4z"/></symbol>
+    <symbol id="logo" viewBox="0 0 64 64">
+      <rect width="64" height="64" rx="14" fill="#151b2a"/>
+      <path d="M23 22c-2-4-2-8 1-10 2 2 3 3 4 2 1-2 3-3 4-3s3 1 4 3c1 1 2 0 4-2 3 2 3 6 1 10z" fill="#e6b456"/>
+      <path d="M25 24h14c8 4 13 11 13 20 0 8-7 12-20 12S12 52 12 44c0-9 5-16 13-20z" fill="#e6b456"/>
+      <rect x="22" y="20.5" width="20" height="4.5" rx="2.25" fill="#a8711c"/>
+      <path d="M40 23c3 1 4 4 3.5 7.5" fill="none" stroke="#a8711c" stroke-width="2.5" stroke-linecap="round"/>
+      <circle cx="43.5" cy="31.5" r="2.2" fill="#a8711c"/>
+      <g fill="#151b2a"><rect x="24" y="34" width="7" height="7" rx="1.6"/><rect x="33" y="34" width="7" height="7" rx="1.6"/><rect x="24" y="43" width="7" height="7" rx="1.6"/><rect x="33" y="43" width="7" height="7" rx="1.6" fill="#e6b456" stroke="#151b2a" stroke-width="2"/></g>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="#top" data-i18n-aria="brandHome" aria-label="Lootbag Startseite"><svg aria-hidden="true"><use href="#logo"/></svg>Lootbag</a>
+    <div class="bar-right">
+      <nav data-i18n-aria="navLabel" aria-label="Seitennavigation">
+        <a href="#features" data-i18n="navFeatures">Was es kann</a>
+        <a href="#projekte" data-i18n="navProjects">Projekte</a>
+        <a href="#vergleich" data-i18n="navCompare">Vergleich</a>
+        <a href="#roadmap" data-i18n="navRoadmap">Roadmap</a>
+      </nav>
+      <div class="lang" role="group" aria-label="Sprache / Language">
+        <button type="button" id="lang-de" data-lang="de" aria-pressed="true" lang="de">DE</button>
+        <button type="button" id="lang-en" data-lang="en" aria-pressed="false" lang="en">EN</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="wrap">
+      <div>
+        <p class="label" data-i18n="heroLabel">Open Source · Für Indie-Game-Devs · macOS &amp; Windows</p>
+        <h1 data-i18n-html="heroTitle">Du hast die Assets längst gekauft. <em>Finde sie wieder.</em></h1>
+        <p class="lede" data-i18n="heroLede">Lootbag sortiert die Asset-Packs auf deiner Platte nach Sounds, Sprites, Texturen, 3D-Modellen und Animationen. Anhören, ansehen, abspielen, ins Projekt exportieren.</p>
+        <div class="cta">
+          <a class="btn primary" href="https://github.com/CodingRuo/lootbag/releases/latest" data-i18n="ctaPrimary">Für macOS laden (Beta)</a>
+          <a class="btn ghost" href="#features" data-i18n="ctaSecondary">Ansehen, was es kann</a>
+          <small data-i18n="ctaNote">Läuft lokal. Kein Konto, keine Cloud, kein Abo.</small>
+        </div>
+        <p class="price-tag"><b>0 €</b> <span data-i18n="priceNote">für immer · Open Source unter GPL-3.0 · ohne Limit</span></p>
+      </div>
+
+      <div class="inventory" data-i18n-aria="invLabel" aria-label="Beispiel: Ausschnitt aus einer Bibliothek">
+        <div class="inv-head"><strong data-i18n="invTitle">Alle Assets</strong><span class="label" data-i18n="invCount">11 von 6.968</span></div>
+        <div class="grid">
+          <div class="slot s-sound sel" data-fmt="WAV" title="A Virus.wav"><svg><use href="#i-sound"/></svg></div>
+          <div class="slot s-anim" data-fmt="FBX" title="A_Crouch_BckStrafeB_RootMotion_Femn.fbx"><svg><use href="#i-anim"/></svg></div>
+          <div class="slot s-image" data-fmt="PNG" title="PolygonApocalypse_Texture_01_A.png"><svg><use href="#i-image"/></svg><span class="dup">2×</span></div>
+          <div class="slot s-model" data-fmt="FBX" title="SM_Prop_Barrel_Nuke_01.fbx"><svg><use href="#i-model"/></svg></div>
+          <div class="slot s-sound" data-fmt="OGG" title="Zombie_Attack_Bite_001.ogg"><svg><use href="#i-sound"/></svg></div>
+          <div class="slot s-image" data-fmt="GIF" title="Player_Run.gif"><svg><use href="#i-sprite"/></svg></div>
+          <div class="slot s-anim" data-fmt="FBX" title="A_MOD_BL_Run_ToIdle_RFoot_RM_Femn.fbx"><svg><use href="#i-anim"/></svg></div>
+          <div class="slot s-model" data-fmt="GLB" title="SM_Wep_Spade_01.glb"><svg><use href="#i-model"/></svg></div>
+          <div class="slot s-image" data-fmt="TGA" title="Stone_Wall_Albedo.tga"><svg><use href="#i-material"/></svg></div>
+          <div class="slot s-sound" data-fmt="MP3" title="Underwater_Ambience_02.mp3"><svg><use href="#i-sound"/></svg></div>
+          <div class="slot s-model" data-fmt="OBJ" title="SM_Prop_DustBin_01.obj"><svg><use href="#i-model"/></svg><span class="dup">2×</span></div>
+          <div class="slot empty" aria-hidden="true"></div>
+        </div>
+        <div class="tooltip">
+          <div class="name">A Virus.wav</div>
+          <svg class="wave" id="wave" viewBox="0 0 300 46" preserveAspectRatio="none" data-i18n-aria="waveLabel" aria-label="Wellenform"></svg>
+          <div class="play">
+            <button type="button" id="play" aria-label="Beispiel abspielen"><svg><use href="#i-play"/></svg></button>
+            <span class="time" id="time">0:00 / 0:03</span>
+          </div>
+          <div class="meta"><span>3,21 s</span><span>44.100 Hz</span><span>Stereo</span><span>557,7 KB</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="features">
+    <div class="wrap">
+      <p class="label" data-i18n="featLabel">Was es kann</p>
+      <h2 data-i18n="featTitle">Jeder Asset-Typ bekommt die Vorschau, die er braucht.</h2>
+      <p class="intro" data-i18n="featIntro">Ordner oder ZIP reinziehen. Lootbag behält Paketnamen, Originalordner und Begleitdateien bei und erkennt, was drin ist.</p>
+      <div class="types">
+        <div class="type s-sound"><div class="ico"><svg><use href="#i-sound"/></svg></div><h3 data-i18n="tSound">Sounds</h3><p data-i18n="tSoundText">WAV, OGG, MP3, FLAC mit Wellenform, Dauer und Loop-Bereich. Probehören direkt auf der Karte.</p></div>
+        <div class="type s-image"><div class="ico"><svg><use href="#i-image"/></svg></div><h3 data-i18n="tImage">Bilder</h3><p data-i18n="tImageText">PNG, JPEG, WebP, TGA, GIF und Aseprite. Zoom, Pixel-Modus, Transparenz.</p></div>
+        <div class="type s-image"><div class="ico"><svg><use href="#i-sprite"/></svg></div><h3 data-i18n="tSprite">Sprite-Sequenzen</h3><p data-i18n="tSpriteText">Frames aus einem Ordner oder Spritesheet abspielen. Als Frames, Atlas oder gepackten Atlas mit sprite.json exportieren.</p></div>
+        <div class="type s-image"><div class="ico"><svg><use href="#i-material"/></svg></div><h3 data-i18n="tMaterial">Materialien</h3><p data-i18n="tMaterialText">Albedo, Normal und Roughness desselben Sets werden als ein Material erkannt.</p></div>
+        <div class="type s-model"><div class="ico"><svg><use href="#i-model"/></svg></div><h3 data-i18n="tModel">3D-Modelle</h3><p data-i18n="tModelText">FBX, GLB, glTF, OBJ und Blender. Mit Texturen, Kamera und Vorschaubild im Raster.</p></div>
+        <div class="type s-anim"><div class="ico"><svg><use href="#i-anim"/></svg></div><h3 data-i18n="tAnim">Animationen</h3><p data-i18n="tAnimText">FBX ohne Mesh werden als Animation erkannt und am Skelett abgespielt. Clip wählen, spulen, Tempo ändern.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="bibliothek">
+    <div class="wrap">
+      <p class="label" data-i18n="libLabel">Bibliothek</p>
+      <h2 data-i18n="libTitle">Hunderte Packs, ohne den Überblick zu verlieren.</h2>
+      <div class="types">
+        <div class="type"><div class="ico"><svg><use href="#i-zip"/></svg></div><h3 data-i18n="fZip">ZIP ohne Entpacken</h3><p data-i18n="fZipText">Binde ein ZIP direkt ein. Lootbag liest das Inhaltsverzeichnis und entpackt einzelne Dateien nur bei Bedarf in einen Cache.</p></div>
+        <div class="type"><div class="ico"><svg><use href="#i-copy"/></svg></div><h3 data-i18n="fDup">Duplikate über Packs hinweg</h3><p data-i18n="fDupText">Dasselbe Modell in drei Bundles? Lootbag vergleicht Dateiinhalte und zeigt, wo sonst noch eine Kopie liegt.</p></div>
+        <div class="type"><div class="ico"><svg><use href="#i-license"/></svg></div><h3 data-i18n="fLicense">Lizenzen pro Paket</h3><p data-i18n="fLicenseText">Shop, Lizenz, Urheber und Kaufdatum am Paket. Bei importierten Paketen zeigt Lootbag gefundene Lizenzdateien an.</p></div>
+        <div class="type"><div class="ico"><svg><use href="#i-search"/></svg></div><h3 data-i18n="fSearch">Schnelle Suche</h3><p data-i18n-html="fSearchText"><code>barr nuk</code> findet <code>SM_Prop_Barrel_Nuke_01</code>. Tags entstehen automatisch aus Datei- und Ordnernamen, Suchen lassen sich speichern.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="projekte">
+    <div class="wrap">
+      <p class="label" data-i18n="projLabel">Projekte</p>
+      <h2 data-i18n="projTitle">Vom Fundus ins Spiel, ohne die Originale anzufassen.</h2>
+      <div class="steps">
+        <div class="step"><span class="label" data-i18n="step1">Schritt 1</span><h3 data-i18n="s1Title">Sammeln</h3><p data-i18n="s1Text">Leg einen Projektordner an, z. B. „Waldspiel“, und zieh die passenden Assets hinein. Es wird nichts kopiert.</p></div>
+        <div class="step"><span class="label" data-i18n="step2">Schritt 2</span><h3 data-i18n="s2Title">Rollen vergeben</h3><p data-i18n="s2Text">Gib jedem Asset eine Rolle wie „Held“ oder „Wald-Ambience“ und wähle die Variante, etwa OGG statt WAV.</p></div>
+        <div class="step"><span class="label" data-i18n="step3">Schritt 3</span><h3 data-i18n="s3Title">Exportieren</h3><p data-i18n="s3Text">Lootbag kopiert alles in einen neuen Ordner, samt Texturen der Modelle, und schreibt ein Manifest und die Credits. Fehlendes siehst du vorher.</p></div>
+      </div>
+      <div class="files">
+        <div class="file"><span class="label">manifest.json</span>
+<pre>{
+  <span class="k">"project"</span>: <span class="s">"Waldspiel"</span>,
+  <span class="k">"assets"</span>: [{
+    <span class="k">"name"</span>: <span class="s">"Underwater_Ambience_02"</span>,
+    <span class="k">"role"</span>: <span class="s">"Wald-Ambience"</span>,
+    <span class="k">"package"</span>: <span class="s">"underwaterambientsfxpack"</span>,
+    <span class="k">"license"</span>: <span class="s">"CC0"</span>,
+    <span class="k">"variant"</span>: { <span class="k">"format"</span>: <span class="s">"OGG"</span> },
+    <span class="k">"exportedFiles"</span>: [<span class="s">"Sounds/Underwater_Ambience_02.ogg"</span>]
+  }]
+}</pre></div>
+        <div class="file"><span class="label">CREDITS.md</span>
+<pre><span class="h">## underwaterambientsfxpack</span>
+<span class="k">Urheber:</span> Example Audio
+<span class="k">Lizenz:</span> CC0
+<span class="k">Shop:</span> itch.io
+
+- Underwater_Ambience_02</pre></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="nicht">
+    <div class="wrap">
+      <p class="label" data-i18n="notLabel">Was Lootbag nicht ist</p>
+      <h2 data-i18n="notTitle">Ein Werkzeug, kein Geschäftsmodell.</h2>
+      <p class="intro" data-i18n="notIntro">Viele Asset-Manager wachsen in Richtung Cloud, Teams und Abos. Lootbag bleibt bei dem, was Solo- und Indie-Devs jeden Tag brauchen.</p>
+      <div class="nots">
+        <div class="not"><span class="x">×</span><div><b data-i18n="n1">Kein Konto</b><span data-i18n="n1t">Starten und loslegen. Keine Anmeldung.</span></div></div>
+        <div class="not"><span class="x">×</span><div><b data-i18n="n2">Keine Cloud</b><span data-i18n="n2t">Deine Bibliothek ist ein Ordner. Sichern kannst du ihn wie jeden anderen.</span></div></div>
+        <div class="not"><span class="x">×</span><div><b data-i18n="n3">Kein Abo, kein Limit</b><span data-i18n="n3t">Keine Lite-Version mit 100 Assets.</span></div></div>
+        <div class="not"><span class="x">×</span><div><b data-i18n="n4">Kein Shop</b><span data-i18n="n4t">Lootbag verkauft dir nichts. Es zeigt dir, was du schon hast.</span></div></div>
+        <div class="not"><span class="x">×</span><div><b data-i18n="n5">Keine KI-Generierung</b><span data-i18n="n5t">Deine Assets kommen von Künstlern, nicht aus einem Prompt.</span></div></div>
+        <div class="not"><span class="x">×</span><div><b data-i18n="n6">Kein geschlossener Code</b><span data-i18n="n6t">GPL-3.0: Lootbag und jede Abwandlung davon bleiben offen.</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="vergleich">
+    <div class="wrap">
+      <p class="label" data-i18n="cmpLabel">Vergleich</p>
+      <h2 data-i18n="cmpTitle">Was es sonst gibt.</h2>
+      <p class="intro" data-i18n="cmpIntro">Es gibt gute Werkzeuge. Die meisten kosten Geld, decken nur einen Asset-Typ ab oder laufen nur in einer Engine.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th data-i18n="thTool">Werkzeug</th><th data-i18n="thPrice">Preis</th><th data-i18n="thOss">Open Source</th><th data-i18n="thRuns">Läuft</th><th data-i18n="thTypes">Asset-Typen</th></tr></thead>
+          <tbody>
+            <tr class="us"><td>Lootbag</td><td class="num">0 €</td><td data-i18n="ossYes">Ja, GPL-3.0</td><td data-i18n="runsUs">macOS, Windows (Beta)</td><td data-i18n="typesUs">Sounds, Bilder, Sprites, Materialien, 3D, Animationen</td></tr>
+            <tr><td>AssetHoard</td><td class="num" data-i18n="priceHoard">Beta gratis, später Kauf</td><td data-i18n="ossUnknown">nicht angegeben</td><td>Win, Mac, Linux</td><td data-i18n="typesHoard">Breit, 80+ Formate</td></tr>
+            <tr><td>Sharp Stock</td><td class="num" data-i18n="priceSharp">34,99 $ · Lite: 100 Assets</td><td data-i18n="ossNo">Nein</td><td>Win, Mac</td><td data-i18n="typesSharp">Bilder, Audio, Spine, 3D</td></tr>
+            <tr><td>Asset Inventory 4</td><td class="num" data-i18n="priceInv">ca. 54 €</td><td data-i18n="ossNo">Nein</td><td data-i18n="runsInv">nur im Unity-Editor</td><td data-i18n="typesInv">Inhalte von Unity-Paketen</td></tr>
+            <tr><td>Eagle</td><td class="num">34,95 $</td><td data-i18n="ossNo">Nein</td><td>Win, Mac</td><td data-i18n="typesEagle">Bilder, Video, Audio; 3D per Plugin</td></tr>
+            <tr><td>Soundly</td><td class="num" data-i18n="priceSoundly">Gratis bis 10.000 Sounds, dann Abo</td><td data-i18n="ossNo">Nein</td><td>Win, Mac</td><td data-i18n="typesAudio">Nur Audio</td></tr>
+            <tr><td>Sononym</td><td class="num">89 €</td><td data-i18n="ossNo">Nein</td><td>Win, Mac, Linux</td><td data-i18n="typesAudio">Nur Audio</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote" data-i18n="cmpNote">Preise laut Herstellerseiten, Stand November 2026.</p>
+    </div>
+  </section>
+
+  <section class="block" id="roadmap">
+    <div class="wrap">
+      <p class="label" data-i18n="rmLabel">Roadmap</p>
+      <h2 data-i18n="rmTitle">Was fertig ist und was kommt.</h2>
+      <div class="roadmap">
+        <div class="road done"><span class="label" data-i18n="rmDone">Fertig</span><h3 data-i18n="rm1">Bibliothek, Vorschauen, Animationen, Projekt-Export</h3><p data-i18n="rm1t">Alle Asset-Typen mit Vorschau, Projektordner mit Rollen und Export samt Manifest.</p></div>
+        <div class="road done"><span class="label" data-i18n="rmDone">Fertig</span><h3 data-i18n="rm2">Lizenzen, Credits, Duplikate, ZIP, Suche</h3><p data-i18n="rm2t">Paketinfos mit CREDITS.md beim Export, Duplikate über Packs hinweg, ZIPs ohne Entpacken, Auto-Tags und gespeicherte Suchen.</p></div>
+        <div class="road done"><span class="label" data-i18n="rmDone">Fertig</span><h3 data-i18n="rm3">Erste öffentliche Beta</h3><p data-i18n="rm3t">Signierter Download für macOS, dazu der Quellcode auf GitHub.</p></div>
+        <div class="road"><span class="label" data-i18n="rmPlanned">Geplant</span><h3 data-i18n="rm4">Windows auf echter Hardware testen</h3><p data-i18n="rm4t">Der Windows-Build kompiliert. Getestet wird er mit Leuten, die Windows nutzen.</p></div>
+        <div class="road"><span class="label" data-i18n="rmPlanned">Geplant</span><h3 data-i18n="rm5">Animationen auf einem Beispielmodell</h3><p data-i18n="rm5t">Clips nicht nur am Skelett, sondern an einer Figur zeigen.</p></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a class="brand" href="#top" data-i18n-aria="brandTop" aria-label="Lootbag nach oben"><svg aria-hidden="true"><use href="#logo"/></svg>Lootbag</a>
+    <p data-i18n="footer">Open Source unter GPL-3.0. Kostenlos für alle, die Spiele machen.</p>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const EN = {
+    brandHome: "Lootbag home", brandTop: "Back to top", navLabel: "Page navigation",
+    navFeatures: "Features", navProjects: "Projects", navCompare: "Compare", navRoadmap: "Roadmap",
+    heroLabel: "Open source · For indie game devs · macOS & Windows",
+    heroTitle: "You already bought the assets. <em>Find them again.</em>",
+    heroLede: "Lootbag sorts the asset packs on your drive into sounds, sprites, textures, 3D models and animations. Listen, look, play, and export into your project.",
+    ctaPrimary: "Download for macOS (beta)", ctaSecondary: "See what it does",
+    ctaNote: "Runs locally. No account, no cloud, no subscription.",
+    priceNote: "forever · open source under GPL-3.0 · no limits",
+    invLabel: "Example: part of a library", invTitle: "All assets", invCount: "11 of 6,968", waveLabel: "Waveform",
+    featLabel: "Features", featTitle: "Every asset type gets the preview it needs.",
+    featIntro: "Drop in a folder or ZIP. Lootbag keeps pack names, original folders and companion files, and recognizes what's inside.",
+    tSound: "Sounds", tSoundText: "WAV, OGG, MP3, FLAC with waveform, duration and loop range. Audition right on the card.",
+    tImage: "Images", tImageText: "PNG, JPEG, WebP, TGA, GIF and Aseprite. Zoom, pixel mode, transparency.",
+    tSprite: "Sprite sequences", tSpriteText: "Play frames from a folder or spritesheet. Export as frames, atlas or packed atlas with sprite.json.",
+    tMaterial: "Materials", tMaterialText: "Albedo, normal and roughness maps of one set are recognized as one material.",
+    tModel: "3D models", tModelText: "FBX, GLB, glTF, OBJ and Blender. With textures, camera and thumbnails in the grid.",
+    tAnim: "Animations", tAnimText: "FBX files without a mesh are detected as animations and played on the skeleton. Pick a clip, scrub, change speed.",
+    libLabel: "Library", libTitle: "Hundreds of packs, still in order.",
+    fZip: "ZIPs without unpacking", fZipText: "Link a ZIP directly. Lootbag reads its table of contents and extracts single files into a cache only when needed.",
+    fDup: "Duplicates across packs", fDupText: "Same model in three bundles? Lootbag compares file contents and shows where else a copy lives.",
+    fLicense: "Licences per pack", fLicenseText: "Store, licence, author and purchase date on each pack. For imported packs, Lootbag points out licence files it finds.",
+    fSearch: "Fast search", fSearchText: "<code>barr nuk</code> finds <code>SM_Prop_Barrel_Nuke_01</code>. Tags come from file and folder names, and searches can be saved.",
+    projLabel: "Projects", projTitle: "From your stash into your game, originals untouched.",
+    step1: "Step 1", step2: "Step 2", step3: "Step 3",
+    s1Title: "Collect", s1Text: "Create a project folder, say “Forest game”, and drag the right assets in. Nothing is copied.",
+    s2Title: "Assign roles", s2Text: "Give each asset a role like “Hero” or “Forest ambience” and choose the variant, such as OGG instead of WAV.",
+    s3Title: "Export", s3Text: "Lootbag copies everything into a new folder, including model textures, and writes a manifest and credits. You see what's missing first.",
+    notLabel: "What Lootbag is not", notTitle: "A tool, not a business model.",
+    notIntro: "Many asset managers grow toward cloud, teams and subscriptions. Lootbag sticks to what solo and indie devs need every day.",
+    n1: "No account", n1t: "Open it and start. No sign-in.",
+    n2: "No cloud", n2t: "Your library is a folder. Back it up like any other.",
+    n3: "No subscription, no cap", n3t: "No lite version with 100 assets.",
+    n4: "No store", n4t: "Lootbag sells you nothing. It shows you what you already own.",
+    n5: "No AI generation", n5t: "Your assets come from artists, not from a prompt.",
+    n6: "No closed code", n6t: "GPL-3.0: Lootbag and anything built from it stay open.",
+    cmpLabel: "Compare", cmpTitle: "What else is out there.",
+    cmpIntro: "There are good tools. Most cost money, cover one asset type, or only run inside one engine.",
+    thTool: "Tool", thPrice: "Price", thOss: "Open source", thRuns: "Runs on", thTypes: "Asset types",
+    ossYes: "Yes, GPL-3.0", ossNo: "No", ossUnknown: "not stated", runsUs: "macOS, Windows (beta)",
+    typesUs: "Sounds, images, sprites, materials, 3D, animations",
+    priceHoard: "Free beta, paid later", typesHoard: "Broad, 80+ formats",
+    priceSharp: "$34.99 · Lite: 100 assets", typesSharp: "Images, audio, Spine, 3D",
+    priceInv: "about €54", runsInv: "Unity Editor only", typesInv: "Contents of Unity packages",
+    typesEagle: "Images, video, audio; 3D via plugin",
+    priceSoundly: "Free up to 10,000 sounds, then subscription", typesAudio: "Audio only",
+    cmpNote: "Prices from vendor pages, November 2026.",
+    rmLabel: "Roadmap", rmTitle: "What's done and what's next.",
+    rmDone: "Done", rmNext: "Next", rmPlanned: "Planned",
+    rm1: "Library, previews, animations, project export", rm1t: "All asset types with previews, project folders with roles, and export with a manifest.",
+    rm2: "Licences, credits, duplicates, ZIPs, search", rm2t: "Pack info with CREDITS.md on export, duplicates across packs, ZIPs without unpacking, auto-tags and saved searches.",
+    rm3: "First public beta", rm3t: "Signed download for macOS, plus the source code on GitHub.",
+    rm4: "Test Windows on real hardware", rm4t: "The Windows build compiles. It gets tested with people who use Windows.",
+    rm5: "Animations on a sample character", rm5t: "Show clips on a figure, not only on the skeleton.",
+    footer: "Open source under GPL-3.0. Free for everyone who makes games."
+  };
+  const EN_NUM = { "3,21 s": "3.21 s", "44.100 Hz": "44,100 Hz", "557,7 KB": "557.7 KB" };
+
+  // German lives in the markup; capture it once so switching back restores it exactly.
+  const DE = {};
+  document.querySelectorAll("[data-i18n]").forEach((el) => { DE[el.dataset.i18n] = el.textContent; });
+  document.querySelectorAll("[data-i18n-html]").forEach((el) => { DE[el.dataset.i18nHtml] = el.innerHTML; });
+  document.querySelectorAll("[data-i18n-aria]").forEach((el) => { DE[el.dataset.i18nAria] = el.getAttribute("aria-label"); });
+  const metas = [...document.querySelectorAll(".tooltip .meta span")];
+  const metaDE = metas.map((el) => el.textContent);
+
+  const apply = (lang) => {
+    const dict = lang === "en" ? EN : DE;
+    document.documentElement.lang = lang;
+    document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = dict[el.dataset.i18n] ?? DE[el.dataset.i18n]; });
+    document.querySelectorAll("[data-i18n-html]").forEach((el) => { el.innerHTML = dict[el.dataset.i18nHtml] ?? DE[el.dataset.i18nHtml]; });
+    document.querySelectorAll("[data-i18n-aria]").forEach((el) => { el.setAttribute("aria-label", dict[el.dataset.i18nAria] ?? DE[el.dataset.i18nAria]); });
+    metas.forEach((el, i) => { el.textContent = lang === "en" ? (EN_NUM[metaDE[i]] ?? metaDE[i]) : metaDE[i]; });
+    document.querySelectorAll(".lang button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.lang === lang)));
+    playLabel();
+    try { localStorage.setItem("lootbag-lang", lang); } catch {}
+  };
+
+  let stored = null;
+  try { stored = localStorage.getItem("lootbag-lang"); } catch {}
+  const initial = stored === "de" || stored === "en" ? stored : ((navigator.language || "de").toLowerCase().startsWith("de") ? "de" : "en");
+  document.querySelectorAll(".lang button").forEach((b) => b.addEventListener("click", () => apply(b.dataset.lang)));
+
+  // Waveform shaped like the real sample: quiet start, dense middle, fade out.
+  const svg = document.getElementById("wave");
+  const bars = 90, w = 300 / bars;
+  let seed = 7;
+  const rand = () => (seed = (seed * 9301 + 49297) % 233280) / 233280;
+  let html = "";
+  for (let i = 0; i < bars; i++) {
+    const t = i / bars;
+    const env = t < 0.08 ? t / 0.08 * 0.35 : t < 0.7 ? 0.35 + 0.6 * Math.sin(Math.PI * (t - 0.08) / 0.62) : Math.max(0.04, 0.5 * (1 - (t - 0.7) / 0.3));
+    const h = Math.max(1.5, env * (0.55 + 0.45 * rand()) * 44);
+    html += `<rect x="${(i * w + 0.6).toFixed(2)}" y="${(23 - h / 2).toFixed(2)}" width="${(w - 1.2).toFixed(2)}" height="${h.toFixed(2)}" rx="1" fill="currentColor" opacity="0.85"/>`;
+  }
+  svg.innerHTML = html + '<rect id="head" x="0" y="0" width="2" height="46" fill="currentColor" opacity="0"/>';
+
+  // Visual playback only: the page has no audio file, so the button moves the playhead.
+  const btn = document.getElementById("play"), time = document.getElementById("time"), head = document.getElementById("head");
+  const total = 3.21; let start = 0, raf = 0;
+  function playLabel() {
+    const en = document.documentElement.lang === "en";
+    btn.setAttribute("aria-label", raf ? (en ? "Pause example" : "Beispiel anhalten") : (en ? "Play example" : "Beispiel abspielen"));
+  }
+  const icon = (name) => { btn.innerHTML = `<svg><use href="#i-${name}"/></svg>`; };
+  const stop = () => { cancelAnimationFrame(raf); raf = 0; icon("play"); playLabel(); };
+  const tick = (now) => {
+    const s = Math.min(total, (now - start) / 1000);
+    head.setAttribute("x", (s / total * 298).toFixed(1)); head.setAttribute("opacity", "1");
+    time.textContent = `0:${String(Math.floor(s)).padStart(2, "0")} / 0:03`;
+    if (s < total) raf = requestAnimationFrame(tick); else stop();
+  };
+  btn.addEventListener("click", () => {
+    if (raf) return stop();
+    start = performance.now(); raf = requestAnimationFrame(tick); icon("pause"); playLabel();
+  });
+
+  apply(initial);
+})();
+</script>
+</body>
+</html>
