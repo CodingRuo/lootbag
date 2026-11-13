@@ -17,7 +17,7 @@ import { errorMessage } from "./errorMessage.ts";
 import { exportProject, memberRole } from "./projectExport.ts";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import type { useAudioAnalysis } from "./useAudioAnalysis.ts";
-import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, isAnimationOnly, mac, number, type Act, type Asset, type AssetFile, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { CATALOG_TYPES, Icon, PAGE_SIZE, archiveName, bytes, isAnimationOnly, mac, number, type Act, type Asset, type AssetFile, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type BulkAction = { kind: "addTags"; tags: string[] } | { kind: "addToFolder"; folderId: number } | { kind: "trash" };
 type BulkResult = { assetCount: number; fileCount: number };
@@ -226,7 +226,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
         {filteredPackage?.sourceKind === "external" && (
           <section className="source-controls" aria-label="Externe Quelle">
             <div>
-              <strong className={filteredPackage.available ? "" : "unavailable"}>{filteredPackage.zip ? "ZIP-Quelle" : "Externe Quelle"} · {filteredPackage.available ? "erreichbar" : "nicht verfügbar"}</strong>
+              <strong className={filteredPackage.available ? "" : "unavailable"}>{filteredPackage.zip ? `${archiveName(filteredPackage)}-Quelle` : "Externe Quelle"} · {filteredPackage.available ? "erreichbar" : "nicht verfügbar"}</strong>
               <p>{filteredPackage.externalRoot}</p>
             </div>
             <button className="text-button" onClick={() => relinkSource(filteredPackage)} disabled={actionsDisabled}>Quelle neu verknüpfen</button>

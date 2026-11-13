@@ -9,7 +9,7 @@ import { PackageInfoDialog } from "./PackageInfoDialog";
 import { savePackageInfo, type PackageInfo } from "./packageInfo.ts";
 import type { CatalogSelection } from "./catalogSelection";
 import { errorMessage } from "./errorMessage.ts";
-import { ZIP_FILTER, native, number, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice } from "./ui.tsx";
+import { UNITY_FILTER, ZIP_FILTER, archiveName, native, type ArchiveKind, number, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice } from "./ui.tsx";
 import { useCatalogQuery } from "./useCatalogQuery.ts";
 import { useAudioAnalysis } from "./useAudioAnalysis.ts";
 import { useImportQueue } from "./useImportQueue.ts";
@@ -236,12 +236,14 @@ export default function App() {
     });
   }
 
-  function referenceFolder(zip = false) {
+  function referenceFolder(archive?: ArchiveKind) {
     void act("Externe Quelle wird eingelesen …", async () => {
-      const source = await open(zip ? { multiple: false, filters: ZIP_FILTER, title: "ZIP-Paket ohne Entpacken einbinden" }
+      const source = await open(archive === "zip" ? { multiple: false, filters: ZIP_FILTER, title: "ZIP-Paket ohne Entpacken einbinden" }
+        : archive === "unity" ? { multiple: false, filters: UNITY_FILTER, title: "Unity-Paket ohne Entpacken einbinden" }
         : { directory: true, multiple: false, title: "Externen Asset-Ordner einbinden" });
       if (!source) return;
-      const referenced = await invoke<AssetPackage>(zip ? "reference_zip" : "reference_folder", { source });
+      // The backend tells ZIPs and Unity packages apart by their extension.
+      const referenced = await invoke<AssetPackage>(archive ? "reference_zip" : "reference_folder", { source });
       setLibrary(await invoke<LibraryInfo>("get_library"));
       setPackageId(referenced.id);
       setFolderId(null);
@@ -249,7 +251,7 @@ export default function App() {
       setText("");
       setOffset(0);
       setRevision((value) => value + 1);
-      setNotice({ tone: "success", message: `${referenced.name} ${zip ? "als ZIP" : "extern"} eingebunden · ${number.format(referenced.assetCount)} Assets.` });
+      setNotice({ tone: "success", message: `${referenced.name} ${referenced.zip ? `als ${archiveName(referenced)}` : "extern"} eingebunden · ${number.format(referenced.assetCount)} Assets.` });
     });
   }
 
@@ -262,7 +264,7 @@ export default function App() {
 
   function relinkSource(sourcePackage: AssetPackage) {
     void act("Quelle wird neu verknüpft …", async () => {
-      const source = await open(sourcePackage.zip ? { multiple: false, filters: ZIP_FILTER, title: "Verschobenes ursprüngliches ZIP auswählen" }
+      const source = await open(sourcePackage.zip ? { multiple: false, filters: sourcePackage.unity ? UNITY_FILTER : ZIP_FILTER, title: `Verschobenes ursprüngliches ${archiveName(sourcePackage)} auswählen` }
         : { directory: true, multiple: false, title: "Verschobenen ursprünglichen Quellordner auswählen" });
       if (!source) return;
       await invoke<AssetPackage>("relink_source", { packageId: sourcePackage.id, source });
@@ -275,8 +277,10 @@ export default function App() {
   function openFile(file: AssetFile, packageId: number, reveal: boolean) {
     void act(reveal ? "Datei wird gezeigt …" : "Datei wird geöffnet …", async () => {
       await invoke("open_file", { fileId: file.id, reveal });
-      if (library?.packages.find((item) => item.id === packageId)?.zip) {
-        setNotice({ tone: "success", message: `${file.originalFilename} ist eine Cache-Kopie aus dem ZIP. Änderungen daran werden nicht ins ZIP zurückgeschrieben.` });
+      const archive = library?.packages.find((item) => item.id === packageId);
+      if (archive?.zip) {
+        const name = archiveName(archive);
+        setNotice({ tone: "success", message: `${file.originalFilename} ist eine Cache-Kopie aus dem ${name}. Änderungen daran werden nicht ins ${name} zurückgeschrieben.` });
       }
     });
   }

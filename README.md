@@ -10,7 +10,7 @@ No account, no cloud, no subscription. Your files stay where they are.
 
 ## Features
 
-- **Import packs** from folders or ZIPs, or reference them in place (external folders and ZIPs are never copied or changed).
+- **Import packs** from folders or ZIPs, or reference them in place (external folders, ZIPs and Unity packages are never copied or changed).
 - **Preview everything**: sounds with waveform and loop check, images and spritesheets, GIF and Aseprite, materials on a sphere, GLB/glTF, FBX and OBJ models with their animations, Blender thumbnails.
 - **Find things fast**: prefix search (`barr nuk` finds `SM_Prop_Barrel_Nuke_01`), automatic tags from file and folder names, filters, saved searches.
 - **Spot duplicates** across packs and bundles.

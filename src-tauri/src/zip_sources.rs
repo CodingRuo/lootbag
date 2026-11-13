@@ -1,8 +1,11 @@
 //! ZIP packs used in place: catalogued from the archive directory, entries extracted on demand
 //! into `<library>/.cache/zip/<key>/`. The cache is disposable and never holds originals.
+//! Unity packages share this machinery; the entry points below dispatch on the archive kind
+//! (see `unity_packages`) and cache them under `<library>/.cache/unity/<key>/`.
 use super::imports::{
     available_space, checked_zip_path, create_safe_directories, open_zip, required_space,
 };
+use super::unity_packages::{self as unity, is_unity, is_unity_path};
 use super::*;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
@@ -15,32 +18,38 @@ const IDENTITY_PREFIX: &str = "zip:";
 /// The whole `.cache` is dropped on library open once it grows past this.
 const CACHE_LIMIT: u64 = 4 << 30;
 
+/// Whether a source identity belongs to an archive used in place (ZIP or Unity package).
 pub(super) fn is_zip(identity: &str) -> bool {
-    identity.starts_with(IDENTITY_PREFIX)
+    identity.starts_with(IDENTITY_PREFIX) || is_unity(identity)
 }
 
 /// File identity plus size and modification time: a moved archive keeps it, any rewrite changes it.
 pub(super) fn archive_identity(path: &Path) -> Result<String> {
     let metadata = fs::symlink_metadata(path)
-        .map_err(|e| format!("ZIP-Datei nicht verfügbar. Bitte ZIP neu verknüpfen: {e}"))?;
+        .map_err(|e| format!("Archiv nicht verfügbar. Bitte neu verknüpfen: {e}"))?;
     if !metadata.is_file() {
-        return Err("ZIP-Quelle ist keine reguläre Datei".into());
+        return Err("Archivquelle ist keine reguläre Datei".into());
     }
     Ok(format!(
-        "{IDENTITY_PREFIX}{}|{}|{}",
+        "{}{}|{}|{}",
+        if is_unity_path(path) {
+            unity::IDENTITY_PREFIX
+        } else {
+            IDENTITY_PREFIX
+        },
         file_identity(path, &metadata)?,
         metadata.len(),
         modified_identity(&metadata)?
     ))
 }
 
-fn crc_text(crc: u32) -> String {
+pub(super) fn crc_text(crc: u32) -> String {
     format!("{crc:08x}")
 }
 
 fn cache_path(root: &Path, catalog_path: &str) -> Result<PathBuf> {
     let relative = Path::new(catalog_path);
-    if !relative.starts_with("zip")
+    if !(relative.starts_with("zip") || relative.starts_with("unity"))
         || relative
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
@@ -184,14 +193,50 @@ fn remove_cache_dir(root: &Path, target: &Path) {
     }
 }
 
+/// Archive paths seen so far, lowercased, to find paths that would share one cache path on
+/// case-insensitive disks, as would a file named like another entry's folder (`a.wav` and
+/// `A.WAV/x.wav`).
+// shortcut: lowercase only, so NFC/NFD spellings of one name (e.g. "ä") still pass; normalize once a Unicode crate is in the tree.
+#[derive(Default)]
+pub(super) struct PathSet {
+    names: HashSet<String>,
+    dirs: HashSet<String>,
+}
+
+impl PathSet {
+    /// Adds a file or folder path; false when it collides with one added before.
+    pub(super) fn insert(&mut self, path: &str, dir: bool) -> bool {
+        let lower = path.to_lowercase();
+        let parents: Vec<_> = lower
+            .match_indices('/')
+            .map(|(at, _)| lower[..at].to_owned())
+            .collect();
+        let collides = parents.iter().any(|parent| self.names.contains(parent))
+            || if dir {
+                self.names.contains(&lower)
+            } else {
+                self.dirs.contains(&lower) || !self.names.insert(lower.clone())
+            };
+        if !collides {
+            self.dirs.extend(parents);
+            if dir {
+                self.dirs.insert(lower);
+            }
+        }
+        !collides
+    }
+}
+
 /// Validates an archive's whole directory with the ZIP rules and lists its candidate entries;
 /// no entry data is read. Fails when the archive changes while it is read.
 pub(super) fn read_directory(source: &Path) -> Result<(String, Vec<ReferencedFile>)> {
+    if is_unity_path(source) {
+        return unity::read_directory(source);
+    }
     let identity = archive_identity(source)?;
     let mut archive = open_zip(source)?;
     let mut files = Vec::new();
-    let mut names = HashSet::new();
-    let mut dirs = HashSet::new();
+    let mut paths = PathSet::default();
     for index in 0..archive.len() {
         let entry = archive
             .by_index_raw(index)
@@ -203,29 +248,13 @@ pub(super) fn read_directory(source: &Path) -> Result<(String, Vec<ReferencedFil
                 entry.name()
             ));
         }
-        // Such entries would share one cache path on case-insensitive disks, as would a file
-        // named like another entry's folder (`a.wav` and `A.WAV/x.wav`).
-        // shortcut: lowercase only, so NFC/NFD spellings of one name (e.g. "ä") still pass; normalize once a Unicode crate is in the tree.
-        let lower = path_text(&path)?.to_lowercase();
-        let parents: Vec<_> = lower
-            .match_indices('/')
-            .map(|(at, _)| lower[..at].to_owned())
-            .collect();
-        let collides = parents.iter().any(|dir| names.contains(dir))
-            || if entry.is_dir() {
-                names.contains(&lower)
-            } else {
-                dirs.contains(&lower) || !names.insert(lower.clone())
-            };
-        if collides {
+        if !paths.insert(&path_text(&path)?, entry.is_dir()) {
             return Err(format!(
                 "ZIP enthält Pfade, die sich nur in Groß-/Kleinschreibung unterscheiden oder Datei und Ordner zugleich sind: {}",
                 entry.name()
             ));
         }
-        dirs.extend(parents);
         if entry.is_dir() {
-            dirs.insert(lower);
             continue;
         }
         let Some(format) = assets::candidate_format(&path) else {
@@ -245,8 +274,31 @@ pub(super) fn read_directory(source: &Path) -> Result<(String, Vec<ReferencedFil
     Ok((identity, files))
 }
 
-/// Archives opened during one backfill batch, by source identity, so each directory is parsed once.
-pub(super) type OpenArchives = HashMap<String, ZipArchive<fs::File>>;
+/// Archives opened during one backfill batch, by source identity, so each directory is parsed once
+/// and a Unity package is read in one forward pass.
+pub(super) type OpenArchives = HashMap<String, OpenArchive>;
+
+pub(super) enum OpenArchive {
+    Zip(ZipArchive<fs::File>),
+    Unity(Box<unity::Cursor>),
+}
+
+/// Serializes Unity cache extraction: a concurrent request for the same payload waits and then
+/// finds the verified copy instead of decompressing the package again.
+static UNITY_EXTRACTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The catalogued payload of a Unity package file: GUID in `modified`, CRC in `identity`.
+fn unity_payload(relative: &str, location: &ReferencedLocation) -> Result<unity::Payload> {
+    Ok(unity::Payload {
+        path: Path::new(relative)
+            .strip_prefix(&location.prefix)
+            .map_err(|_| "Ungültiger Dateipfad im Katalog")?
+            .to_owned(),
+        guid: location.modified.clone(),
+        size: location.size as u64,
+        crc: location.identity.clone(),
+    })
+}
 
 #[cfg(test)]
 thread_local!(static ARCHIVE_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
@@ -277,22 +329,28 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 impl Library {
-    /// Catalogues a ZIP in place from its directory; no entry data is read or extracted.
+    /// Catalogues a ZIP in place from its directory, or a `.unitypackage` from one full scan;
+    /// nothing is extracted.
     pub fn reference_zip(&mut self, source: &Path) -> Result<AssetPackage> {
         let source = source
             .canonical()
-            .map_err(|e| format!("ZIP-Datei nicht verfügbar: {e}"))?;
+            .map_err(|e| format!("Archiv nicht verfügbar: {e}"))?;
         if source.starts_with(&self.root) {
-            return Err("Bitte eine ZIP-Datei außerhalb der Bibliothek auswählen".into());
+            return Err("Bitte ein Archiv außerhalb der Bibliothek auswählen".into());
         }
         let (identity, files) = read_directory(&source)?;
         let name = path_text(
             source
                 .file_stem()
                 .map(Path::new)
-                .ok_or("ZIP-Datei hat keinen Namen")?,
+                .ok_or("Archiv hat keinen Namen")?,
         )?;
-        self.save_reference(name, path_text(&source)?, identity, "zip", files)
+        let kind = if is_unity_path(&source) {
+            "unity"
+        } else {
+            "zip"
+        };
+        self.save_reference(name, path_text(&source)?, identity, kind, files)
     }
 
     /// Checks a referenced archive's identity; a changed archive loses its cache.
@@ -303,9 +361,11 @@ impl Library {
             if let Ok(cache) = cache_path(&self.root, &location.prefix) {
                 remove_cache_dir(&self.root, &cache);
             }
-            return Err(
-                "ZIP-Datei wurde verschoben oder verändert. Bitte ZIP neu verknüpfen".into(),
-            );
+            return Err(if is_unity(&location.root_identity) {
+                "Unity-Paket wurde verschoben oder verändert. Bitte neu verknüpfen".into()
+            } else {
+                "ZIP-Datei wurde verschoben oder verändert. Bitte ZIP neu verknüpfen".into()
+            });
         }
         Ok(())
     }
@@ -354,6 +414,12 @@ impl Library {
         if cached(&target, location.size as u64, &location.identity)? {
             return Ok(target);
         }
+        if is_unity(&location.root_identity) {
+            self.extract_unity(location, &[&unity_payload(relative, location)?])?
+                .pop()
+                .expect("one payload")?;
+            return Ok(target);
+        }
         let mut archive = open_zip(Path::new(&location.root))?;
         let index = Self::zip_entry_index(&mut archive, relative, location)?;
         let mut entry = archive
@@ -375,7 +441,19 @@ impl Library {
     ) -> Result<T> {
         let archive = match archives.entry(location.root_identity.clone()) {
             Entry::Occupied(open) => open.into_mut(),
-            Entry::Vacant(slot) => slot.insert(self.open_package_zip(location)?),
+            Entry::Vacant(slot) if is_unity(&location.root_identity) => {
+                self.check_package_zip(location)?;
+                slot.insert(OpenArchive::Unity(Box::new(unity::Cursor::new(Path::new(
+                    &location.root,
+                )))))
+            }
+            Entry::Vacant(slot) => slot.insert(OpenArchive::Zip(self.open_package_zip(location)?)),
+        };
+        let archive = match archive {
+            OpenArchive::Zip(archive) => archive,
+            OpenArchive::Unity(cursor) => {
+                return cursor.read(&unity_payload(relative, location)?, cancel, read);
+            }
         };
         let index = Self::zip_entry_index(archive, relative, location)?;
         let entry = archive
@@ -415,6 +493,19 @@ impl Library {
         location: &ReferencedLocation,
         select: impl FnOnce(&[&str]) -> Vec<String>,
     ) -> Result<Vec<PathBuf>> {
+        if is_unity(&location.root_identity) {
+            self.check_package_zip(location)?;
+            let payloads = unity::payloads(Path::new(&location.root), &location.root_identity)?;
+            let names: Vec<_> = payloads.iter().filter_map(|p| p.path.to_str()).collect();
+            let wanted: HashSet<String> = select(&names).into_iter().collect();
+            let wanted: Vec<_> = payloads
+                .iter()
+                .filter(|p| p.path.to_str().is_some_and(|name| wanted.contains(name)))
+                .collect();
+            // A broken companion is reported by the preview as missing, like in a folder.
+            self.extract_unity(location, &wanted)?;
+            return Ok(wanted.into_iter().map(|p| p.path.clone()).collect());
+        }
         let mut archive = self.open_package_zip(location)?;
         let wanted: HashSet<String> = select(&archive.file_names().collect::<Vec<_>>())
             .into_iter()
@@ -449,6 +540,37 @@ impl Library {
             found.push(path);
         }
         Ok(found)
+    }
+
+    /// Extracts Unity payloads (in archive order) into the package cache in one pass, skipping
+    /// verified copies; returns each payload's result.
+    fn extract_unity(
+        &self,
+        location: &ReferencedLocation,
+        payloads: &[&unity::Payload],
+    ) -> Result<Vec<Result<()>>> {
+        let _serial = UNITY_EXTRACTION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.check_package_zip(location)?;
+        let cache = Path::new(".cache").join(&location.prefix);
+        let mut cursor = unity::Cursor::new(Path::new(&location.root));
+        let cancel = AtomicBool::new(false);
+        Ok(payloads
+            .iter()
+            .map(|payload| {
+                let relative = cache.join(&payload.path);
+                create_safe_directories(&self.root, relative.parent().unwrap_or(Path::new("")))?;
+                let target = self.root.join(&relative);
+                if !cached(&target, payload.size, &payload.crc)? {
+                    cursor.read(payload, &cancel, |entry| {
+                        extract(&self.root, entry, payload.size, &target)
+                    })??;
+                    remember_verified(&target, &payload.crc);
+                }
+                Ok(())
+            })
+            .collect())
     }
 
     /// Drops the whole disposable cache when it outgrew its budget.
