@@ -13,7 +13,7 @@ export type TrashEntry = {
   parentTrashed: boolean;
 };
 
-export function TrashActions({ children, label, disabled, onTrash, onEditInfo, onOpenFile, onRescan, className = "" }: {
+export function TrashActions({ children, label, disabled, onTrash, onEditInfo, onOpenFile, onRescan, onWatch, watched = false, className = "" }: {
   children: ReactNode;
   label: string;
   disabled: boolean;
@@ -21,6 +21,8 @@ export function TrashActions({ children, label, disabled, onTrash, onEditInfo, o
   onEditInfo?: () => void;
   onOpenFile?: (reveal: boolean) => void;
   onRescan?: () => void;
+  onWatch?: () => void;
+  watched?: boolean;
   className?: string;
 }) {
   const id = useId();
@@ -30,7 +32,7 @@ export function TrashActions({ children, label, disabled, onTrash, onEditInfo, o
   function position(x: number, y: number) {
     if (!menu.current) return;
     menu.current.style.left = `${Math.max(8, Math.min(x, window.innerWidth - 232))}px`;
-    menu.current.style.top = `${Math.max(8, Math.min(y, window.innerHeight - (onOpenFile ? 184 : 104) - (onRescan ? 36 : 0)))}px`;
+    menu.current.style.top = `${Math.max(8, Math.min(y, window.innerHeight - (onOpenFile ? 184 : 104) - (onRescan ? 36 : 0) - (onWatch ? 36 : 0)))}px`;
   }
 
   return (
@@ -69,6 +71,11 @@ export function TrashActions({ children, label, disabled, onTrash, onEditInfo, o
           button.current?.focus();
           onRescan();
         }}>Neu einlesen</button>}
+        {onWatch && <button role="menuitemcheckbox" aria-checked={watched} className="neutral" disabled={disabled} onClick={() => {
+          menu.current?.hidePopover();
+          button.current?.focus();
+          onWatch();
+        }}>{watched ? "✓ " : ""}Ordner beobachten</button>}
         <button role="menuitem" disabled={disabled} onClick={() => {
           menu.current?.hidePopover();
           button.current?.focus();

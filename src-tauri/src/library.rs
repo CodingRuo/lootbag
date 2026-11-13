@@ -57,6 +57,9 @@ use imports::{ImportRun, ImportedFile};
 #[path = "rescan.rs"]
 mod rescan;
 pub use rescan::RescanSummary;
+#[path = "watch.rs"]
+mod watch;
+pub use watch::{watch_due, WatchNotice};
 #[path = "bulk.rs"]
 mod bulk;
 #[path = "project_export.rs"]
@@ -84,6 +87,8 @@ pub struct AssetPackage {
     pub external_root: Option<String>,
     /// External source that is a ZIP archive used in place.
     pub zip: bool,
+    /// External folder watched for changes (opt-in).
+    pub watched: bool,
     pub tags: Vec<String>,
     pub info: PackageInfo,
 }
@@ -319,8 +324,8 @@ impl Library {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| format!("Katalogformat nicht lesbar: {e}"))?;
         // Version 2 marks the one-time macOS metadata repair; 3 adds folder member variants and roles;
-        // 4 adds card waveforms.
-        if !(1..=4).contains(&version) {
+        // 4 adds card waveforms; 5 adds watched external folders.
+        if !(1..=5).contains(&version) {
             return Err(format!("Nicht unterstütztes Katalogformat: {version}"));
         }
         connection
@@ -400,6 +405,9 @@ impl Library {
         connection
             .execute_batch(audio_waveforms::SCHEMA)
             .map_err(|e| format!("Wellenformen können nicht geöffnet werden: {e}"))?;
+        connection
+            .execute_batch(watch::SCHEMA)
+            .map_err(|e| format!("Beobachtete Ordner können nicht geöffnet werden: {e}"))?;
         let mut library = Self { root, connection };
         library.remove_import_leftovers();
         library.trim_zip_cache();
@@ -433,10 +441,10 @@ impl Library {
                 ))
                 .map_err(|e| format!("Projektordner können nicht aktualisiert werden: {e}"))?;
         }
-        if version < 4 {
+        if version < 5 {
             library
                 .connection
-                .pragma_update(None, "user_version", 4)
+                .pragma_update(None, "user_version", 5)
                 .map_err(|e| format!("Katalogformat kann nicht gespeichert werden: {e}"))?;
         }
         // Cheap when every source is migrated; offline legacy sources retry on the next activation.
@@ -638,6 +646,7 @@ impl Library {
             available: true,
             external_root: None,
             zip: false,
+            watched: false,
             tags: Vec::new(),
             info: PackageInfo::default(),
         })
@@ -726,6 +735,7 @@ impl Library {
             source_kind: "external".into(),
             available: true,
             zip: kind == "zip",
+            watched: false,
             tags: Vec::new(),
             info: PackageInfo::default(),
         })
@@ -803,7 +813,7 @@ impl Library {
     }
 
     pub fn packages(&self) -> Result<Vec<AssetPackage>> {
-        let mut statement = self.connection.prepare("SELECT p.id, p.name, p.relative_path, p.source_path, COUNT(a.id), s.root, s.identity FROM active_packages p LEFT JOIN active_assets a ON a.package_id = p.id LEFT JOIN external_sources s ON s.package_id = p.id GROUP BY p.id ORDER BY p.name COLLATE NOCASE, p.id").map_err(|e| format!("Pakete nicht lesbar: {e}"))?;
+        let mut statement = self.connection.prepare("SELECT p.id, p.name, p.relative_path, p.source_path, COUNT(a.id), s.root, s.identity, EXISTS(SELECT 1 FROM watched_sources w WHERE w.package_id = p.id) FROM active_packages p LEFT JOIN active_assets a ON a.package_id = p.id LEFT JOIN external_sources s ON s.package_id = p.id GROUP BY p.id ORDER BY p.name COLLATE NOCASE, p.id").map_err(|e| format!("Pakete nicht lesbar: {e}"))?;
         let rows = statement
             .query_map([], |row| {
                 let external_root: Option<String> = row.get(5)?;
@@ -835,6 +845,7 @@ impl Library {
                     available,
                     external_root,
                     zip,
+                    watched: row.get(7)?,
                     tags: Vec::new(),
                     info: PackageInfo::default(),
                 })
@@ -6669,7 +6680,7 @@ mod tests {
             catalog
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            4
+            5
         );
         catalog.execute("INSERT INTO asset_files(asset_id, original_filename, relative_path, format, size_bytes) SELECT asset_id, '._tone.wav', relative_path || '.sidecar/._tone.wav', 'WAV', 4 FROM asset_files", []).unwrap();
         drop(catalog);

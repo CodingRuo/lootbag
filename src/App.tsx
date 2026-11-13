@@ -143,6 +143,29 @@ export default function App() {
     return () => { active = false; unlisten?.(); stops.forEach((stop) => stop()); };
   }, []);
 
+  // Watched external folders: checked on activation and on focus (throttled by the backend).
+  useEffect(() => {
+    const root = library?.root;
+    if (!native || !root) return;
+    const check = () => {
+      invoke<{ message: string; summary: unknown }[]>("check_watched_sources")
+        .then(async (notices) => {
+          if (!notices.length || currentLibraryRoot.current !== root) return;
+          if (notices.some((notice) => notice.summary)) {
+            const info = await invoke<LibraryInfo>("get_library");
+            if (currentLibraryRoot.current !== root) return;
+            setLibrary(info);
+            refreshCatalog();
+          }
+          setNotice({ tone: notices.some((notice) => !notice.summary) ? "error" : "success", message: notices.map((notice) => notice.message).join(" ") });
+        })
+        .catch(() => {});
+    };
+    check();
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
+  }, [library?.root]);
+
   useEffect(() => { setModelSelection(null); }, [library?.root, file?.id, file?.available, selected?.imageGroup?.workflow, selectedPackage?.externalRoot]);
 
   async function act(label: string, operation: (isCurrent: () => boolean) => Promise<void>) {
@@ -268,6 +291,14 @@ export default function App() {
     });
   }
 
+  function watchPackage(item: AssetPackage) {
+    void act(item.watched ? "Beobachtung wird beendet …" : "Ordner wird beobachtet …", async () => {
+      await invoke("set_watched", { packageId: item.id, watched: !item.watched });
+      setLibrary(await invoke<LibraryInfo>("get_library"));
+      setNotice({ tone: "success", message: item.watched ? `${item.name} wird nicht mehr beobachtet.` : `${item.name} wird beobachtet. Änderungen werden beim Öffnen der Bibliothek und bei Rückkehr zur App eingelesen.` });
+    });
+  }
+
   function trashItem(kind: "package" | "file", id: number, name: string) {
     void act("Eintrag wird in den Papierkorb verschoben …", async () => {
       await invoke(kind === "package" ? "trash_package" : "trash_file", kind === "package" ? { packageId: id } : { fileId: id });
@@ -354,7 +385,7 @@ export default function App() {
       ) : (
         <div className="workspace">
           <Sidebar savedSearches={query.savedSearches} searchJson={query.searchJson} applySavedSearch={query.applySavedSearch} deleteSavedSearch={query.deleteSavedSearch} library={library} traitsPending={traitsPending} catalogType={query.workflow ?? query.kind ?? ""} chooseType={query.chooseType} openLibrary={openLibrary} referenceFolder={referenceFolder} packageId={packageId} folderId={folderId} projectFolders={projectFolders} actionsDisabled={actionsDisabled}
-            filterPackage={query.filterPackage} filterFolder={query.filterFolder} trashItem={trashItem} editPackageInfo={editPackageInfo} rescanPackage={rescanPackage} refreshSources={refreshSources}
+            filterPackage={query.filterPackage} filterFolder={query.filterFolder} trashItem={trashItem} editPackageInfo={editPackageInfo} rescanPackage={rescanPackage} watchPackage={watchPackage} refreshSources={refreshSources}
             setNotice={setNotice} setShowFolderDialog={setShowFolderDialog} setShowTrash={setShowTrash} trashGeneration={trashGeneration} />
           <Catalog library={library} query={query} audio={audio} selected={selected} setSelected={setSelected} selection={selection} setSelection={setSelection}
             setSelectedFileId={setSelectedFileId} setModelSelection={setModelSelection} filteredPackage={filteredPackage} filteredFolderPath={filteredFolderPath}

@@ -383,6 +383,20 @@ accepts updated files at that location, so they open again; moving the source
 still needs `Quelle neu verknüpfen` with the original folder. ZIP sources are not
 rescanned yet.
 
+### Ordner beobachten
+
+`Ordner beobachten` in an external folder's `⋯` menu (off by default, stored
+per source in the catalog) checks the folder when the library is opened and
+when the app regains focus (at most once a minute): a recursive listing of
+names, sizes and modification times, without hashing. Only when that listing
+differs from the last one seen does `Neu einlesen` run in the background, one
+check at a time, and a notice reports "Neue Dateien in <Paket>: n neu, n
+geändert, n fehlen". The same state is never reported twice. An offline
+folder is skipped silently; a different folder at the registered path or an
+incomplete listing (for example missing permissions) is reported once and
+changes nothing. Switching the library cancels a running check. ZIP sources
+are not watched yet.
+
 ## Paketinfos und Credits
 
 `Paketinfo bearbeiten…` in a package's `⋯` menu (or in the inspector's
