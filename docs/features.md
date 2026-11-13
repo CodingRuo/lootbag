@@ -93,7 +93,10 @@ assumed). Nothing is copied on a mere click: once the pointer moves 6 points
 with the button still held, Rust asks that window's page which card lies under
 the press point. With the button still down the page shows what was pressed, so
 it answers at once from `elementFromPoint` and the current state: the card's
-file, or the whole selection if the card is selected, or nothing. Only the
+file, or the whole selection if the card is selected, or nothing. It answers
+with files only if the card under the point is the card the press landed on
+and the results and selection are unchanged since the press; scrolling or a
+results refresh during the hold answers nothing. Only the
 first answer for the still held press of that window is prepared in the
 background; answers for another press or window, late answers after release
 and repeated answers are dropped. The next move of that press after the payload
@@ -118,7 +121,10 @@ cleared at the next start. A copy or bundle that fails gives its share of the
 budget back. Drags of originals need no copies and are not affected.
 
 Lootbag runs as a single instance: a second launch focuses the open window and
-quits before it touches the drag-out cache or the catalog.
+quits before it touches the drag-out cache or the catalog. Because the
+single-instance check is not atomic on macOS, each launch also takes an
+exclusive OS lock on `instance.lock` in the cache folder first and holds it
+until it quits; a launch that cannot get it exits at once.
 
 ## ZIP-Pakete ohne Entpacken
 

@@ -476,6 +476,24 @@ impl Trash {
     }
 }
 
+/// Takes the exclusive per-user instance lock at `path` (an OS file lock, released when the
+/// returned file closes or the process dies); `Ok(None)` means another process holds it.
+pub fn lock_instance(path: &Path) -> io::Result<Option<fs::File>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
 /// Launch cleanup: moves the drag-out folder `staging` aside (a rename, so new drags can stage at
 /// once) and returns it with any folders an earlier launch moved aside but did not finish removing.
 /// Published copies live until here, because a recipient may read them long after the drop.

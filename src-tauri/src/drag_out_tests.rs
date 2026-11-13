@@ -384,6 +384,19 @@ fn launch_retires_published_copies_including_earlier_leftovers() {
 }
 
 #[test]
+fn only_one_holder_of_the_instance_lock_at_a_time() {
+    let workspace = Workspace::new();
+    let path = workspace.path("cache/instance.lock");
+    let first = lock_instance(&path)
+        .unwrap()
+        .expect("first launch gets the lock");
+    // A separate open file handle stands in for a concurrent second launch.
+    assert!(lock_instance(&path).unwrap().is_none());
+    drop(first);
+    assert!(lock_instance(&path).unwrap().is_some());
+}
+
+#[test]
 fn a_drag_whose_copies_exceed_the_cache_budget_is_refused_but_originals_still_drag() {
     let workspace = Workspace::new();
     write(workspace.path("Pack/Hit.wav"), &[0; 600]);

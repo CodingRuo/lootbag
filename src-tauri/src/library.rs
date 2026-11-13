@@ -70,7 +70,8 @@ mod drag_out;
 mod project_export;
 pub use bulk::{BulkAction, BulkResult, BulkSelection};
 pub use drag_out::{
-    css_point, retire_drag_cache, DragGesture, DragItem, DragSource, DragStage, DragStep, Trash,
+    css_point, lock_instance, retire_drag_cache, DragGesture, DragItem, DragSource, DragStage,
+    DragStep, Trash,
 };
 pub use project_export::ProjectExportPlan;
 #[path = "package_info.rs"]

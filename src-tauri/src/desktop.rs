@@ -1,13 +1,13 @@
 use crate::library::{
-    retire_drag_cache, AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform,
-    BulkAction, BulkResult, BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DragSource,
-    DragStage, DuplicateCopy, EmbeddedAudioTags, EmptiedTrash, ExportOutcome, ImageGroup,
-    ImageWorkflow, ImportControl, ImportProgress, KindCounts, Library, ModelResources, PackageInfo,
-    PackageInfoDetails, ProjectExportPlan, ProjectFolder, RescanSummary, Result, SavedSearch,
-    Trash, TrashEntry, WatchNotice, ZipEstimate,
+    lock_instance, retire_drag_cache, AssetPackage, AudioCriteria, AudioMetadata, AudioStatus,
+    AudioWaveform, BulkAction, BulkResult, BulkSelection, CatalogFilters, CatalogPage,
+    CatalogQuery, DragSource, DragStage, DuplicateCopy, EmbeddedAudioTags, EmptiedTrash,
+    ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress, KindCounts, Library,
+    ModelResources, PackageInfo, PackageInfoDetails, ProjectExportPlan, ProjectFolder,
+    RescanSummary, Result, SavedSearch, Trash, TrashEntry, WatchNotice, ZipEstimate,
 };
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -1761,8 +1761,28 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(Session::default())
         .setup(|app| {
+            // The single-instance plugin is not atomic on macOS: this OS lock, held for the process
+            // lifetime, keeps a racing second launch from retiring our published drag copies or
+            // opening the catalog.
+            let lock = app
+                .path()
+                .app_cache_dir()
+                .map_err(io::Error::other)
+                .and_then(|dir| lock_instance(&dir.join("instance.lock")));
+            let locked = match lock {
+                Ok(Some(file)) => app.manage(file),
+                Ok(None) => {
+                    eprintln!("Lootbag läuft bereits; dieser Start wird beendet.");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("Lootbag-Instanzsperre nicht verfügbar: {error}");
+                    false
+                }
+            };
             // Published drag copies live until the next launch; removed off the main thread.
-            if let Ok(staging) = drag_staging(app.handle()) {
+            // Without the lock another instance might still be using them, so they stay.
+            if let (true, Ok(staging)) = (locked, drag_staging(app.handle())) {
                 retire_drag_cache(&staging)
                     .into_iter()
                     .for_each(|old| TRASH.remove(old));
