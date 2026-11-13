@@ -8,7 +8,8 @@ export type PackageInfo = {
   version: string | null;
   notes: string | null;
 };
-export type PackageInfoDetails = PackageInfo & { licenseFiles: string[] };
+export type LicenseSuggestion = { license: string; file: string; excerpt: string };
+export type PackageInfoDetails = PackageInfo & { licenseFiles: string[]; licenseSuggestions: LicenseSuggestion[] };
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 export const PACKAGE_INFO_FIELDS: { key: keyof PackageInfo; label: string; max: number }[] = [
@@ -31,4 +32,9 @@ export function savePackageInfo(invoke: Invoke, packageId: number, form: Record<
 export function originFacts(info: PackageInfo | undefined) {
   return PACKAGE_INFO_FIELDS.filter(({ key }) => ["store", "license", "author", "url"].includes(key) && info?.[key])
     .map(({ key, label }) => ({ key, label, value: info![key]! }));
+}
+
+// "Übernehmen" fills the licence only while it is empty, judged on the latest form (the user may have typed meanwhile).
+export function adoptLicense<T extends { license: string }>(form: T, license: string): T {
+  return form.license.trim() ? form : { ...form, license };
 }

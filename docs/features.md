@@ -322,10 +322,18 @@ Urheber, Gekauft am, Version and Notizen. All fields are optional free text
 `https://`, the date is `YYYY-MM-DD`. The info is stored per package in the
 catalog and deleted with the package when the trash is emptied. `Herkunft`
 shows shop, link (selectable, with `Link kopieren`), licence and author, or
-"Keine Lizenz hinterlegt". For imported packages the dialog lists licence and
-readme files found in the package root and its direct subfolders
-(`LICENSE*`, `*license*.txt/md/pdf`, `README*`); nothing is read or filled in
-automatically, and external sources are not scanned.
+"Keine Lizenz hinterlegt". The dialog lists licence and readme files found in
+the package root and its direct subfolders (`LICENSE*`, `*license*.txt/md/pdf`,
+`README*`) for imported packages, external folders and ZIPs (only while the
+source is still the catalogued one; links are not followed). Plain-text ones
+(`.txt`, `.md`, no extension; first 64 KB) are read for licence names: CC0,
+CC BY 3.0/4.0, CC BY-SA 3.0/4.0 and MIT, by explicit name with version or the
+canonical licence URL. Each match is shown as a suggestion with its file and
+line, e.g. "CC0 1.0 – aus License.txt: »…«"; `Übernehmen` fills the Lizenz
+field only while it is empty. Several licences are listed separately, never
+merged. Generic wording ("royalty free"), a shop name or a versionless
+"Creative Commons Attribution" is not recognized; PDFs stay hints; nothing is
+rendered or fetched.
 
 Project exports also write `CREDITS.md` next to `manifest.json` (`CREDITS-2.md`
 if a subfolder has that name): one section per package with Urheber, Lizenz

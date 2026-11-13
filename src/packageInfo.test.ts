@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { originFacts, savePackageInfo, type PackageInfo } from "./packageInfo.ts";
+import { adoptLicense, originFacts, savePackageInfo, type PackageInfo } from "./packageInfo.ts";
 
 const empty: PackageInfo = { store: null, url: null, license: null, author: null, purchased: null, version: null, notes: null };
 
@@ -16,4 +16,11 @@ test("the origin tab lists shop, link, licence and author only when set", () => 
   assert.deepEqual(originFacts(empty), []);
   const facts = originFacts({ ...empty, store: "Kenney", license: "CC0", url: "https://kenney.nl", notes: "intern" });
   assert.deepEqual(facts.map((fact) => [fact.label, fact.value]), [["Shop", "Kenney"], ["Link", "https://kenney.nl"], ["Lizenz", "CC0"]]);
+});
+
+test("adopting a suggested licence never overwrites a filled field", () => {
+  assert.deepEqual(adoptLicense({ license: "", store: "itch.io" }, "CC0 1.0"), { license: "CC0 1.0", store: "itch.io" });
+  assert.deepEqual(adoptLicense({ license: " " }, "MIT"), { license: "MIT" });
+  const typed = { license: "Eigene Lizenz" };
+  assert.equal(adoptLicense(typed, "CC0 1.0"), typed);
 });
