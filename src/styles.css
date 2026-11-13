@@ -1448,6 +1448,8 @@ p {
 .asset-item:hover .trash-actions > .icon-button, .asset-item:focus-within .trash-actions > .icon-button { opacity: 1; }
 .asset-select { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; padding: 0; border: 0; border-radius: inherit; color: inherit; text-align: left; background: transparent; }
 .asset-select:focus-visible { outline-offset: -3px; }
+/* The native drag-out owns the gesture; WebKit must not start its own image or text drag in a card. */
+.asset-select, .asset-select * { -webkit-user-drag: none; -webkit-user-select: none; user-select: none; }
 .asset-poster { display: flex; position: relative; justify-content: center; align-items: center; width: 100%; height: 96px; flex: 0 0 auto; background-color: #1e2c3b; border-bottom: 1px solid #2c3b4b; border-radius: 6px 6px 0 0; color: #8da7bf; overflow: hidden; }
 .asset-poster > svg { width: 30px; height: 30px; stroke-width: 1.2; }
 .model-thumbnail { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }

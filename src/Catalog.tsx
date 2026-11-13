@@ -12,14 +12,14 @@ import { assetKey } from "./imageWorkflows";
 import { TrashActions } from "./Trash";
 import { folderPath, type ProjectFolder } from "./ProjectFolders";
 import { catalogSelection, dragSources, nextCatalogIndex, storeCatalogView, storedCatalogView, type CatalogSelection, type CatalogView, type SelectionMode } from "./catalogSelection";
-import { dragOutHandlers } from "./dragOut.ts";
+import { dragOutHandlers, watchNativeDragOut, type DragOutEnd, type DragPlatform } from "./dragOut.ts";
 import { createSoundWaveformQueue } from "./soundWaveforms.ts";
 import { createCatalogAudition, formatDuration, stopAuditionOnPagePlay } from "./audioAudition";
 import { errorMessage } from "./errorMessage.ts";
 import { exportProject, memberRole } from "./projectExport.ts";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import type { useAudioAnalysis } from "./useAudioAnalysis.ts";
-import { CATALOG_TYPES, Icon, PAGE_SIZE, archiveName, bytes, isAnimationOnly, mac, number, type Act, type Asset, type AssetFile, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { CATALOG_TYPES, Icon, PAGE_SIZE, archiveName, bytes, isAnimationOnly, mac, native, number, type Act, type Asset, type AssetFile, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type BulkAction = { kind: "addTags"; tags: string[] } | { kind: "addToFolder"; folderId: number } | { kind: "trash" };
 type BulkResult = { assetCount: number; fileCount: number };
@@ -30,6 +30,8 @@ const MAX_MODEL_THUMBNAIL_BYTES = 32 * 1024 * 1024;
 const wrapName = (name: string) => name.replace(/[_-]/g, "$&\u200b");
 
 // Catalog column: search, filter/view tools, audio analysis, bulk actions, results and paging.
+const dragPlatform: DragPlatform = native ? mac ? "mac" : "other" : null;
+
 export default function Catalog({ library, query, audio, selected, setSelected, selection, setSelection, setSelectedFileId, setModelSelection, filteredPackage, filteredFolderPath, projectFolders, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, openFile, relinkSource, importPackage, previewGeneration }: {
   library: LibraryInfo;
   query: CatalogQuery;
@@ -103,6 +105,18 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
     }
     document.addEventListener("keydown", focusSearch);
     return () => document.removeEventListener("keydown", focusSearch);
+  }, []);
+  function dragOutEnded({ problems, error }: DragOutEnd) {
+    if (error) setNotice({ tone: "error", message: errorMessage(error, "Die Auswahl kann nicht herausgezogen werden.") });
+    else if (problems.length) setNotice({ tone: "error", message: `Herausziehen unvollständig oder mit Hinweisen: ${problems.join("; ")}` });
+  }
+  // setNotice is a state setter, so the first render's handler stays valid.
+  useEffect(() => {
+    if (dragPlatform !== "mac") return;
+    let stop: (() => void) | undefined;
+    let active = true;
+    watchNativeDragOut(dragOutEnded).then((unlisten) => { if (active) stop = unlisten; else unlisten(); }).catch(() => {});
+    return () => { active = false; stop?.(); };
   }, []);
   useEffect(() => { modelThumbnails.reset(thumbnailScope); }, [modelThumbnails, thumbnailScope]);
   useEffect(() => () => modelThumbnails.dispose(), [modelThumbnails]);
@@ -430,9 +444,8 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                 <TrashActions label={`Datei ${firstFile.originalFilename}`} disabled={actionsDisabled}
                   onTrash={() => trashItem("file", firstFile.id, firstFile.originalFilename)}
                   onOpenFile={(reveal) => openFile(firstFile, asset.packageId, reveal)}>
-                  <button className="asset-select" disabled={queryLoading} {...dragOutHandlers(() => dragSources(asset, selectedAssets), actionsDisabled,
-                    (problems) => setNotice({ tone: "error", message: `Herausziehen unvollständig oder mit Hinweisen: ${problems.join("; ")}` }),
-                    (reason) => setNotice({ tone: "error", message: errorMessage(reason, "Die Auswahl kann nicht herausgezogen werden.") }))} title={`${name}\n${firstFile.originalFilename}\n${asset.packageName} · ${folders}`}
+                  <button className="asset-select" disabled={queryLoading} {...dragOutHandlers({ sources: () => dragSources(asset, selectedAssets), disabled: actionsDisabled, platform: dragPlatform, onEnd: dragOutEnded,
+                    onError: (reason) => setNotice({ tone: "error", message: errorMessage(reason, "Die Auswahl kann nicht herausgezogen werden.") }) })} title={`${name}\n${firstFile.originalFilename}\n${asset.packageName} · ${folders}`}
                     onClick={(event) => chooseAsset(asset, event.shiftKey ? (event.metaKey || event.ctrlKey ? "addRange" : "range") : event.metaKey || event.ctrlKey ? "toggle" : "single")}
                     onKeyUp={(event) => { if (sound && event.key === " ") event.preventDefault(); }}
                     onKeyDown={(event) => {

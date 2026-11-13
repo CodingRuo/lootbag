@@ -26,7 +26,7 @@ export function ImageThumbnail({ fileId, available, filename }: { fileId: number
     return () => { active = false; controller.abort(); release(); };
   }, [fileId, available, filename]);
   const aseprite = /\.(ase|aseprite)$/i.test(filename);
-  return url ? <><img className="asset-thumbnail" src={url} alt="" title={aseprite ? "Aseprite · Erstes vollständiges Bild" : /\.gif$/i.test(filename) ? "GIF · Erstes Bild" : undefined} loading="lazy" onError={() => setUrl(null)} />{aseprite && <span className="model-thumbnail-status">Erstes Bild</span>}</> : <span aria-hidden="true">▧</span>;
+  return url ? <><img className="asset-thumbnail" src={url} alt="" draggable={false} title={aseprite ? "Aseprite · Erstes vollständiges Bild" : /\.gif$/i.test(filename) ? "GIF · Erstes Bild" : undefined} loading="lazy" onError={() => setUrl(null)} />{aseprite && <span className="model-thumbnail-status">Erstes Bild</span>}</> : <span aria-hidden="true">▧</span>;
 }
 
 export default function ImagePreview({ file }: { file: { id: number; originalFilename: string } }) {

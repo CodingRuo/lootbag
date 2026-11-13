@@ -83,7 +83,7 @@ export default function ModelThumbnail({ queue, scope, fileId, path, sizeBytes, 
 
   const message = !available ? "Modelldatei nicht verfügbar." : result?.error ?? result?.warning;
   return <span ref={host} className="model-thumbnail" title={message ?? undefined}>
-    {result?.url ? <img className="model-thumbnail-image" src={result.url} alt="" onError={() => setResult({ url: null, warning: null, error: "Modell-Vorschaubild nicht verfügbar." })} /> : fallback}
+    {result?.url ? <img className="model-thumbnail-image" src={result.url} alt="" draggable={false} onError={() => setResult({ url: null, warning: null, error: "Modell-Vorschaubild nicht verfügbar." })} /> : fallback}
     {message && <span className="model-thumbnail-status" aria-label={message}>{result?.error || !available ? "Keine Vorschau" : format === "BLEND" ? "Gespeichertes Bild" : "Textur fehlt/ersetzt"}</span>}
   </span>;
 }
