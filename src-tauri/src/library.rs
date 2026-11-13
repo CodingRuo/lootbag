@@ -333,8 +333,8 @@ impl Library {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| format!("Katalogformat nicht lesbar: {e}"))?;
         // Version 2 marks the one-time macOS metadata repair; 3 adds folder member variants and roles;
-        // 4 adds card waveforms; 5 adds watched external folders.
-        if !(1..=5).contains(&version) {
+        // 4 adds card waveforms; 5 adds watched external folders; 6 adds managed scan stamps.
+        if !(1..=6).contains(&version) {
             return Err(format!("Nicht unterstütztes Katalogformat: {version}"));
         }
         connection
@@ -374,7 +374,8 @@ impl Library {
             CREATE TABLE IF NOT EXISTS file_hashes (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, size INTEGER, hash TEXT, error TEXT, stamp TEXT);
             CREATE INDEX IF NOT EXISTS file_hashes_hash ON file_hashes(hash);
             CREATE INDEX IF NOT EXISTS asset_files_asset_id ON asset_files(asset_id);
-            CREATE TABLE IF NOT EXISTS package_info (package_id INTEGER PRIMARY KEY REFERENCES packages(id) ON DELETE CASCADE, store TEXT, url TEXT, license TEXT, author TEXT, purchased TEXT, version TEXT, notes TEXT);")
+            CREATE TABLE IF NOT EXISTS package_info (package_id INTEGER PRIMARY KEY REFERENCES packages(id) ON DELETE CASCADE, store TEXT, url TEXT, license TEXT, author TEXT, purchased TEXT, version TEXT, notes TEXT);
+            CREATE TABLE IF NOT EXISTS scan_stamps (file_id INTEGER PRIMARY KEY REFERENCES asset_files(id) ON DELETE CASCADE, stamp TEXT NOT NULL);")
             .map_err(|e| format!("Annotationen können nicht geöffnet werden: {e}"))?;
         // Older hashes have no stamp; the next backfill drops and recomputes them.
         connection
@@ -450,10 +451,11 @@ impl Library {
                 ))
                 .map_err(|e| format!("Projektordner können nicht aktualisiert werden: {e}"))?;
         }
-        if version < 5 {
+        // Managed files of older catalogs have no scan stamp; their first rescan baselines them.
+        if version < 6 {
             library
                 .connection
-                .pragma_update(None, "user_version", 5)
+                .pragma_update(None, "user_version", 6)
                 .map_err(|e| format!("Katalogformat kann nicht gespeichert werden: {e}"))?;
         }
         // Cheap when every source is migrated; offline legacy sources retry on the next activation.
@@ -639,7 +641,12 @@ impl Library {
         let mut groups = HashMap::new();
         for file in &files {
             run.cataloging(&file.relative)?;
-            insert_variant(&transaction, id, &relative_path, file, &mut groups)?;
+            let file_id = insert_variant(&transaction, id, &relative_path, file, &mut groups)?;
+            rescan::save_scan_stamp(
+                &transaction,
+                file_id,
+                &self.root.join(&relative_path).join(&file.relative),
+            )?;
         }
         run.check()?;
         transaction
@@ -6694,7 +6701,7 @@ mod tests {
             catalog
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
         );
         catalog.execute("INSERT INTO asset_files(asset_id, original_filename, relative_path, format, size_bytes) SELECT asset_id, '._tone.wav', relative_path || '.sidecar/._tone.wav', 'WAV', 4 FROM asset_files", []).unwrap();
         drop(catalog);

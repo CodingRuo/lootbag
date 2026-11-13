@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn a_version_4_catalog_opens_unwatched_and_becomes_version_5() {
+    fn a_version_4_catalog_opens_unwatched_and_becomes_current() {
         let (workspace, library, package, _) = setup();
         library
             .connection
@@ -320,7 +320,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         assert!(
             library.watched_sources().unwrap().is_empty(),
             "off by default"

@@ -21,9 +21,9 @@ pub struct RescanSummary {
     pub ambiguous: Vec<String>,
 }
 
-/// A discovered file; `stamp` has the `file_hashes.stamp` form of its source, so an in-place
-/// change of equal size is still detected once the file was hashed (external files: always,
-/// through their recorded modification time; ZIP entries: their CRC).
+/// A discovered file; `stamp` identifies its content independently of hashes, so an in-place
+/// change of equal size is detected: managed files through their `scan_stamps` row (see
+/// `scan_stamp`), external files through their recorded modification time, ZIP entries their CRC.
 pub(super) struct ScannedFile {
     pub(super) file: ImportedFile,
     pub(super) stamp: Option<String>,
@@ -227,9 +227,9 @@ impl Library {
                 "SELECT f.id, f.asset_id, f.relative_path, f.format, f.size_bytes,
                 EXISTS(SELECT 1 FROM trash t WHERE t.file_id = f.id),
                 CASE e.modified WHEN 'zip' THEN e.identity
-                ELSE COALESCE(h.stamp, e.modified || '|' || f.size_bytes) END
+                ELSE COALESCE(s.stamp, e.modified || '|' || f.size_bytes) END
                 FROM asset_files f JOIN assets a ON a.id = f.asset_id
-                LEFT JOIN file_hashes h ON h.file_id = f.id
+                LEFT JOIN scan_stamps s ON s.file_id = f.id
                 LEFT JOIN external_files e ON e.file_id = f.id WHERE a.package_id = ?1",
             )
             .map_err(failed)?
@@ -284,13 +284,18 @@ impl Library {
         let mut summary = RescanSummary::default();
         let mut ids = Vec::with_capacity(scanned.len());
         let (mut seen, mut changed, mut added) = (HashSet::new(), Vec::new(), Vec::new());
+        // Unstamped files (catalogs before version 6) may have changed unseen: their derived data
+        // is dropped like a change's, but they are not reported as changed.
+        let mut unknown = Vec::new();
         for scan in scanned {
             if let Some(known) = catalog.get(&scan.file.relative) {
                 seen.insert(known.id);
                 ids.push(known.id);
-                if !known.trashed
-                    && (known.size != scan.file.size
-                        || (known.stamp.is_some() && known.stamp != scan.stamp))
+                if known.trashed {
+                    continue;
+                }
+                if known.size != scan.file.size
+                    || (known.stamp.is_some() && known.stamp != scan.stamp)
                 {
                     self.connection
                         .execute(
@@ -299,6 +304,8 @@ impl Library {
                         )
                         .map_err(failed)?;
                     changed.push(known.id);
+                } else if known.stamp.is_none() {
+                    unknown.push(known.id);
                 }
             } else {
                 let id = insert_variant(
@@ -324,9 +331,22 @@ impl Library {
                     &format!(
                         "DELETE FROM {table} WHERE file_id IN (SELECT value FROM json_each(?1))"
                     ),
-                    [id_list(&changed)],
+                    [id_list(
+                        &changed.iter().chain(&unknown).copied().collect::<Vec<_>>(),
+                    )],
                 )
                 .map_err(failed)?;
+        }
+        for (scan, id) in scanned.iter().zip(&ids) {
+            if let Some(stamp) = scan.stamp.as_deref() {
+                self.connection
+                    .execute(
+                        "INSERT OR REPLACE INTO scan_stamps(file_id, stamp)
+                        SELECT ?1, ?2 WHERE NOT EXISTS (SELECT 1 FROM trash WHERE file_id = ?1)",
+                        params![id, stamp],
+                    )
+                    .map_err(failed)?;
+            }
         }
         self.connection
             .execute(
@@ -342,6 +362,34 @@ impl Library {
             .count();
         Ok((summary, ids))
     }
+}
+
+/// Stamp of a managed file: modification time and size, plus its inode where the platform has
+/// one, so a same-size replacement is noticed even when it keeps the modification time.
+fn scan_stamp(metadata: &fs::Metadata) -> Option<String> {
+    let stamp = file_stamp(metadata)?;
+    #[cfg(unix)]
+    let stamp = format!("{stamp}|{}", std::os::unix::fs::MetadataExt::ino(metadata));
+    Some(stamp)
+}
+
+/// Records the scan stamp of a freshly imported managed file at `path`.
+pub(super) fn save_scan_stamp(
+    connection: &rusqlite::Connection,
+    file_id: i64,
+    path: &Path,
+) -> Result<()> {
+    let stamp = fs::symlink_metadata(path)
+        .ok()
+        .and_then(|m| scan_stamp(&m))
+        .ok_or("Importierte Datei nicht lesbar")?;
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO scan_stamps(file_id, stamp) VALUES (?1, ?2)",
+            params![file_id, stamp],
+        )
+        .map_err(|e| format!("Katalog kann nicht aktualisiert werden: {e}"))?;
+    Ok(())
 }
 
 /// Discovery below a managed package folder with the import rules; links and special files fail.
@@ -365,7 +413,7 @@ fn scan_managed(root: &Path, relative: &Path, files: &mut Vec<ScannedFile>) -> R
                 continue;
             };
             files.push(ScannedFile {
-                stamp: file_stamp(&metadata),
+                stamp: scan_stamp(&metadata),
                 file: ImportedFile {
                     relative: path,
                     size: i64::try_from(metadata.len())
@@ -575,6 +623,73 @@ mod tests {
 
         let again = library.rescan_package(package.id).unwrap();
         assert_eq!((again.added, again.changed, again.missing), (0, 0, 1));
+    }
+
+    fn derived(library: &Library, file: i64) -> i64 {
+        count(
+            library,
+            &format!(
+                "SELECT (SELECT COUNT(*) FROM audio_metadata WHERE file_id = {file})
+                + (SELECT COUNT(*) FROM model_traits WHERE file_id = {file})"
+            ),
+        )
+    }
+
+    #[test]
+    fn same_size_managed_edits_are_changes_without_a_hash() {
+        let (_workspace, mut library, package, storage) =
+            setup(&[("Hit.wav", b"hit"), ("Model.glb", b"glb")]);
+        let (hit, model) = (file_id(&library, "Hit.wav"), file_id(&library, "Model.glb"));
+        library
+            .connection
+            .execute_batch(&format!(
+                "INSERT INTO audio_metadata(file_id, duration_seconds) VALUES ({hit}, 1.0);
+                INSERT INTO model_traits(file_id, has_mesh, has_animation) VALUES ({model}, 1, 0);"
+            ))
+            .unwrap();
+        assert_eq!(count(&library, "SELECT COUNT(*) FROM file_hashes"), 0);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write(&storage.join("Hit.wav"), b"HIT");
+        write(&storage.join("Model.glb.new"), b"GLB");
+        fs::rename(storage.join("Model.glb.new"), storage.join("Model.glb")).unwrap();
+        let summary = library.rescan_package(package.id).unwrap();
+        assert_eq!((summary.added, summary.changed), (0, 2));
+        assert_eq!(derived(&library, hit) + derived(&library, model), 0);
+        let again = library.rescan_package(package.id).unwrap();
+        assert_eq!(again.changed, 0);
+    }
+
+    #[test]
+    fn upgraded_catalogs_baseline_unstamped_files_conservatively() {
+        let (workspace, library, package, storage) = setup(&[("Hit.wav", b"hit")]);
+        let hit = file_id(&library, "Hit.wav");
+        library
+            .connection
+            .execute_batch(&format!(
+                "DROP TABLE scan_stamps; PRAGMA user_version = 5;
+                INSERT INTO audio_metadata(file_id, duration_seconds) VALUES ({hit}, 1.0);"
+            ))
+            .unwrap();
+        drop(library);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write(&storage.join("Hit.wav"), b"HIT");
+        let mut library = Library::open(&workspace.0.join("Library")).unwrap();
+        let version: i64 = library
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        let summary = library.rescan_package(package.id).unwrap();
+        assert_eq!(summary.changed, 0, "no stamp: a change cannot be claimed");
+        assert_eq!(derived(&library, hit), 0, "but derived data is recomputed");
+        assert_eq!(
+            count(&library, "SELECT COUNT(*) FROM scan_stamps"),
+            1,
+            "baselined"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write(&storage.join("Hit.wav"), b"hiT");
+        assert_eq!(library.rescan_package(package.id).unwrap().changed, 1);
     }
 
     #[test]

@@ -444,10 +444,15 @@ current discovery rules: a managed package's folder in the library storage (neve
 the original import location), an external folder at its registered location. It reports "n neu, n geändert, n fehlen". A file at the same
 package path keeps its asset and file identity, so names, tags, package info,
 project memberships, roles and chosen variants stay, also when its content
-changed. Changes are detected by size, and for already hashed files and files
-of external folders also by modification time; analysed audio properties, model traits and hashes of changed
-files are dropped and recomputed, auto-tags and duplicates follow in the
-background. A renamed or moved file counts as missing plus new. Missing files keep
+changed. Changes are detected by size and a scan stamp stored per file in the
+catalog, independent of hashes: modification time (plus the file's inode where
+the platform has one) for managed files, the recorded modification time for
+external folders. Analysed audio properties, model traits, hashes and card
+waveforms of changed files are dropped and recomputed, auto-tags and duplicates
+follow in the background. Catalogs from before format 6 have no stamp for
+managed files: their first rescan records one and, to be safe, drops and
+recomputes those files' derived data, but does not count them as "geändert",
+because an earlier change cannot be told from no change. A renamed or moved file counts as missing plus new. Missing files keep
 their catalog entry and annotations and show as unavailable until they return or
 are moved to the trash; trashed files stay in the trash. New files join an
 existing asset only when exactly one asset of the same folder, name and kind is
