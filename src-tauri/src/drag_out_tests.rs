@@ -108,15 +108,17 @@ fn a_selection_delivers_originals_renamed_duplicates_and_model_bundles_and_repor
         )
         .unwrap();
 
-    assert_eq!(stage.paths.len(), 3);
-    assert_eq!(stage.paths[0], library.resolve_preview(pack_hit).unwrap());
+    let paths: Vec<_> = stage.items.iter().map(|item| &item.path).collect();
+    let directories: Vec<_> = stage.items.iter().map(|item| item.directory).collect();
+    assert_eq!(directories, [false, false, true]);
+    assert_eq!(*paths[0], library.resolve_preview(pack_hit).unwrap());
     // Same name up to case: the second sound is a renamed copy, the model a bundle folder.
-    assert!(stage.paths[1].starts_with(&staging));
-    assert_eq!(stage.paths[1].file_name().unwrap(), "hit-2.WAV");
-    assert_eq!(fs::read(&stage.paths[1]).unwrap(), b"other");
-    assert_eq!(stage.paths[2].file_name().unwrap(), "Rock");
+    assert!(paths[1].starts_with(&staging));
+    assert_eq!(paths[1].file_name().unwrap(), "hit-2.WAV");
+    assert_eq!(fs::read(paths[1]).unwrap(), b"other");
+    assert_eq!(paths[2].file_name().unwrap(), "Rock");
     assert_eq!(
-        tree(&stage.paths[2]),
+        tree(paths[2]),
         ["OBJ/Rock.obj", "OBJ/rock mat.mtl", "OBJ/stone.tga"]
     );
     assert_eq!(stage.problems.len(), 1, "{:?}", stage.problems);
@@ -126,8 +128,8 @@ fn a_selection_delivers_originals_renamed_duplicates_and_model_bundles_and_repor
     let again = library
         .stage_drag(&[plain(file(&library, "Rock.obj", "Pack"))], &staging)
         .unwrap();
-    assert!(stage.paths[2].join("OBJ/Rock.obj").is_file());
-    assert_ne!(again.paths[0].parent(), stage.paths[2].parent());
+    assert!(paths[2].join("OBJ/Rock.obj").is_file());
+    assert_ne!(again.items[0].path.parent(), paths[2].parent());
 }
 
 #[test]
@@ -159,9 +161,15 @@ fn image_groups_drag_their_member_files() {
         )
         .unwrap();
     let mut names: Vec<_> = stage
-        .paths
+        .items
         .iter()
-        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|item| {
+            item.path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     names.sort();
     assert_eq!(
@@ -196,4 +204,100 @@ fn a_drag_with_nothing_deliverable_fails_with_every_reason() {
         "{error}"
     );
     assert!(library.stage_drag(&[], &workspace.path("staging")).is_err());
+}
+
+#[test]
+fn models_without_companions_drag_as_their_plain_file() {
+    let workspace = Workspace::new();
+    // Animation-only FBX and an OBJ without materials: nothing to bundle.
+    write(workspace.path("Anim/Run.fbx"), b"Kaydara\0Take 001\0");
+    write(workspace.path("Anim/Box.obj"), b"v 0 0 0\n");
+    write(workspace.path("Other/run.FBX"), b"Kaydara\0other\0");
+    write(
+        workspace.path("Kit/Crate.fbx"),
+        b"Kaydara\0Textures\\Crate_Wood.png\0",
+    );
+    write(workspace.path("Kit/Textures/Crate_Wood.png"), b"wood");
+    let mut library = Library::create(&workspace.path("library")).unwrap();
+    for package in ["Anim", "Other", "Kit"] {
+        library.import_folder(&workspace.path(package)).unwrap();
+    }
+    let run = file(&library, "Run.fbx", "Anim");
+    let staging = workspace.path("staging");
+    let stage = library
+        .stage_drag(
+            &[
+                plain(run),
+                plain(file(&library, "Box.obj", "Anim")),
+                plain(file(&library, "run.FBX", "Other")),
+                plain(file(&library, "Crate.fbx", "Kit")),
+            ],
+            &staging,
+        )
+        .unwrap();
+    assert!(stage.problems.is_empty(), "{:?}", stage.problems);
+    let names: Vec<_> = stage
+        .items
+        .iter()
+        .map(|item| {
+            (
+                item.path.file_name().unwrap().to_str().unwrap(),
+                item.directory,
+            )
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("Run.fbx", false),
+            ("Box.obj", false),
+            ("run-2.FBX", false),
+            ("Crate", true)
+        ]
+    );
+    assert_eq!(stage.items[0].path, library.resolve_preview(run).unwrap());
+    assert!(stage.items[2].path.is_file());
+    assert_eq!(
+        tree(&stage.items[3].path),
+        ["Crate.fbx", "Textures/Crate_Wood.png"]
+    );
+}
+
+#[test]
+fn a_drag_starts_only_from_the_armed_press_while_it_is_held() {
+    let mut gesture = DragGesture::default();
+    // Nothing pressed: neither arming nor dragging does anything.
+    assert!(!gesture.arm(1, "early"));
+    assert_eq!(gesture.drag((50.0, 50.0)), None);
+
+    gesture.press((10.0, 10.0));
+    let press = gesture.held().unwrap();
+    // Unarmed: moving far does not start; below the threshold an armed press waits.
+    assert_eq!(gesture.drag((40.0, 10.0)), None);
+    assert!(gesture.arm(press, "payload"));
+    assert_eq!(gesture.drag((13.0, 14.0)), None);
+    assert_eq!(gesture.drag((13.0, 16.0)), Some("payload"));
+    // Handed over once; the press is over.
+    assert_eq!(gesture.drag((90.0, 90.0)), None);
+    assert_eq!(gesture.held(), None);
+
+    // Released before the preparation finished: the late payload is refused.
+    gesture.press((0.0, 0.0));
+    let released = gesture.held().unwrap();
+    gesture.disarm();
+    assert!(!gesture.arm(released, "late"));
+    assert_eq!(gesture.drag((30.0, 0.0)), None);
+
+    // A preparation for an earlier press never arms the next one.
+    gesture.press((0.0, 0.0));
+    let first = gesture.held().unwrap();
+    gesture.press((0.0, 0.0));
+    assert!(!gesture.arm(first, "stale"));
+    assert_eq!(gesture.drag((30.0, 0.0)), None);
+
+    // Escape or invalidation after arming disarms it.
+    let second = gesture.held().unwrap();
+    assert!(gesture.arm(second, "armed"));
+    gesture.disarm();
+    assert_eq!(gesture.drag((30.0, 0.0)), None);
 }

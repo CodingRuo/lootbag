@@ -2089,10 +2089,14 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 name = "lootbag"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "crc32fast",
  "drag",
  "dunce",
  "flate2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "rusqlite",
  "serde",
  "serde_json",

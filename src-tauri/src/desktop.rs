@@ -601,6 +601,8 @@ fn activate(app: &AppHandle, library: &Library) -> Result<LibraryInfo> {
     }
     app.state::<Session>().set_root(library.root().to_owned())?;
     crate::library::forget_verified_zip_cache();
+    #[cfg(target_os = "macos")]
+    drag_mac::disarm();
     // Earlier drags' staged copies are only removed here, never while a recipient may still read them.
     if let Ok(staging) = drag_staging(app) {
         let _ = fs::remove_dir_all(staging);
@@ -716,6 +718,10 @@ async fn dropped_import_sources(app: AppHandle, sources: Vec<String>) -> Result<
     // Tauri grants native dropped paths before emitting the drop event; never grant IPC paths here.
     background(move || sources.into_iter().map(describe_import_source).collect()).await
 }
+
+#[cfg(target_os = "macos")]
+#[path = "drag_mac.rs"]
+mod drag_mac;
 
 #[cfg(target_os = "macos")]
 extern "C" {
@@ -1293,6 +1299,7 @@ async fn open_file(app: AppHandle, file_id: i64, reveal: bool) -> Result<()> {
     .await
 }
 
+#[cfg(not(target_os = "macos"))]
 #[derive(serde::Serialize)]
 struct DragOutcome {
     dropped: bool,
@@ -1307,16 +1314,11 @@ fn drag_staging(app: &AppHandle) -> Result<PathBuf> {
         .map_err(|error| format!("Zwischenablage-Ordner nicht verfügbar: {error}"))
 }
 
-/// Drags the given items out of the window as copies; `dropped` is false when cancelled.
-#[tauri::command]
-async fn drag_assets(
-    window: tauri::WebviewWindow,
-    sources: Vec<DragSource>,
-) -> Result<DragOutcome> {
-    let app = window.app_handle().clone();
+/// Stages `sources` in the background for the active library.
+async fn stage_drag(app: AppHandle, sources: Vec<DragSource>) -> Result<DragStage> {
     let root = active_root(&app)?;
     let staging = drag_staging(&app)?;
-    let DragStage { paths, problems } = background(move || {
+    background(move || {
         let state = app.state::<Session>();
         let _gate = file_gate(&state.import_gate)?;
         let stage = Library::writable(&root)?.stage_drag(&sources, &staging)?;
@@ -1325,7 +1327,29 @@ async fn drag_assets(
         }
         Ok(stage)
     })
-    .await?;
+    .await
+}
+
+/// Prepares the pressed card's payload while the button is still held. The native monitor
+/// starts the drag from that same press once it moves; after a release nothing happens.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn prepare_drag(app: AppHandle, sources: Vec<DragSource>) {
+    let Some(press) = drag_mac::held() else {
+        return;
+    };
+    drag_mac::arm(press, stage_drag(app, sources).await);
+}
+
+/// Drags the given items out of the window as copies; `dropped` is false when cancelled.
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn drag_assets(
+    window: tauri::WebviewWindow,
+    sources: Vec<DragSource>,
+) -> Result<DragOutcome> {
+    let DragStage { items, problems } = stage_drag(window.app_handle().clone(), sources).await?;
+    let paths = items.into_iter().map(|item| item.path).collect();
     let (done, finished) = std::sync::mpsc::channel();
     let failed = done.clone();
     let target = window.clone();
@@ -1338,7 +1362,7 @@ async fn drag_assets(
                 move |result, _| {
                     let _ = done.send(Ok(matches!(result, drag::DragResult::Dropped)));
                 },
-                // Copy is the only offered operation, so Finder never moves the original.
+                // Copy is the only offered operation, so Explorer never moves the original.
                 drag::Options {
                     mode: drag::DragMode::Copy,
                     ..Default::default()
@@ -1714,6 +1738,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(Session::default())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                let handle = app.handle().clone();
+                app.handle()
+                    .run_on_main_thread(move || drag_mac::install(handle))?;
+            }
             let remembered = app
                 .path()
                 .app_config_dir()
@@ -1769,6 +1799,9 @@ pub fn run() {
             assign_variant,
             resolve_preview,
             open_file,
+            #[cfg(target_os = "macos")]
+            prepare_drag,
+            #[cfg(not(target_os = "macos"))]
             drag_assets,
             analyze_audio,
             prepare_audio_analysis,

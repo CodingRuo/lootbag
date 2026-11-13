@@ -19,10 +19,18 @@ pub struct DragSource {
     pub workflow: Option<ImageWorkflow>,
 }
 
+/// One file or bundle folder on the drag pasteboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DragItem {
+    pub path: PathBuf,
+    /// Bundle folders must be announced as directories, or Finder treats them as files.
+    pub directory: bool,
+}
+
 /// What a native drag hands over, plus a German line for every item left out or changed.
 #[derive(Debug, Default)]
 pub struct DragStage {
-    pub paths: Vec<PathBuf>,
+    pub items: Vec<DragItem>,
     pub problems: Vec<String>,
 }
 
@@ -39,7 +47,7 @@ struct Staging<'a> {
 
 impl Library {
     /// Prepares a drag-out: originals where their names are unique, copies under `staging` for
-    /// repeated names, and one bundle folder per model built by the model export. Each item is
+    /// repeated names, and one bundle folder per model with companions, built by the model export. Each item is
     /// prepared on its own; failures and source changes become `problems` instead of aborting.
     /// Staged files stay until the caller clears `staging` (next launch or library open).
     pub fn stage_drag(&self, sources: &[DragSource], staging: &Path) -> Result<DragStage> {
@@ -82,14 +90,14 @@ impl Library {
                 .and_then(|metadata| SourceStamp::read(&metadata).ok())
                 .is_some_and(|now| now == stamp);
             if !unchanged {
-                stage.paths.retain(|item| item != &path);
+                stage.items.retain(|item| item.path != path);
                 stage.problems.push(format!(
                     "{}: wurde während der Vorbereitung geändert",
                     file_name(&path)
                 ));
             }
         }
-        if stage.paths.is_empty() {
+        if stage.items.is_empty() {
             return Err(if stage.problems.is_empty() {
                 "Nichts zum Herausziehen vorbereitet".into()
             } else {
@@ -139,6 +147,23 @@ impl Staging<'_> {
         let snapshot = self.library.model_resources(file_id)?;
         let (extra, notes) = companion_paths(&snapshot)?;
         let entry = Path::new(&snapshot.entry_path);
+        let entry_name = file_name(entry);
+        self.stage.problems.extend(
+            notes
+                .into_iter()
+                .map(|note| format!("{entry_name}: {note}")),
+        );
+        // Same export set as export_model: entry, declared resources and detected extras.
+        let bundled = snapshot
+            .declared_paths
+            .iter()
+            .chain(&extra)
+            .any(|path| *path != snapshot.entry_path);
+        if !bundled {
+            // Without a destination the export only validates (missing resources, stamps).
+            self.library.export_model(&snapshot, &extra, None)?;
+            return self.plain(file_id);
+        }
         let stem = entry
             .file_stem()
             .map_or("Modell".into(), |stem| stem.to_string_lossy());
@@ -147,13 +172,10 @@ impl Staging<'_> {
         // Rejects incomplete models and re-checks every resource stamp while copying.
         self.library
             .export_model(&snapshot, &extra, Some(&destination))?;
-        let entry_name = file_name(entry);
-        self.stage.problems.extend(
-            notes
-                .into_iter()
-                .map(|note| format!("{entry_name}: {note}")),
-        );
-        self.stage.paths.push(destination);
+        self.stage.items.push(DragItem {
+            path: destination,
+            directory: true,
+        });
         Ok(())
     }
 
@@ -170,7 +192,10 @@ impl Staging<'_> {
         let name = unique_name(&mut self.used, "", stem, &extension);
         if name == original {
             self.originals.push((path.clone(), stamp));
-            self.stage.paths.push(path);
+            self.stage.items.push(DragItem {
+                path,
+                directory: false,
+            });
             return Ok(());
         }
         // A repeated name gets a renamed copy, so the recipient never sees two items called the same.
@@ -192,8 +217,82 @@ impl Staging<'_> {
             let _ = fs::remove_file(&target);
             return Err(error);
         }
-        self.stage.paths.push(target);
+        self.stage.items.push(DragItem {
+            path: target,
+            directory: false,
+        });
         Ok(())
+    }
+}
+
+/// Pointer travel before a held press becomes a drag, in points.
+pub const DRAG_THRESHOLD: f64 = 6.0;
+
+/// Ties a prepared drag payload to the mouse press it was prepared for. A drag starts only from
+/// a drag event of that same, still held press; release, Escape or any invalidation disarms it.
+#[derive(Debug)]
+pub struct DragGesture<P> {
+    press: Option<Press<P>>,
+    presses: u64,
+}
+
+#[derive(Debug)]
+struct Press<P> {
+    id: u64,
+    origin: (f64, f64),
+    payload: Option<P>,
+}
+
+impl<P> Default for DragGesture<P> {
+    fn default() -> Self {
+        Self {
+            press: None,
+            presses: 0,
+        }
+    }
+}
+
+impl<P> DragGesture<P> {
+    /// A new mouse-down; whatever an earlier press had armed is dropped.
+    pub fn press(&mut self, at: (f64, f64)) {
+        self.presses += 1;
+        self.press = Some(Press {
+            id: self.presses,
+            origin: at,
+            payload: None,
+        });
+    }
+
+    /// The press still held, so a preparation can be bound to it.
+    pub fn held(&self) -> Option<u64> {
+        self.press.as_ref().map(|press| press.id)
+    }
+
+    /// Arms `press` with `payload`; false once that press ended or was replaced.
+    pub fn arm(&mut self, press: u64, payload: P) -> bool {
+        match &mut self.press {
+            Some(held) if held.id == press => {
+                held.payload = Some(payload);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A drag event of the held press: past the threshold and armed, the payload is handed over
+    /// once and the press ends, so it can never start twice.
+    pub fn drag(&mut self, at: (f64, f64)) -> Option<P> {
+        let press = self.press.as_ref()?;
+        let (dx, dy) = (at.0 - press.origin.0, at.1 - press.origin.1);
+        if press.payload.is_none() || dx.hypot(dy) < DRAG_THRESHOLD {
+            return None;
+        }
+        self.press.take()?.payload
+    }
+
+    /// Mouse-up, Escape, selection or library change.
+    pub fn disarm(&mut self) {
+        self.press = None;
     }
 }
 
