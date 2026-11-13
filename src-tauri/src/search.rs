@@ -1,6 +1,6 @@
 //! Auto-tags derived from file and folder names, the FTS5 search index and saved searches.
 use super::{AssetKind, ImageWorkflow, Library, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Tokens that say nothing about an asset (incl. format folders like `FBX/`). Shorter tokens
@@ -214,8 +214,11 @@ impl Library {
     ) -> Result<(usize, usize)> {
         let failed = |e: rusqlite::Error| format!("Auto-Tags können nicht erzeugt werden: {e}");
         let pending = "FROM assets a WHERE a.id > ?1 AND NOT EXISTS (SELECT 1 FROM auto_tags t WHERE t.asset_id = a.id)";
-        let assets = self
-            .connection
+        // Read and write in one write transaction, so a rescan cannot change the names in between.
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(failed)?;
+        let assets = transaction
             .prepare(&format!("SELECT a.id, a.original_folder,
                 (SELECT json_group_array(DISTINCT f.original_filename) FROM asset_files f WHERE f.asset_id = a.id)
                 {pending} ORDER BY a.id LIMIT ?2"))
@@ -226,7 +229,6 @@ impl Library {
             .map_err(failed)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(failed)?;
-        let transaction = self.connection.unchecked_transaction().map_err(failed)?;
         let mut processed = 0;
         for (id, folder, files) in assets {
             if cancel.load(Ordering::Relaxed) {

@@ -1,6 +1,7 @@
 //! Content hashes for finding the same file shipped in several packages.
 use super::{
     id_list, location_row, modified_identity,
+    rescan::catalog_stamp,
     zip_sources::{archive_identity, is_zip, Cancellable, OpenArchives},
     Library, ReferencedLocation, Result,
 };
@@ -13,6 +14,15 @@ use std::{
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
+
+/// A hashed file: id, size, hash stamp, catalog stamp when read, hash or error.
+pub(super) type PendingHash = (
+    i64,
+    i64,
+    String,
+    String,
+    std::result::Result<String, String>,
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -177,17 +187,17 @@ impl Library {
             AND f.size_bytes IN (SELECT size_bytes FROM active_asset_files GROUP BY size_bytes HAVING COUNT(*) > 1)";
         let files = self
             .connection
-            .prepare(&format!("SELECT f.id, f.size_bytes, f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes {pending} ORDER BY f.id LIMIT ?2"))
+            .prepare(&format!("SELECT f.id, f.size_bytes, f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes, {} {pending} ORDER BY f.id LIMIT ?2", catalog_stamp("f.id")))
             .map_err(failed)?
             .query_map(params![*after, batch as i64], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, location_row(row, 3)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, location_row(row, 3)?, row.get::<_, String>(9)?))
             })
             .map_err(failed)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(failed)?;
         let mut results = Vec::new();
         let mut archives = OpenArchives::new();
-        for (id, size, relative, external) in files {
+        for (id, size, relative, external, current) in files {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
@@ -212,20 +222,10 @@ impl Library {
             }
             *after = id;
             if let Some((stamp, result)) = hashed {
-                results.push((id, size, stamp, result.map_err(|e| e.to_string())));
+                results.push((id, size, stamp, current, result.map_err(|e| e.to_string())));
             }
         }
-        let transaction = self.connection.unchecked_transaction().map_err(failed)?;
-        for (id, size, stamp, result) in &results {
-            transaction
-                .execute(
-                    "INSERT OR REPLACE INTO file_hashes(file_id, size, hash, error, stamp)
-                    SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM asset_files WHERE id = ?1)",
-                    params![id, size, result.as_ref().ok(), result.as_ref().err(), stamp],
-                )
-                .map_err(failed)?;
-        }
-        transaction.commit().map_err(failed)?;
+        self.save_hashes(&results, cancel)?;
         let remaining: i64 = self
             .connection
             .query_row(&format!("SELECT COUNT(*) {pending}"), [*after], |row| {
@@ -233,6 +233,36 @@ impl Library {
             })
             .map_err(failed)?;
         Ok((results.len(), remaining as usize, invalidated))
+    }
+
+    /// Stores computed hashes unless the run was cancelled; a file deleted or rescanned since its
+    /// catalog stamp was read is skipped (see `catalog_stamp`).
+    pub(super) fn save_hashes(&self, results: &[PendingHash], cancel: &AtomicBool) -> Result<()> {
+        let failed = |e: rusqlite::Error| format!("Duplikatsuche fehlgeschlagen: {e}");
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let transaction = self.connection.unchecked_transaction().map_err(failed)?;
+        for (id, size, stamp, current, result) in results {
+            transaction
+                .execute(
+                    &format!(
+                        "INSERT OR REPLACE INTO file_hashes(file_id, size, hash, error, stamp)
+                        SELECT ?1, ?2, ?3, ?4, ?5 WHERE {} = ?6",
+                        catalog_stamp("?1")
+                    ),
+                    params![
+                        id,
+                        size,
+                        result.as_ref().ok(),
+                        result.as_ref().err(),
+                        stamp,
+                        current
+                    ],
+                )
+                .map_err(failed)?;
+        }
+        transaction.commit().map_err(failed)
     }
 
     /// Number of active files in other assets that share content with each asset, in one query.

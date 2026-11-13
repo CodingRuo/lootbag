@@ -452,7 +452,10 @@ waveforms of changed files are dropped and recomputed, auto-tags and duplicates
 follow in the background. Catalogs from before format 6 have no stamp for
 managed files: their first rescan records one and, to be safe, drops and
 recomputes those files' derived data, but does not count them as "geändert",
-because an earlier change cannot be told from no change. A renamed or moved file counts as missing plus new. Missing files keep
+because an earlier change cannot be told from no change. Background passes
+(model traits, hashes) that read a file before a rescan changed it discard
+their result instead of storing it, and a cancelled pass stores nothing; the
+auto-tag pass reads names and writes tags in one catalog transaction. A renamed or moved file counts as missing plus new. Missing files keep
 their catalog entry and annotations and show as unavailable until they return or
 are moved to the trash; trashed files stay in the trash. New files join an
 existing asset only when exactly one asset of the same folder, name and kind is

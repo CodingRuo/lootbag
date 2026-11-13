@@ -1,5 +1,7 @@
 //! Header-level model inspection: does a file carry mesh geometry, keyed animation, or both?
-use super::{location_row, model_resources::gltf_json, AssetKind, Library, Result};
+use super::{
+    location_row, model_resources::gltf_json, rescan::catalog_stamp, AssetKind, Library, Result,
+};
 use rusqlite::params;
 use std::{
     fs,
@@ -315,17 +317,17 @@ impl Library {
         );
         let files = self
             .connection
-            .prepare(&format!("SELECT f.id, f.format, f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes {pending} ORDER BY f.id LIMIT ?2"))
+            .prepare(&format!("SELECT f.id, f.format, f.relative_path, s.root, s.identity, p.relative_path, e.identity, e.modified, f.size_bytes, {} {pending} ORDER BY f.id LIMIT ?2", catalog_stamp("f.id")))
             .map_err(failed)?
             .query_map(params![*after, batch as i64], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, location_row(row, 3)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, location_row(row, 3)?, row.get::<_, String>(9)?))
             })
             .map_err(failed)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(failed)?;
         let mut results = Vec::new();
         let mut archives = super::zip_sources::OpenArchives::new();
-        for (id, format, relative, external) in files {
+        for (id, format, relative, external, stamp) in files {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
@@ -347,27 +349,10 @@ impl Library {
             }
             *after = id;
             if let Some(result) = inspected {
-                results.push((id, result));
+                results.push((id, stamp, result));
             }
         }
-        let transaction = self.connection.unchecked_transaction().map_err(failed)?;
-        for (id, result) in &results {
-            let traits = result.clone().unwrap_or_default();
-            // A file deleted from the catalog meanwhile is simply skipped.
-            transaction
-                .execute(
-                    "INSERT OR REPLACE INTO model_traits(file_id, has_mesh, has_animation, error)
-                SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM asset_files WHERE id = ?1)",
-                    params![
-                        id,
-                        traits.has_mesh,
-                        traits.has_animation,
-                        result.as_ref().err()
-                    ],
-                )
-                .map_err(failed)?;
-        }
-        transaction.commit().map_err(failed)?;
+        self.save_model_traits(&results, cancel)?;
         let remaining: i64 = self
             .connection
             .query_row(&format!("SELECT COUNT(*) {pending}"), [*after], |row| {
@@ -375,6 +360,40 @@ impl Library {
             })
             .map_err(failed)?;
         Ok((results.len(), remaining as usize))
+    }
+
+    /// Stores inspected traits unless the run was cancelled; a file deleted or rescanned since
+    /// its catalog stamp was read is skipped (see `catalog_stamp`).
+    pub(super) fn save_model_traits(
+        &self,
+        results: &[(i64, String, std::result::Result<ModelTraits, String>)],
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        let failed = |e: rusqlite::Error| format!("Modellanalyse fehlgeschlagen: {e}");
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let transaction = self.connection.unchecked_transaction().map_err(failed)?;
+        for (id, stamp, result) in results {
+            let traits = result.clone().unwrap_or_default();
+            transaction
+                .execute(
+                    &format!(
+                        "INSERT OR REPLACE INTO model_traits(file_id, has_mesh, has_animation, error)
+                        SELECT ?1, ?2, ?3, ?4 WHERE {} = ?5",
+                        catalog_stamp("?1")
+                    ),
+                    params![
+                        id,
+                        traits.has_mesh,
+                        traits.has_animation,
+                        result.as_ref().err(),
+                        stamp
+                    ],
+                )
+                .map_err(failed)?;
+        }
+        transaction.commit().map_err(failed)
     }
 }
 

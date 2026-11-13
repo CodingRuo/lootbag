@@ -364,6 +364,19 @@ impl Library {
     }
 }
 
+/// SQL for the catalog's current state of file `id` (an SQL expression): its size and the
+/// scan or origin stamps a rescan replaces when the file changed; NULL once the file is gone.
+/// Background results read with one value are committed only while it still holds, in the
+/// same statement, so a rescan in between makes them stale instead of restoring them.
+pub(super) fn catalog_stamp(id: &str) -> String {
+    format!(
+        "(SELECT cf.size_bytes || '|' || COALESCE(cs.stamp, '') || '|' || COALESCE(ce.identity, '')
+        || '|' || COALESCE(ce.modified, '') FROM asset_files cf
+        LEFT JOIN scan_stamps cs ON cs.file_id = cf.id LEFT JOIN external_files ce ON ce.file_id = cf.id
+        WHERE cf.id = {id})"
+    )
+}
+
 /// Stamp of a managed file: modification time and size, plus its inode where the platform has
 /// one, so a same-size replacement is noticed even when it keeps the modification time.
 fn scan_stamp(metadata: &fs::Metadata) -> Option<String> {
@@ -690,6 +703,51 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         write(&storage.join("Hit.wav"), b"hiT");
         assert_eq!(library.rescan_package(package.id).unwrap().changed, 1);
+    }
+
+    #[test]
+    fn background_results_read_before_a_rescan_are_not_committed() {
+        let (_workspace, mut library, package, storage) =
+            setup(&[("Model.glb", b"glb"), ("Hit.wav", b"hit")]);
+        let (model, hit) = (file_id(&library, "Model.glb"), file_id(&library, "Hit.wav"));
+        let stamp = |library: &Library, id: i64| -> String {
+            library
+                .connection
+                .query_row(&format!("SELECT {}", catalog_stamp("?1")), [id], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        let (old_model, old_hit) = (stamp(&library, model), stamp(&library, hit));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write(&storage.join("Model.glb"), b"GLB");
+        write(&storage.join("Hit.wav"), b"HIT");
+        assert_eq!(library.rescan_package(package.id).unwrap().changed, 2);
+
+        let go = std::sync::atomic::AtomicBool::new(false);
+        let traits =
+            |stamp: String| vec![(model, stamp, Ok(crate::library::ModelTraits::default()))];
+        let hashes = |stamp: String| vec![(hit, 3, "old".to_owned(), stamp, Ok("h".to_owned()))];
+        library.save_model_traits(&traits(old_model), &go).unwrap();
+        library.save_hashes(&hashes(old_hit), &go).unwrap();
+        assert_eq!(derived(&library, model), 0, "stale traits are rejected");
+        assert_eq!(count(&library, "SELECT COUNT(*) FROM file_hashes"), 0);
+
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let (new_model, new_hit) = (stamp(&library, model), stamp(&library, hit));
+        library
+            .save_model_traits(&traits(new_model.clone()), &cancelled)
+            .unwrap();
+        library
+            .save_hashes(&hashes(new_hit.clone()), &cancelled)
+            .unwrap();
+        assert_eq!(derived(&library, model), 0, "nothing after cancellation");
+        assert_eq!(count(&library, "SELECT COUNT(*) FROM file_hashes"), 0);
+
+        library.save_model_traits(&traits(new_model), &go).unwrap();
+        library.save_hashes(&hashes(new_hit), &go).unwrap();
+        assert_eq!(derived(&library, model), 1, "current results are kept");
+        assert_eq!(count(&library, "SELECT COUNT(*) FROM file_hashes"), 1);
     }
 
     #[test]
