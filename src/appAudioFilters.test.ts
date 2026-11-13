@@ -89,6 +89,10 @@ class Harness {
   savedSearchCalls: [string, any][] = [];
   annotations: any[] = [];
   references: any[] = [];
+  watchNotices: any[] = [];
+  watchChecks = 0;
+  watchCalls: any[] = [];
+  focusListeners = new Set<() => void>();
   audioTags: any = { status: "ready", title: null, artist: null, album: null, genre: null, message: null };
   commands: string[] = [];
   droppedHashes = 0;
@@ -108,6 +112,8 @@ class Harness {
       return Promise.resolve(command === "save_search" ? { id: 9, name: args.name.trim(), queryJson: args.queryJson } : undefined);
     }
     if (command === "reference_zip") { this.references.push(args); return Promise.resolve({ ...library.packages[0], id: 2, name: "Forest", zip: true }); }
+    if (command === "check_watched_sources") { this.watchChecks++; return Promise.resolve(this.watchNotices.splice(0)); }
+    if (command === "set_watched") { this.watchCalls.push(args); return Promise.resolve(); }
     if (command === "annotate_asset") { this.annotations.push(args); return Promise.resolve(); }
     if (command === "set_package_info") { this.packageInfoSaves.push(args); return Promise.resolve(); }
     if (command === "open_library") return Promise.resolve({ ...library, root: "/owned/reopened" });
@@ -143,7 +149,9 @@ class Harness {
   }
   async settle() {
     globals.audioFilterHarness = this;
-    globals.window = { setTimeout: (callback: () => void) => { const id = ++this.timerId; this.timers.set(id, callback); return id; }, clearTimeout: (id: number) => this.timers.delete(id) };
+    globals.window = { setTimeout: (callback: () => void) => { const id = ++this.timerId; this.timers.set(id, callback); return id; }, clearTimeout: (id: number) => this.timers.delete(id),
+      addEventListener: (type: string, listener: () => void) => { if (type === "focus") this.focusListeners.add(listener); },
+      removeEventListener: (_type: string, listener: () => void) => this.focusListeners.delete(listener) };
     for (let turn = 0; turn < 20; turn++) {
       if (this.dirty) {
         this.dirty = false; this.cursor = 0; this.tree = this.expand(this.component());
@@ -830,6 +838,25 @@ test("a ZIP package shows its badge and archive entry, and ZIP einbinden referen
     assert.deepEqual(app.references, [{ source: "/owned/reopened" }]);
     await app.settle();
     assert.match(app.text(app.tree), /Forest als ZIP eingebunden/);
+  } finally { app.dispose(); }
+});
+
+test("external folders can be watched; checks run on open and focus and report changes", async () => {
+  const app = new Harness();
+  const folder = { ...library.packages[0], sourceKind: "external", externalRoot: "/owned/External", zip: false, watched: false };
+  app.libraryInfo = { ...library, packages: [folder] };
+  try {
+    await app.mount();
+    assert.equal(app.watchChecks, 1, "checked on open");
+    const actions = app.find((node) => node.props.label === `Paket ${folder.name}`);
+    assert.equal(actions.props.watched, false);
+    actions.props.onWatch(); await app.settle();
+    assert.deepEqual(app.watchCalls, [{ packageId: folder.id, watched: true }]);
+    app.watchNotices = [{ packageId: folder.id, message: "Neue Dateien in Pack: 2 neu.", summary: { added: 2, changed: 0, missing: 0, ambiguous: [] } }];
+    for (const listener of app.focusListeners) listener();
+    await app.settle(); await app.settle();
+    assert.equal(app.watchChecks, 2, "checked on focus");
+    assert.match(app.text(app.tree), /Neue Dateien in Pack: 2 neu\./);
   } finally { app.dispose(); }
 });
 

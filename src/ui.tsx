@@ -18,6 +18,8 @@ export type AssetPackage = {
   externalRoot: string | null;
   // External source that is a ZIP archive used without extracting it.
   zip: boolean;
+  // External folder watched for changes (opt-in).
+  watched: boolean;
   tags: string[];
   info: PackageInfo;
 };

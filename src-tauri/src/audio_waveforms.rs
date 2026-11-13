@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn a_version_3_catalog_gains_the_table_and_version_4() {
+    fn a_version_3_catalog_gains_the_table_and_the_current_version() {
         let (workspace, library, id) = imported(&wav(800, 0));
         library
             .connection
@@ -239,7 +239,7 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         assert!(library.card_waveform(id, &AtomicBool::new(false)).is_ok());
     }
 

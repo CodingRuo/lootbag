@@ -3,7 +3,7 @@ use crate::library::{
     BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DuplicateCopy, EmbeddedAudioTags,
     EmptiedTrash, ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress,
     KindCounts, Library, ModelResources, PackageInfo, PackageInfoDetails, ProjectExportPlan,
-    ProjectFolder, RescanSummary, Result, SavedSearch, TrashEntry, ZipEstimate,
+    ProjectFolder, RescanSummary, Result, SavedSearch, TrashEntry, WatchNotice, ZipEstimate,
 };
 use std::{
     fs,
@@ -31,6 +31,14 @@ struct Session {
     sprite_export: Mutex<Option<(String, Arc<AtomicBool>)>>,
     audio_analysis: Mutex<Option<AudioAnalysisJob>>,
     model_traits: Mutex<Option<Arc<AtomicBool>>>,
+    watch: Mutex<WatchJob>,
+}
+
+/// Last check of watched folders and the running one's cancel flag.
+#[derive(Default)]
+struct WatchJob {
+    last: Option<Instant>,
+    running: Option<Arc<AtomicBool>>,
 }
 
 struct AudioAnalysisJob {
@@ -370,6 +378,11 @@ impl Session {
         self.cancel_audio_tags(None)?;
         self.cancel_audio_analysis(None)?;
         self.replace_model_traits(None);
+        // The next check of the new library runs unthrottled.
+        let watch = std::mem::take(&mut *self.watch.lock().unwrap_or_else(PoisonError::into_inner));
+        if let Some(cancelled) = watch.running {
+            cancelled.store(true, Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -900,6 +913,72 @@ async fn rescan_package(app: AppHandle, package_id: i64) -> Result<RescanSummary
         let summary = Library::writable(&root)?.rescan_package(package_id)?;
         start_backfill(&app, root.clone());
         Ok(summary)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_watched(app: AppHandle, package_id: i64, watched: bool) -> Result<()> {
+    let root = active_root(&app)?;
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        Library::writable(&root)?.set_watched(package_id, watched)
+    })
+    .await
+}
+
+/// Checks watched folders on activation and, throttled, on focus; one job at a time. Returns no
+/// notices when the library changed meanwhile.
+#[tauri::command]
+async fn check_watched_sources(app: AppHandle) -> Result<Vec<WatchNotice>> {
+    let root = active_root(&app)?;
+    let cancelled = {
+        let state = app.state::<Session>();
+        let mut watch = state.watch.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        if watch.running.is_some() || !crate::library::watch_due(watch.last, now) {
+            return Ok(Vec::new());
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        *watch = WatchJob {
+            last: Some(now),
+            running: Some(cancelled.clone()),
+        };
+        cancelled
+    };
+    background(move || {
+        let mut notices = Vec::new();
+        let result = Library::writable(&root).and_then(|mut library| {
+            for package_id in library.watched_sources()? {
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                // A busy gate or failed rescan stores nothing, so the next check retries.
+                match library.check_watched(package_id, || catalog_write(&app, &root)) {
+                    Ok(notice) => notices.extend(notice),
+                    Err(error) => eprintln!("{error}"),
+                }
+            }
+            Ok(())
+        });
+        let state = app.state::<Session>();
+        let mut watch = state.watch.lock().unwrap_or_else(PoisonError::into_inner);
+        if watch
+            .running
+            .as_ref()
+            .is_some_and(|flag| Arc::ptr_eq(flag, &cancelled))
+        {
+            watch.running = None;
+        }
+        drop(watch);
+        result?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(Vec::new());
+        }
+        if notices.iter().any(|notice| notice.summary.is_some()) {
+            start_backfill(&app, root);
+        }
+        Ok(notices)
     })
     .await
 }
@@ -1657,6 +1736,8 @@ pub fn run() {
             save_search,
             delete_saved_search,
             rescan_package,
+            set_watched,
+            check_watched_sources,
             split_variant,
             assign_variant,
             resolve_preview,
