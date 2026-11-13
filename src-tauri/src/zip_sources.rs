@@ -498,7 +498,11 @@ impl Library {
     ) -> Result<Vec<PathBuf>> {
         if is_unity(&location.root_identity) {
             self.check_package_zip(location)?;
-            let payloads = unity::payloads(Path::new(&location.root), &location.root_identity)?;
+            let payloads = unity::payloads(
+                Path::new(&location.root),
+                &location.root_identity,
+                &AtomicBool::new(false),
+            )?;
             let names: Vec<_> = payloads.iter().filter_map(|p| p.path.to_str()).collect();
             let wanted: HashSet<String> = select(&names).into_iter().collect();
             let wanted: Vec<_> = payloads

@@ -155,14 +155,23 @@ struct Record {
 /// Reads the whole archive within `limits` and lists its payloads in archive order. Rejects links
 /// and special entries, duplicate GUID files, payloads without a path, supported files without a
 /// payload, unsafe paths and paths that collide on case-insensitive disks.
-pub(super) fn scan(source: &Path, limits: &Limits) -> Result<Vec<Payload>> {
+/// Stops with an error once `cancel` is set, checked per entry and per decompressed chunk.
+pub(super) fn scan(source: &Path, limits: &Limits, cancel: &AtomicBool) -> Result<Vec<Payload>> {
     let failed = |e: io::Error| format!("Unity-Paket ist beschädigt oder nicht lesbar: {e}");
+    let cancelled = || -> Result<()> {
+        if cancel.load(Ordering::Relaxed) {
+            Err("Einlesen des Unity-Pakets abgebrochen".into())
+        } else {
+            Ok(())
+        }
+    };
     let mut archive = tar::Archive::new(Stream::open(source, limits.bytes, Some(limits.time))?);
     let mut records: HashMap<String, Record> = HashMap::new();
     for (count, entry) in archive.entries().map_err(failed)?.enumerate() {
         if count >= limits.entries {
             return Err("Unity-Paket hat zu viele Einträge".into());
         }
+        cancelled()?;
         let mut entry = entry.map_err(failed)?;
         let name = entry_name(&entry);
         let kind = entry.header().entry_type();
@@ -201,6 +210,7 @@ pub(super) fn scan(source: &Path, limits: &Limits) -> Result<Vec<Payload>> {
             let mut head = Vec::new();
             let mut buffer = vec![0; 1 << 16];
             loop {
+                cancelled()?;
                 match entry.read(&mut buffer).map_err(failed)? {
                     0 => break,
                     read => {
@@ -249,9 +259,9 @@ pub(super) fn scan(source: &Path, limits: &Limits) -> Result<Vec<Payload>> {
 /// Scans of recently used packages by archive identity, so model previews skip the full scan.
 static INDEXES: Mutex<Vec<(String, Arc<Vec<Payload>>)>> = Mutex::new(Vec::new());
 
-fn scan_checked(source: &Path) -> Result<(String, Arc<Vec<Payload>>)> {
+fn scan_checked(source: &Path, cancel: &AtomicBool) -> Result<(String, Arc<Vec<Payload>>)> {
     let identity = archive_identity(source)?;
-    let payloads = Arc::new(scan(source, &LIMITS)?);
+    let payloads = Arc::new(scan(source, &LIMITS, cancel)?);
     if archive_identity(source)? != identity {
         return Err("Unity-Paket wurde während des Lesens verändert".into());
     }
@@ -268,7 +278,7 @@ fn scan_checked(source: &Path) -> Result<(String, Arc<Vec<Payload>>)> {
 /// Validates a package with a full scan and lists its supported files; the GUID is kept as the
 /// file's `modified` origin, so payloads are found again without another scan.
 pub(super) fn read_directory(source: &Path) -> Result<(String, Vec<ReferencedFile>)> {
-    let (identity, payloads) = scan_checked(source)?;
+    let (identity, payloads) = scan_checked(source, &AtomicBool::new(false))?;
     let files = payloads
         .iter()
         .filter_map(|payload| {
@@ -289,7 +299,11 @@ pub(super) fn read_directory(source: &Path) -> Result<(String, Vec<ReferencedFil
 }
 
 /// All payloads of the package whose archive has `identity`, scanning it when not remembered.
-pub(super) fn payloads(source: &Path, identity: &str) -> Result<Arc<Vec<Payload>>> {
+pub(super) fn payloads(
+    source: &Path,
+    identity: &str,
+    cancel: &AtomicBool,
+) -> Result<Arc<Vec<Payload>>> {
     if let Some((_, known)) = INDEXES
         .lock()
         .ok()
@@ -297,7 +311,7 @@ pub(super) fn payloads(source: &Path, identity: &str) -> Result<Arc<Vec<Payload>
     {
         return Ok(known);
     }
-    let (current, payloads) = scan_checked(source)?;
+    let (current, payloads) = scan_checked(source, cancel)?;
     if current != identity {
         return Err("Unity-Paket wurde verschoben oder verändert. Bitte neu verknüpfen".into());
     }
@@ -320,8 +334,8 @@ fn is_raw(payload: &Payload) -> bool {
 }
 
 /// Space needed to extract the raw payloads; the scan is remembered for the import that follows.
-pub(super) fn estimate(root: &Path, source: &Path) -> Result<ZipEstimate> {
-    let all = payloads(source, &archive_identity(source)?)?;
+pub(super) fn estimate(root: &Path, source: &Path, cancel: &AtomicBool) -> Result<ZipEstimate> {
+    let all = payloads(source, &archive_identity(source)?, cancel)?;
     let raw: Vec<_> = all.iter().filter(|payload| is_raw(payload)).collect();
     let uncompressed_bytes = raw
         .iter()
@@ -345,7 +359,7 @@ pub(super) fn extract(
     staging: &Path,
     run: &mut ImportRun<'_>,
 ) -> Result<Vec<ImportedFile>> {
-    let all = payloads(source, &archive_identity(source)?)?;
+    let all = payloads(source, &archive_identity(source)?, &run.control().cancelled)?;
     let mut cursor = Cursor::new(source);
     let mut files = Vec::new();
     for payload in all.iter().filter(|payload| is_raw(payload)) {
@@ -569,7 +583,7 @@ mod tests {
                 ("stray.txt", Some(b"ignored")),
             ],
         );
-        let payloads = scan(&package, &LIMITS).unwrap();
+        let payloads = scan(&package, &LIMITS, &AtomicBool::new(false)).unwrap();
         let paths: Vec<_> = payloads.iter().map(|p| p.path.to_str().unwrap()).collect();
         assert_eq!(paths, ["Assets/Tex/leaf.png", "Assets/Sfx/hit.wav"]);
         assert_eq!(payloads[1].guid, a);
@@ -659,7 +673,7 @@ mod tests {
         for (expected, entries) in cases {
             let entries: Vec<_> = entries.iter().map(|(n, b)| (n.as_str(), *b)).collect();
             write_tar(&package, &entries);
-            let error = scan(&package, &LIMITS).unwrap_err();
+            let error = scan(&package, &LIMITS, &AtomicBool::new(false)).unwrap_err();
             assert!(error.contains(expected), "{expected}: {error}");
         }
 
@@ -680,12 +694,12 @@ mod tests {
             tar.append_link(&mut header, format!("{a}/asset"), "../../x")
                 .unwrap();
             tar.into_inner().unwrap().finish().unwrap();
-            let error = scan(&package, &LIMITS).unwrap_err();
+            let error = scan(&package, &LIMITS, &AtomicBool::new(false)).unwrap_err();
             assert!(error.contains("Verknüpfungen"), "{kind:?}: {error}");
         }
 
         fs::write(&package, b"not gzip").unwrap();
-        assert!(scan(&package, &LIMITS).is_err());
+        assert!(scan(&package, &LIMITS, &AtomicBool::new(false)).is_err());
     }
 
     #[test]
@@ -1044,7 +1058,7 @@ mod tests {
                 ("Assets/b.wav", Some(b"b")),
             ],
         );
-        assert!(scan(&package, &LIMITS).is_ok());
+        assert!(scan(&package, &LIMITS, &AtomicBool::new(false)).is_ok());
         let bounded = |bytes, entries, time| {
             scan(
                 &package,
@@ -1053,6 +1067,7 @@ mod tests {
                     entries,
                     time,
                 },
+                &AtomicBool::new(false),
             )
             .unwrap_err()
         };
@@ -1060,5 +1075,15 @@ mod tests {
         assert!(bounded(32 << 10, 100, hour).contains("entpackte Daten"));
         assert!(bounded(1 << 30, 4, hour).contains("zu viele Einträge"));
         assert!(bounded(1 << 30, 100, Duration::ZERO).contains("Zeitgrenze"));
+    }
+
+    #[test]
+    fn the_import_estimate_scan_stops_when_the_import_is_cancelled() {
+        let workspace = Workspace::new();
+        let package = workspace.0.join("Cancel.unitypackage");
+        write_package(&package, &[("Assets/a.wav", Some(&[0; 64 << 10]))]);
+        let error = estimate(&workspace.0, &package, &AtomicBool::new(true)).unwrap_err();
+        assert!(error.contains("abgebrochen"), "{error}");
+        assert!(estimate(&workspace.0, &package, &AtomicBool::new(false)).is_ok());
     }
 }

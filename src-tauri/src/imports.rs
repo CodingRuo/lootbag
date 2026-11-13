@@ -114,7 +114,7 @@ impl Library {
         run: &mut ImportRun<'_>,
     ) -> Result<ZipEstimate> {
         if unity_packages::is_unity_path(source) {
-            return unity_packages::estimate(&self.root, source);
+            return unity_packages::estimate(&self.root, source, &run.control().cancelled);
         }
         estimate_open_zip(&self.root, open_zip(source)?, run)
     }
