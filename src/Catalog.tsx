@@ -110,6 +110,10 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
     if (error) setNotice({ tone: "error", message: errorMessage(error, "Die Auswahl kann nicht herausgezogen werden.") });
     else if (problems.length) setNotice({ tone: "error", message: `Herausziehen unvollständig oder mit Hinweisen: ${problems.join("; ")}` });
   }
+  // A fresh token whenever results or selection change; a press only exports if it is unchanged.
+  const dragVersion = useRef({ page, selection, token: {} });
+  if (dragVersion.current.page !== page || dragVersion.current.selection !== selection) dragVersion.current = { page, selection, token: {} };
+  const resultsVersion = dragVersion.current.token;
   // Read when Rust asks about a held press, so the answer uses the current results and selection.
   const dragFiles = useRef((_key: string): DragSource[] | null => null);
   dragFiles.current = (key) => {
@@ -121,7 +125,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
     if (dragPlatform !== "mac") return;
     let stop: (() => void) | undefined;
     let active = true;
-    watchNativeDragOut(dragOutEnded, (key) => dragFiles.current(key)).then((unlisten) => { if (active) stop = unlisten; else unlisten(); }).catch(() => {});
+    watchNativeDragOut(dragOutEnded, (key) => dragFiles.current(key), () => dragVersion.current.token).then((unlisten) => { if (active) stop = unlisten; else unlisten(); }).catch(() => {});
     return () => { active = false; stop?.(); };
   }, []);
   useEffect(() => { modelThumbnails.reset(thumbnailScope); }, [modelThumbnails, thumbnailScope]);
@@ -450,7 +454,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                 <TrashActions label={`Datei ${firstFile.originalFilename}`} disabled={actionsDisabled}
                   onTrash={() => trashItem("file", firstFile.id, firstFile.originalFilename)}
                   onOpenFile={(reveal) => openFile(firstFile, asset.packageId, reveal)}>
-                  <button className="asset-select" data-drag-card={assetKey(asset)} disabled={queryLoading} {...dragOutHandlers({ sources: () => dragSources(asset, selectedAssets), disabled: actionsDisabled, platform: dragPlatform, onEnd: dragOutEnded,
+                  <button className="asset-select" data-drag-card={assetKey(asset)} disabled={queryLoading} {...dragOutHandlers({ cardKey: assetKey(asset), version: resultsVersion, sources: () => dragSources(asset, selectedAssets), disabled: actionsDisabled, platform: dragPlatform, onEnd: dragOutEnded,
                     onError: (reason) => setNotice({ tone: "error", message: errorMessage(reason, "Die Auswahl kann nicht herausgezogen werden.") }) })} title={`${name}\n${firstFile.originalFilename}\n${asset.packageName} · ${folders}`}
                     onClick={(event) => chooseAsset(asset, event.shiftKey ? (event.metaKey || event.ctrlKey ? "addRange" : "range") : event.metaKey || event.ctrlKey ? "toggle" : "single")}
                     onKeyUp={(event) => { if (sound && event.key === " ") event.preventDefault(); }}

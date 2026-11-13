@@ -7,7 +7,7 @@ import type { DragSource } from "./catalogSelection.ts";
 type Call = [string, Record<string, unknown> | undefined];
 function setup(platform: DragPlatform, disabled = false, sources: () => DragSource[] = () => [{ fileId: 7 }], calls: Call[] = []) {
   const handlers = dragOutHandlers({
-    sources, disabled, platform, onEnd: () => {}, onError: () => {},
+    cardKey: "a", version: 1, sources, disabled, platform, onEnd: () => {}, onError: () => {},
     call: async <T,>(command: string, args?: Record<string, unknown>) => { calls.push([command, args]); return { dropped: true, problems: [] } as T; },
   });
   return { calls, handlers };
@@ -39,27 +39,41 @@ function page(cards: Record<string, { x: number; y: number }>) {
   return { doc, points };
 }
 
-test("a press query answers with the card under the press point and the current selection", async () => {
-  const { doc, points } = page({ a: { x: 10, y: 20 }, b: { x: 10, y: 80 } });
+test("a press query answers with the pressed card under the point and the current selection", async () => {
+  const cards = { a: { x: 10, y: 20 }, b: { x: 10, y: 80 } };
+  const { doc, points } = page(cards);
   const assets: Record<string, Asset> = { a: asset(1), b: asset(2) };
   let selected: Asset[] = [];
   const filesFor = (key: string) => assets[key] ? dragSources(assets[key], selected) : null;
   const calls: Call[] = [];
   const call = async <T,>(command: string, args?: Record<string, unknown>) => { calls.push([command, args]); return undefined as T; };
+  const pressOn = (cardKey: string, version: unknown) =>
+    dragOutHandlers({ cardKey, version, sources: () => [], disabled: false, platform: "mac", onEnd: () => {}, onError: () => {} }).onPointerDown(press);
 
-  await answerDragQuery({ pressId: 4, x: 10, y: 20 }, filesFor, call, doc);
-  // The selection changed after an earlier press: the answer uses it as it is now.
+  pressOn("a", 1);
+  await answerDragQuery({ pressId: 4, x: 10, y: 20 }, filesFor, 1, call, doc);
+  // A selected card drags the selection as it is now.
   selected = [assets.a, assets.b];
-  await answerDragQuery({ pressId: 5, x: 10, y: 20 }, filesFor, call, doc);
-  // Not on a card, or a card the page no longer offers: nothing to drag.
-  await answerDragQuery({ pressId: 6, x: 500, y: 500 }, filesFor, call, doc);
-  await answerDragQuery({ pressId: 7, x: 10, y: 80 }, () => null, call, doc);
-  assert.deepEqual(points, [[10, 20], [10, 20], [500, 500], [10, 80]]);
+  pressOn("a", 2);
+  await answerDragQuery({ pressId: 5, x: 10, y: 20 }, filesFor, 2, call, doc);
+  // Scrolled or replaced while held: card b now sits under the press point.
+  pressOn("a", 2);
+  await answerDragQuery({ pressId: 6, x: 10, y: 80 }, filesFor, 2, call, doc);
+  // A results refresh (or selection change) landed during the hold: same card, new version.
+  pressOn("a", 2);
+  await answerDragQuery({ pressId: 7, x: 10, y: 20 }, filesFor, 3, call, doc);
+  // No recorded press (released, or already answered once), or not on a card: nothing to drag.
+  await answerDragQuery({ pressId: 8, x: 10, y: 20 }, filesFor, 2, call, doc);
+  pressOn("a", 2);
+  await answerDragQuery({ pressId: 9, x: 500, y: 500 }, filesFor, 2, call, doc);
+  assert.deepEqual(points, [[10, 20], [10, 20], [10, 80], [10, 20], [10, 20], [500, 500]]);
   assert.deepEqual(calls, [
     ["answer_drag_query", { pressId: 4, files: [{ fileId: 1 }] }],
     ["answer_drag_query", { pressId: 5, files: [{ fileId: 1 }, { fileId: 2 }] }],
     ["answer_drag_query", { pressId: 6, files: null }],
     ["answer_drag_query", { pressId: 7, files: null }],
+    ["answer_drag_query", { pressId: 8, files: null }],
+    ["answer_drag_query", { pressId: 9, files: null }],
   ]);
 });
 
@@ -81,7 +95,7 @@ test("elsewhere a held move past the threshold starts drag_assets once, a releas
 test("native start and end events guard the import drop zone and report the outcome", async () => {
   const handlers = new Map<string, (event: { payload: unknown }) => void>();
   const ends: DragOutEnd[] = [];
-  const stop = await watchNativeDragOut((end) => ends.push(end), () => null, async (name, handler) => {
+  const stop = await watchNativeDragOut((end) => ends.push(end), () => null, () => 1, async (name, handler) => {
     handlers.set(name, handler as (event: { payload: unknown }) => void);
     return () => handlers.delete(name);
   });
