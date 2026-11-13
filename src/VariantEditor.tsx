@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { AssetKind } from "./ui.tsx";
 
 type TargetAsset = {
   id: number;
@@ -12,7 +13,7 @@ export default function VariantEditor({
 }: {
   assetId: number;
   packageId: number;
-  kind: "sound" | "image" | "model";
+  kind: AssetKind;
   fileCount: number;
   disabled: boolean;
   onSplit: () => void;

@@ -9,7 +9,7 @@ A game development resource, such as a sound or a 3D model. An asset may include
 _Avoid_: File (when referring to the complete resource)
 
 **Asset kind**:
-The resource category of an asset: sound, image, or model. Format variants of
+The resource category of an asset: sound, image, model, or font. Format variants of
 one asset belong to the same kind.
 _Avoid_: Format (when referring to the resource category)
 

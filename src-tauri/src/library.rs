@@ -2307,6 +2307,9 @@ mod tests {
             "Hit.mp3",
             "Crate.obj",
             "Walk.obj",
+            "Hit.ttf",
+            "Hit.otf",
+            "Pixel.woff2",
         ] {
             fs::write(source.join(name), name.as_bytes()).unwrap();
         }
@@ -2344,6 +2347,7 @@ mod tests {
             (Some(AssetKind::Image), None, counts.image),
             (Some(AssetKind::Model), None, counts.model),
             (Some(AssetKind::Animation), None, counts.animation),
+            (Some(AssetKind::Font), None, counts.font),
             (
                 Some(AssetKind::Image),
                 Some(ImageWorkflow::Material),
@@ -2371,11 +2375,44 @@ mod tests {
                 counts.image,
                 counts.model,
                 counts.animation,
+                counts.font,
                 counts.material,
                 counts.sprite_sequence
             ),
-            (1, 4, 2, 1, 1, 1)
+            (1, 4, 2, 1, 2, 1, 1)
         );
+        // Same-stem sound and font stay apart; font format variants group into one asset.
+        let fonts = library
+            .query(CatalogQuery {
+                kind: Some(AssetKind::Font),
+                text: "hit".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(fonts.total, 1);
+        assert_eq!(fonts.items[0].kind, AssetKind::Font);
+        let mut formats: Vec<_> = fonts.items[0]
+            .files
+            .iter()
+            .map(|f| f.format.as_str())
+            .collect();
+        formats.sort();
+        assert_eq!(formats, ["OTF", "TTF"]);
+    }
+
+    #[test]
+    fn font_formats_are_discovered_case_insensitively() {
+        for (name, format) in [
+            ("a.ttf", "TTF"),
+            ("a.OTF", "OTF"),
+            ("a.woff", "WOFF"),
+            ("a.Woff2", "WOFF2"),
+        ] {
+            let found = assets::candidate_format(Path::new(name));
+            assert_eq!(found, Some(format));
+            assert_eq!(AssetKind::for_format(format), Some(AssetKind::Font));
+        }
+        assert_eq!(assets::candidate_format(Path::new("._a.ttf")), None);
     }
 
     const ANIMATION_FBX: &[u8] = b"; FBX 7.4.0 project file\nFBXHeaderExtension:  {\n\tFBXVersion: 7400\n}\nObjects:  {\n\tAnimationCurve: 1, \"AnimCurve::\", \"\" {\n\t\tKeyTime: *2 {\n\t\t\ta: 0,1\n\t\t}\n\t}\n}\n";

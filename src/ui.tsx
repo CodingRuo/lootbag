@@ -23,7 +23,7 @@ export type AssetPackage = {
 };
 // "<archive>/<entry>" of a file in a ZIP package; catalog paths are "<package path>/<entry>".
 export const zipEntryPath = (source: AssetPackage, file: AssetFile) => `${source.externalRoot}/${file.relativePath.slice(source.relativePath.length + 1)}`;
-export type AssetKind = "sound" | "image" | "model";
+export type AssetKind = "sound" | "image" | "model" | "font";
 export type AssetFile = {
   id: number;
   originalFilename: string;
@@ -64,7 +64,7 @@ export type LibraryInfo = {
   assetCount: number;
   kindCounts: KindCounts;
 };
-export type KindCounts = { sound: number; image: number; model: number; material: number; spriteSequence: number; animation: number };
+export type KindCounts = { sound: number; image: number; model: number; font: number; material: number; spriteSequence: number; animation: number };
 // Sidebar asset types: "" is every asset; material and spriteSequence are grouped image workflows.
 export type CatalogType = "" | keyof KindCounts;
 // query_catalog kinds: "animation" selects animation-only model files (their asset kind stays "model").
@@ -77,6 +77,7 @@ export const CATALOG_TYPES: { value: CatalogType; label: string; icon: keyof typ
   { value: "material", label: "Materialien", icon: "material" },
   { value: "model", label: "3D-Modelle", icon: "model" },
   { value: "animation", label: "Animationen", icon: "animation" },
+  { value: "font", label: "Schriften", icon: "font" },
 ];
 export type CatalogPage = {
   items: Asset[];
@@ -138,6 +139,7 @@ const icons = {
   model: <><path d="m12 3 9 5v8l-9 5-9-5V8Z" /><path d="m3 8 9 5 9-5M12 13v8" /></>,
   material: <><path d="m12 3 9 4.5-9 4.5-9-4.5Z" /><path d="m3 12 9 4.5 9-4.5M3 16.5 12 21l9-4.5" /></>,
   animation: <><circle cx="15" cy="4.5" r="1.6" /><path d="M6 11.5 9.5 8h4l2.5 3h3M13.5 8 11 14l3 3-1 4M11 14l-2 4-4 1" /></>,
+  font: <path d="M4 20 10 4h1l6 16M6.5 14h8M17 20h4" />,
   trash: <><path d="M4 7h16M10 11v6M14 11v6" /><path d="m6 7 1 13h10l1-13M9 7V4h6v3" /></>,
   sprite: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M9 5v14M15 5v14" /></>,
   play: <path d="M7 4.5v15l12-7.5Z" />,

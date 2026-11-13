@@ -1542,3 +1542,11 @@ p {
 .auto-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .auto-tag { border: 1px dashed #3d4a5a; border-radius: 4px; padding: 1px 6px; background: transparent; color: #8698ae; font-size: 10px; }
 .auto-tag:hover:not(:disabled) { border-color: #8999aa; color: #d5dfe9; }
+
+/* Font assets: the sample renders in the file's own font under a generated family. */
+.font-thumbnail { display: flex; justify-content: center; align-items: center; width: 100%; height: 100%; }
+.font-thumbnail > svg { width: 30px; height: 30px; stroke-width: 1.2; }
+.font-thumbnail .font-sample { color: #e4edf6; font-size: 26px; white-space: nowrap; overflow: hidden; }
+.asset-grid.list .font-thumbnail .font-sample { font-size: 12px; }
+.font-preview { display: grid; gap: 10px; }
+.font-preview .font-sample { margin: 0; line-height: 1.2; overflow-wrap: anywhere; }

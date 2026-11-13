@@ -6,6 +6,7 @@ pub enum AssetKind {
     Sound,
     Image,
     Model,
+    Font,
     /// Catalog filter only: model assets whose every variant is confirmed animation-only.
     /// Such assets keep `Model` as their kind.
     Animation,
@@ -17,11 +18,12 @@ impl AssetKind {
             Self::Sound => &["WAV", "MP3", "OGG", "FLAC"],
             Self::Image => &["PNG", "JPEG", "WEBP", "PSD", "TGA", "GIF", "ASEPRITE"],
             Self::Model | Self::Animation => &["GLB", "GLTF", "FBX", "OBJ", "BLEND"],
+            Self::Font => &["TTF", "OTF", "WOFF", "WOFF2"],
         }
     }
 
     pub fn for_format(format: &str) -> Option<Self> {
-        [Self::Sound, Self::Image, Self::Model]
+        [Self::Sound, Self::Image, Self::Model, Self::Font]
             .into_iter()
             .find(|kind| {
                 kind.formats()
@@ -43,11 +45,16 @@ pub(super) fn candidate_format(path: &Path) -> Option<&'static str> {
     } else {
         extension
     };
-    [AssetKind::Sound, AssetKind::Image, AssetKind::Model]
-        .into_iter()
-        .flat_map(AssetKind::formats)
-        .copied()
-        .find(|format| format.eq_ignore_ascii_case(extension))
+    [
+        AssetKind::Sound,
+        AssetKind::Image,
+        AssetKind::Model,
+        AssetKind::Font,
+    ]
+    .into_iter()
+    .flat_map(AssetKind::formats)
+    .copied()
+    .find(|format| format.eq_ignore_ascii_case(extension))
 }
 
 pub(super) fn is_macos_metadata(path: &Path) -> bool {

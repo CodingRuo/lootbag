@@ -3,6 +3,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import AnnotationEditor from "./AnnotationEditor";
 import { ImageThumbnail } from "./ImagePreview";
+import { FontThumbnail } from "./FontPreview.tsx";
 import type { ModelExportSelection } from "./ModelPreview";
 import ModelThumbnail, { createCatalogModelThumbnails } from "./ModelThumbnail";
 import { assetKey } from "./imageWorkflows";
@@ -445,7 +446,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                     }}
                     aria-pressed={assetKey(selected) === assetKey(asset)}>
                     <span className={`asset-poster ${asset.kind === "image" ? "transparency-background" : ""}`}>
-                      {asset.kind === "image" ? <ImageThumbnail key={`${library.root}:${firstFile.id}:${firstFile.available}`} fileId={firstFile.id} available={firstFile.available} filename={firstFile.originalFilename} /> : animationOnly ? <Icon name="animation" /> : asset.kind === "model" && (firstFile.format === "BLEND" || firstFile.sizeBytes <= MAX_MODEL_THUMBNAIL_BYTES) ? <ModelThumbnail queue={modelThumbnails} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available={firstFile.available} fallback={<Icon name="model" />} /> : sound && catalogView === "cards" && firstFile.available ? <ModelThumbnail queue={soundWaveforms} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available fallback={<Icon name="sound" />} /> : <Icon name={asset.kind} />}
+                      {asset.kind === "font" ? <FontThumbnail key={`${library.root}:${firstFile.id}`} file={firstFile} /> : asset.kind === "image" ? <ImageThumbnail key={`${library.root}:${firstFile.id}:${firstFile.available}`} fileId={firstFile.id} available={firstFile.available} filename={firstFile.originalFilename} /> : animationOnly ? <Icon name="animation" /> : asset.kind === "model" && (firstFile.format === "BLEND" || firstFile.sizeBytes <= MAX_MODEL_THUMBNAIL_BYTES) ? <ModelThumbnail queue={modelThumbnails} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available={firstFile.available} fallback={<Icon name="model" />} /> : sound && catalogView === "cards" && firstFile.available ? <ModelThumbnail queue={soundWaveforms} scope={thumbnailScope} fileId={firstFile.id} path={firstFile.relativePath} sizeBytes={firstFile.sizeBytes} format={firstFile.format} available fallback={<Icon name="sound" />} /> : <Icon name={asset.kind} />}
                     </span>
                     <span className="asset-card-copy">
                       <strong>{wrapName(name)}</strong>
