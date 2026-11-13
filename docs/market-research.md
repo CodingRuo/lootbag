@@ -42,3 +42,29 @@ editing tools (atlas/audio editors), engine plugins as a dependency, version con
 "Lootbag": low conflict (Minecraft mods, a Unity addon; no asset-manager tool found; lootbag.com and
 lootbag.dev showed no DNS). Alternatives: Packwright (no conflict found), Packmule, Stowage.
 Avoid: Hoard (AssetHoard), Stash, Trove, Quiver, Loadout, Packrat. Trademark registers not searched yet.
+
+## Round 2 (2026-11-13): what others do that Lootbag does not
+
+Gaps 1–7 above are built (except `.unitypackage` browsing). Sources:
+[AssetHoard](https://assethoard.com) and its [roadmap](https://assethoard.com/roadmap),
+[Sharp Stock](https://sharpknifegames.itch.io/sharp-stock-lite),
+[Asset Inventory](https://www.wetzold.com/tool/asset-inventory/),
+[Sononym](https://www.sononym.net), [mipGAM](https://bytefoundry.itch.io/mipgam),
+[electron-dam](https://github.com/simeonradivoev/electron-dam).
+
+| Gap | Who has it | Cost | Verdict |
+|---|---|---|---|
+| Drag assets out into an engine, DAW or Finder | AssetHoard, Sharp Stock, Asset Inventory | S–M | Build |
+| Reveal in Finder / open in the default app (Aseprite, Blender, Audacity) | mipGAM, most DAMs | S | Build |
+| Rescan packs and watched folders for new or changed files | AssetHoard | M | Build |
+| Browse `.unitypackage` in place (Synty, Asset Store) | AssetHoard, Asset Inventory | M | Build |
+| Font preview (TTF/OTF/WOFF) | AssetHoard, Sharp Stock | S | Build |
+| Waveform thumbnails on sound cards | AssetHoard | S–M | Build |
+| Detect common licences (CC0, CC-BY, MIT, Kenney) in licence files | AssetHoard | S | Build |
+| Filter images by dominant colour | Sharp Stock, AssetHoard (planned) | M | Later |
+| Auto-slice spritesheets, export GIF | AssetHoard | M | Later |
+| Similar-sound search (local audio features, no AI service) | Sononym, Asset Inventory | L | Later |
+| Local MCP server so coding agents can search and copy assets | AssetHoard, Asset Inventory | M | Later |
+| Semantic/AI tagging, background removal, image compression | AssetHoard, Sharp Stock, Asset Inventory | L | Skip (AI/editing) |
+| RAR/TGZ, `.uasset`, GameMaker packages | AssetHoard | L | Skip for now |
+| Store order sync, update checks, team databases | Asset Inventory | L | Skip (accounts/teams) |
