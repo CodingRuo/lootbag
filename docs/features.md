@@ -61,6 +61,16 @@ without an associated app give a German error. A ZIP entry opens from the ZIP
 cache; the app says so, because edits to that copy do not go back into the
 ZIP.
 
+## Asset herausziehen
+
+Dragging a card out of the window into Finder (Explorer on Windows), an
+engine or a DAW drops a copy of the card's default variant there. Copy is the
+only offered operation, so the original in the library or source folder is
+never moved. Only the catalog file ID crosses to Rust, which resolves it like
+`Öffnen`: ZIP entries are taken from the ZIP cache before the drag starts, and
+offline, changed or trashed files show a German error instead of a drag. A
+drop back onto Lootbag itself is ignored by the import drop zone.
+
 ## ZIP-Pakete ohne Entpacken
 
 `ZIP einbinden` (sidebar, next to `Externen Ordner einbinden`) registers a ZIP

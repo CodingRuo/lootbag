@@ -1208,6 +1208,53 @@ async fn open_file(app: AppHandle, file_id: i64, reveal: bool) -> Result<()> {
     .await
 }
 
+/// Drags one file out of the window as a copy; resolves with `true` once dropped, `false` when cancelled.
+#[tauri::command]
+async fn drag_file(window: tauri::WebviewWindow, file_id: i64) -> Result<bool> {
+    let app = window.app_handle().clone();
+    let root = active_root(&app)?;
+    let file = background(move || {
+        let file = Library::writable(&root)?.resolve_preview(file_id)?;
+        if active_root(&app)? != root {
+            return Err("Die aktive Bibliothek wurde geändert".into());
+        }
+        Ok(file)
+    })
+    .await?;
+    let (done, finished) = std::sync::mpsc::channel();
+    let failed = done.clone();
+    let target = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let started = drag::start_drag(
+                &target,
+                drag::DragItem::Files(vec![file]),
+                drag::Image::Raw(include_bytes!("../icons/128x128.png").to_vec()),
+                move |result, _| {
+                    let _ = done.send(Ok(matches!(result, drag::DragResult::Dropped)));
+                },
+                // Copy is the only offered operation, so Finder never moves the original.
+                drag::Options {
+                    mode: drag::DragMode::Copy,
+                    ..Default::default()
+                },
+            );
+            if let Err(error) = started {
+                let _ = failed.send(Err(format!(
+                    "Ziehen konnte nicht gestartet werden: {error}"
+                )));
+            }
+        })
+        .map_err(|error| format!("Ziehen konnte nicht gestartet werden: {error}"))?;
+    // All senders drop if the session never starts, so this cannot hang.
+    background(move || {
+        finished
+            .recv()
+            .map_err(|_| "Ziehen wurde vom System beendet".to_string())?
+    })
+    .await
+}
+
 #[tauri::command]
 async fn model_resources(app: AppHandle, file_id: i64) -> Result<ModelResources> {
     let (root, request) = app.state::<Session>().begin_preview()?;
@@ -1614,6 +1661,7 @@ pub fn run() {
             assign_variant,
             resolve_preview,
             open_file,
+            drag_file,
             analyze_audio,
             prepare_audio_analysis,
             run_audio_analysis,

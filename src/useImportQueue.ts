@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { draggingOut } from "./dragOut.ts";
 import { errorMessage } from "./errorMessage.ts";
 import { ZIP_FILTER, bytes, native, number, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
@@ -53,7 +54,7 @@ export function useImportQueue({ library, actionsDisabled, mounted, operationRun
     let active = true;
     let unlisten: (() => void) | undefined;
     getCurrentWebview().onDragDropEvent((event) => {
-      if (!active) return;
+      if (!active || draggingOut()) return;
       setDropHover(event.payload.type === "enter" || event.payload.type === "over");
       if (event.payload.type === "drop") dropImport.current(event.payload.paths);
     }).then((stop) => { if (active) unlisten = stop; else stop(); })
