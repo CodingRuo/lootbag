@@ -4,7 +4,7 @@ use super::{
 };
 use rusqlite::params;
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
+    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
     path::Path,
 };
 
@@ -333,6 +333,24 @@ impl Library {
             .iter()
             .map(|member| member.record.asset_id)
             .collect())
+    }
+
+    /// "folder/name" of the package's material sets and sprite sequences with ambiguous roles or frames.
+    pub(super) fn ambiguous_image_groups(&self, package_id: i64) -> Result<BTreeSet<String>> {
+        let mut names = BTreeSet::new();
+        for workflow in [ImageWorkflow::Material, ImageWorkflow::SpriteSequence] {
+            for group in self.derived_image_groups(workflow, Some(package_id))? {
+                if !group.errors().is_empty() {
+                    let folder = &group.members[0].record.folder;
+                    names.insert(if folder.is_empty() {
+                        group.name
+                    } else {
+                        format!("{folder}/{}", group.name)
+                    });
+                }
+            }
+        }
+        Ok(names)
     }
 
     fn derived_image_groups(

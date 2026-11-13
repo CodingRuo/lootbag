@@ -3,7 +3,7 @@ use crate::library::{
     BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DuplicateCopy, EmbeddedAudioTags,
     EmptiedTrash, ExportOutcome, ImageGroup, ImageWorkflow, ImportControl, ImportProgress,
     KindCounts, Library, ModelResources, PackageInfo, PackageInfoDetails, ProjectExportPlan,
-    ProjectFolder, Result, SavedSearch, TrashEntry, ZipEstimate,
+    ProjectFolder, RescanSummary, Result, SavedSearch, TrashEntry, ZipEstimate,
 };
 use std::{
     fs,
@@ -868,6 +868,18 @@ async fn relink_source(app: AppHandle, package_id: i64, source: String) -> Resul
 }
 
 #[tauri::command]
+async fn rescan_package(app: AppHandle, package_id: i64) -> Result<RescanSummary> {
+    let root = active_root(&app)?;
+    background(move || {
+        let _gate = catalog_write(&app, &root)?;
+        let summary = Library::writable(&root)?.rescan_package(package_id)?;
+        start_backfill(&app, root.clone());
+        Ok(summary)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn query_catalog(
     app: AppHandle,
     query: CatalogQuery,
@@ -1542,6 +1554,7 @@ pub fn run() {
             saved_searches,
             save_search,
             delete_saved_search,
+            rescan_package,
             split_variant,
             assign_variant,
             resolve_preview,

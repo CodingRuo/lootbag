@@ -6,7 +6,7 @@ import { errorMessage } from "./errorMessage.ts";
 import { CATALOG_TYPES, Icon, number, type CatalogType, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 // Library heading, asset type, package and project folder filters, trash, library actions and storage location.
-export default function Sidebar({ savedSearches, searchJson, applySavedSearch, deleteSavedSearch, library, traitsPending, catalogType, chooseType, packageId, folderId, projectFolders, actionsDisabled, filterPackage, filterFolder, trashItem, editPackageInfo, refreshSources, setNotice, setShowFolderDialog, setShowTrash, trashGeneration, openLibrary, referenceFolder }: {
+export default function Sidebar({ savedSearches, searchJson, applySavedSearch, deleteSavedSearch, library, traitsPending, catalogType, chooseType, packageId, folderId, projectFolders, actionsDisabled, filterPackage, filterFolder, trashItem, editPackageInfo, rescanPackage, refreshSources, setNotice, setShowFolderDialog, setShowTrash, trashGeneration, openLibrary, referenceFolder }: {
   savedSearches: SavedSearch[];
   searchJson: string;
   applySavedSearch: (saved: SavedSearch) => void;
@@ -23,6 +23,7 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
   filterFolder: (id: number) => void;
   trashItem: (kind: "package" | "file", id: number, name: string) => void;
   editPackageInfo: (id: number) => void;
+  rescanPackage: (id: number, name: string) => void;
   refreshSources: () => void;
   setNotice: Setter<Notice | null>;
   setShowFolderDialog: Setter<boolean>;
@@ -85,7 +86,8 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
           {library.packages.length ? (
             library.packages.map((item) => (
               <TrashActions key={item.id} className="package-row" label={`Paket ${item.name}`} disabled={actionsDisabled}
-                onTrash={() => trashItem("package", item.id, item.name)} onEditInfo={() => editPackageInfo(item.id)}>
+                onTrash={() => trashItem("package", item.id, item.name)} onEditInfo={() => editPackageInfo(item.id)}
+                onRescan={item.sourceKind === "managed" ? () => rescanPackage(item.id, item.name) : undefined}>
                 <button
                   className={`package-item ${packageId === item.id ? "active" : ""}`}
                   aria-pressed={packageId === item.id}
