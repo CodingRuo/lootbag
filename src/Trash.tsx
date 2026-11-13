@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { mac } from "./ui.tsx";
 
 export type TrashEntry = {
   id: number;
@@ -12,12 +13,13 @@ export type TrashEntry = {
   parentTrashed: boolean;
 };
 
-export function TrashActions({ children, label, disabled, onTrash, onEditInfo, className = "" }: {
+export function TrashActions({ children, label, disabled, onTrash, onEditInfo, onOpenFile, className = "" }: {
   children: ReactNode;
   label: string;
   disabled: boolean;
   onTrash: () => void;
   onEditInfo?: () => void;
+  onOpenFile?: (reveal: boolean) => void;
   className?: string;
 }) {
   const id = useId();
@@ -27,7 +29,7 @@ export function TrashActions({ children, label, disabled, onTrash, onEditInfo, c
   function position(x: number, y: number) {
     if (!menu.current) return;
     menu.current.style.left = `${Math.max(8, Math.min(x, window.innerWidth - 232))}px`;
-    menu.current.style.top = `${Math.max(8, Math.min(y, window.innerHeight - 104))}px`;
+    menu.current.style.top = `${Math.max(8, Math.min(y, window.innerHeight - (onOpenFile ? 184 : 104)))}px`;
   }
 
   return (
@@ -53,6 +55,10 @@ export function TrashActions({ children, label, disabled, onTrash, onEditInfo, c
             button.current?.focus();
           }
         }}>
+        {onOpenFile && [false, true].map((reveal) => <button key={String(reveal)} role="menuitem" className="neutral" disabled={disabled} onClick={() => {
+          menu.current?.hidePopover();
+          onOpenFile(reveal);
+        }}>{reveal ? mac ? "Im Finder zeigen" : "Im Explorer zeigen" : "Öffnen"}</button>)}
         {onEditInfo && <button role="menuitem" className="neutral" disabled={disabled} onClick={() => {
           menu.current?.hidePopover();
           onEditInfo();

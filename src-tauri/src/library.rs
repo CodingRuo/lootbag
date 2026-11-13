@@ -7240,3 +7240,7 @@ mod tests {
 #[cfg(test)]
 #[path = "audio_population_tests.rs"]
 mod audio_population_tests;
+
+#[cfg(all(test, unix))]
+#[path = "open_file_tests.rs"]
+mod open_file_tests;

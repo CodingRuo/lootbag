@@ -49,6 +49,18 @@ require relinking after moving to another computer.
 Relinking validates the original source. Add a copied folder with different
 file identities as a new external source.
 
+## Öffnen und im Finder zeigen
+
+A card's `⋯` menu (or right-click) and the inspector's file menu offer
+`Öffnen` (system default app, e.g. Aseprite, Blender or Audacity) and
+`Im Finder zeigen` (`Im Explorer zeigen` on Windows). The card uses its
+default variant, the inspector the selected variant. Only the catalog file ID
+crosses to Rust, which resolves it like a preview: trashed files, files of a
+library that was switched meanwhile, offline or changed files and files
+without an associated app give a German error. A ZIP entry opens from the ZIP
+cache; the app says so, because edits to that copy do not go back into the
+ZIP.
+
 ## ZIP-Pakete ohne Entpacken
 
 `ZIP einbinden` (sidebar, next to `Externen Ordner einbinden`) registers a ZIP

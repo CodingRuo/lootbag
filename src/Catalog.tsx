@@ -14,7 +14,7 @@ import { errorMessage } from "./errorMessage.ts";
 import { exportProject, memberRole } from "./projectExport.ts";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import type { useAudioAnalysis } from "./useAudioAnalysis.ts";
-import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, isAnimationOnly, mac, number, type Act, type Asset, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
+import { CATALOG_TYPES, Icon, PAGE_SIZE, bytes, isAnimationOnly, mac, number, type Act, type Asset, type AssetFile, type AssetPackage, type AudioFilters, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
 
 type BulkAction = { kind: "addTags"; tags: string[] } | { kind: "addToFolder"; folderId: number } | { kind: "trash" };
 type BulkResult = { assetCount: number; fileCount: number };
@@ -25,7 +25,7 @@ const MAX_MODEL_THUMBNAIL_BYTES = 32 * 1024 * 1024;
 const wrapName = (name: string) => name.replace(/[_-]/g, "$&\u200b");
 
 // Catalog column: search, filter/view tools, audio analysis, bulk actions, results and paging.
-export default function Catalog({ library, query, audio, selected, setSelected, selection, setSelection, setSelectedFileId, setModelSelection, filteredPackage, filteredFolderPath, projectFolders, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, relinkSource, importPackage }: {
+export default function Catalog({ library, query, audio, selected, setSelected, selection, setSelection, setSelectedFileId, setModelSelection, filteredPackage, filteredFolderPath, projectFolders, actionsDisabled, act, setLibrary, setRevision, setNotice, trashItem, openFile, relinkSource, importPackage }: {
   library: LibraryInfo;
   query: CatalogQuery;
   audio: ReturnType<typeof useAudioAnalysis>;
@@ -44,6 +44,7 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
   setRevision: Setter<number>;
   setNotice: Setter<Notice | null>;
   trashItem: (kind: "package" | "file", id: number, name: string) => void;
+  openFile: (file: AssetFile, packageId: number, reveal: boolean) => void;
   relinkSource: (sourcePackage: AssetPackage) => void;
   importPackage: (zip?: boolean) => void;
 }) {
@@ -418,7 +419,8 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
                   aria-label={`${asset.imageGroup?.name ?? asset.name} auswählen${asset.imageGroup ? " · gesamte Bildgruppe" : " · alle Varianten"}`}
                   onClick={(event) => chooseAsset(asset, event.shiftKey ? (event.metaKey || event.ctrlKey ? "addRange" : "range") : "toggle")} />
                 <TrashActions label={`Datei ${firstFile.originalFilename}`} disabled={actionsDisabled}
-                  onTrash={() => trashItem("file", firstFile.id, firstFile.originalFilename)}>
+                  onTrash={() => trashItem("file", firstFile.id, firstFile.originalFilename)}
+                  onOpenFile={(reveal) => openFile(firstFile, asset.packageId, reveal)}>
                   <button className="asset-select" disabled={queryLoading} title={`${name}\n${firstFile.originalFilename}\n${asset.packageName} · ${folders}`}
                     onClick={(event) => chooseAsset(asset, event.shiftKey ? (event.metaKey || event.ctrlKey ? "addRange" : "range") : event.metaKey || event.ctrlKey ? "toggle" : "single")}
                     onKeyUp={(event) => { if (sound && event.key === " ") event.preventDefault(); }}
