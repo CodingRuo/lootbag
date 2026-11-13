@@ -19,6 +19,7 @@ import Sidebar from "./Sidebar";
 import Catalog from "./Catalog";
 import Inspector from "./Inspector";
 
+type RescanSummary = { added: number; changed: number; missing: number; ambiguous: string[] };
 type EmptiedTrash = { packages: number; files: number; diskErrors: string[] };
 
 
@@ -257,6 +258,16 @@ export default function App() {
     });
   }
 
+  function rescanPackage(id: number, name: string) {
+    void act("Paket wird neu eingelesen …", async () => {
+      const summary = await invoke<RescanSummary>("rescan_package", { packageId: id });
+      setLibrary(await invoke<LibraryInfo>("get_library"));
+      setRevision((value) => value + 1);
+      const ambiguous = summary.ambiguous.length ? ` · Mehrdeutige Gruppen: ${summary.ambiguous.join(", ")}` : "";
+      setNotice({ tone: "success", message: `${name} neu eingelesen · ${number.format(summary.added)} neu, ${number.format(summary.changed)} geändert, ${number.format(summary.missing)} fehlen${ambiguous}.` });
+    });
+  }
+
   function trashItem(kind: "package" | "file", id: number, name: string) {
     void act("Eintrag wird in den Papierkorb verschoben …", async () => {
       await invoke(kind === "package" ? "trash_package" : "trash_file", kind === "package" ? { packageId: id } : { fileId: id });
@@ -343,7 +354,7 @@ export default function App() {
       ) : (
         <div className="workspace">
           <Sidebar savedSearches={query.savedSearches} searchJson={query.searchJson} applySavedSearch={query.applySavedSearch} deleteSavedSearch={query.deleteSavedSearch} library={library} traitsPending={traitsPending} catalogType={query.workflow ?? query.kind ?? ""} chooseType={query.chooseType} openLibrary={openLibrary} referenceFolder={referenceFolder} packageId={packageId} folderId={folderId} projectFolders={projectFolders} actionsDisabled={actionsDisabled}
-            filterPackage={query.filterPackage} filterFolder={query.filterFolder} trashItem={trashItem} editPackageInfo={editPackageInfo} refreshSources={refreshSources}
+            filterPackage={query.filterPackage} filterFolder={query.filterFolder} trashItem={trashItem} editPackageInfo={editPackageInfo} rescanPackage={rescanPackage} refreshSources={refreshSources}
             setNotice={setNotice} setShowFolderDialog={setShowFolderDialog} setShowTrash={setShowTrash} trashGeneration={trashGeneration} />
           <Catalog library={library} query={query} audio={audio} selected={selected} setSelected={setSelected} selection={selection} setSelection={setSelection}
             setSelectedFileId={setSelectedFileId} setModelSelection={setModelSelection} filteredPackage={filteredPackage} filteredFolderPath={filteredFolderPath}

@@ -54,7 +54,7 @@ fn zip_stamp(zip: &ReferencedLocation) -> String {
     format!("{}|{}", zip.root_identity, zip.identity)
 }
 
-fn file_stamp(metadata: &fs::Metadata) -> Option<String> {
+pub(super) fn file_stamp(metadata: &fs::Metadata) -> Option<String> {
     Some(format!(
         "{}|{}",
         modified_identity(metadata).ok()?,

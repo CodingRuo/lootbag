@@ -97,7 +97,7 @@ ZIP with `Paket importieren`.
 
 New imports and external references discover PNG/JPEG/WebP/TGA/GIF/Aseprite images and
 GLB/glTF 2.0, FBX, OBJ and Blender source models alongside sounds. Existing packages keep their
-catalog entries until explicitly reimported. Search and category filters work
+catalog entries until rescanned (`Neu einlesen`, managed packages) or reimported. Search and category filters work
 together; identically named assets of different kinds remain separate.
 
 Images show dimensions, transparency, zoom and pixel mode. Open the regular
@@ -181,8 +181,8 @@ report an error. Limits are 64 MiB encoded, 16 Mi pixels and 8192 pixels per sid
 cards retain proxies up to 512 pixels. Groups/model TGA textures retain at most
 32 Mi pixels (combined TGA/GIF/Aseprite for model textures), sprite sequences at most 256 frames, and queued decode jobs have a
 30-second timeout. Original exports keep TGA bytes; proxies are temporary.
-Existing packages require explicit reimport to add previously uncatalogued TGA
-images.
+Managed packages discover previously uncatalogued TGA images with `Neu
+einlesen`; external and ZIP sources require reimport.
 
 GIF87a/89a previews validate the container before browser-native decoding. The
 image inspector switches between natural animation and the first image; changing
@@ -198,7 +198,8 @@ native decoder work. Proxies stay temporary and exports retain original bytes.
 External GIF model textures and explicit glTF GIF URI/data/bufferView previews
 use the guarded route; GIF is outside glTF 2.0's core PNG/JPEG image formats and
 this adds no portability conversion. Embedded FBX GIF images are unsupported.
-Existing packages require explicit reimport to discover GIF files.
+Managed packages discover GIF files with `Neu einlesen`; external and ZIP
+sources require reimport.
 
 Aseprite `.ase` and `.aseprite` files use complete canvas composites from flat
 normal 32-bit RGBA layers, including raw/compressed cels, backward linked images,
@@ -215,7 +216,8 @@ shares the existing queue/deadline. Browser-standard zlib decompression is
 required; these application limits are not an OS heap quota. Indexed/grayscale,
 groups, tilemaps, non-normal/special layers, scaled cels and unsupported profiles
 fail explicitly, including hidden content. No Aseprite process runs in the app.
-Existing packages require explicit reimport to discover these sources.
+Managed packages discover these sources with `Neu einlesen`; external and ZIP
+sources require reimport.
 
 Blender source files show their embedded saved thumbnail in cards and a static
 inspector with fit, 100 percent zoom and pixel mode. That image can be older than
@@ -229,8 +231,9 @@ little-endian/64-bit, with a leading saved TEST image. Limits: 64 MiB input,
 1 MiB leading block offset, 256 leading blocks and 2048 pixels per image side
 (4 Mi pixels). Legacy, gzip/Zstd, other layouts and missing/malformed thumbnails
 report explicit errors. A bounded same-origin worker shares the existing serial
-preview lifecycle; no Blender process is run by the app. Existing packages need
-explicit reimport to discover previously ignored `.blend` files.
+preview lifecycle; no Blender process is run by the app. Managed packages
+discover previously ignored `.blend` files with `Neu einlesen`; external and ZIP
+sources require reimport.
 
 GLB/glTF, FBX and OBJ cards generate actual
 static thumbnails serially with one renderer and a bounded session cache;
@@ -238,7 +241,8 @@ background thumbnails do not change the inspector's export selection.
 PSD files are recognized as image assets by new folder, ZIP and external
 imports, and retain their original bytes on export. PSD image decoding is
 pending approval of the decoder dependency. Existing packages are deliberately
-not rescanned on reopen; previously ignored PSD files require reimport.
+not rescanned on reopen; `Neu einlesen` discovers previously ignored PSD files in
+managed packages, external and ZIP sources require reimport.
 The tested Synty Town prop now renders with its supplied PNG; the City Biker
 retains its regular preview and export. Geometry and source files are preserved.
 
@@ -354,6 +358,26 @@ has that name) records project, `exportedAt`, every asset
 partial folder and names it in the error ("Export unvollständig: …"); nothing
 in it is deleted. The copy runs in one background
 step without progress or cancellation. Game-project profiles are not built yet.
+
+## Neu einlesen
+
+`Neu einlesen` in a managed package's `⋯` menu scans the package's folder in the
+library storage again (never the original import location) with the current
+discovery rules and reports "n neu, n geändert, n fehlen". A file at the same
+package path keeps its asset and file identity, so names, tags, package info,
+project memberships, roles and chosen variants stay, also when its content
+changed. Changes are detected by size, and for already hashed files also by
+modification time; analysed audio properties, model traits and hashes of changed
+files are dropped and recomputed, auto-tags and duplicates follow in the
+background. A renamed or moved file counts as missing plus new. Missing files keep
+their catalog entry and annotations and show as unavailable until they return or
+are moved to the trash; trashed files stay in the trash. New files join an
+existing asset only when exactly one asset of the same folder, name and kind is
+still an unchanged automatic group, so split or reassigned variants stay as they
+are. Material sets and sprite sequences follow automatically; groups that become
+ambiguous are named in the result. A link, special file or unreadable folder
+aborts the scan and leaves the package unchanged. External folders and ZIP
+sources are not rescanned yet.
 
 ## Paketinfos und Credits
 

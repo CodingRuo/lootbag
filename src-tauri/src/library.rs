@@ -54,6 +54,9 @@ pub type Result<T> = std::result::Result<T, String>;
 mod imports;
 pub use imports::{ImportControl, ImportProgress, ZipEstimate};
 use imports::{ImportRun, ImportedFile};
+#[path = "rescan.rs"]
+mod rescan;
+pub use rescan::RescanSummary;
 #[path = "bulk.rs"]
 mod bulk;
 #[path = "project_export.rs"]
