@@ -23,10 +23,17 @@ Create a production app bundle with:
 pnpm tauri build --bundles app
 ```
 
+Signed and notarized macOS release (runs locally, needs a Developer ID certificate
+in the keychain and a one-time `xcrun notarytool store-credentials lootbag`):
+
+```sh
+scripts/release-macos.sh
+```
+
 ## Windows
 
-Windows 10/11 x64 builds in CI (`.github/workflows/build.yml`: type check, tests,
-`cargo test` and an unsigned NSIS installer via `pnpm tauri build --bundles nsis`).
+Windows 10/11 x64 builds on a Windows machine with `pnpm tauri build --bundles nsis`
+(unsigned NSIS installer).
 It has not been tested on real Windows hardware yet. Differences from macOS:
 
 - Import uses two buttons, `Ordner importieren` and `ZIP importieren`, with the
