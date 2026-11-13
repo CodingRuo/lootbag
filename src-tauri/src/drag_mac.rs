@@ -3,19 +3,21 @@
 //! `leftMouseDragged` event of that press, as AppKit requires. A press that ends first never
 //! starts a drag.
 //!
-//! Press identity: the monitor numbers every mouse-down and, before AppKit dispatches the event
-//! to the WKWebView under the pointer, sets `window.__lootbagPress` in that webview. Script
-//! evaluation and the mouse event travel to the web process in that order over the same
-//! connection, so the page's pointerdown reads its own press number and `prepare_drag` sends it
-//! back with the invoking window; the gesture refuses any other press or window.
+//! Press identity: the page reports the card under the pointer (payload and rect) per window
+//! before any press can happen on it. On mouse-down the monitor hit-tests the press against the
+//! pressed webview's last report, synchronously on the main thread, and binds that card to the
+//! press only if the press lies inside its rect. No page script runs in between, so a queued
+//! pointer event can never pick up another press's payload.
 
-use super::{discard_stage, drag_ended, drag_published, stage_drag};
-use crate::library::{DragGesture, DragItem, DragSource, DragStage, DragStep};
-use block2::{Block, RcBlock};
+use super::{discard_stage, stage_drag};
+use crate::library::{
+    css_point, DragGesture, DragItem, DragSource, DragStage, DragStep, DragTarget,
+};
+use block2::RcBlock;
 use objc2::{
     define_class, msg_send,
     rc::Retained,
-    runtime::{AnyClass, AnyObject, ProtocolObject},
+    runtime::{AnyClass, ProtocolObject},
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
@@ -27,7 +29,6 @@ use objc2_foundation::{
 };
 use std::{
     cell::RefCell,
-    path::PathBuf,
     ptr::NonNull,
     sync::{LazyLock, Mutex, MutexGuard, PoisonError},
 };
@@ -48,16 +49,16 @@ fn gesture() -> MutexGuard<'static, DragGesture<Vec<DragSource>, Prepared>> {
     GESTURE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Binds `sources` to press `press` of `window` (an NSWindow pointer), if that press is held.
-pub fn request(window: usize, press: u64, sources: Vec<DragSource>) {
-    gesture().request(window, press, sources);
+/// Records the card under the pointer in `window` (an NSWindow pointer).
+pub fn hover(window: usize, version: f64, target: Option<DragTarget<Vec<DragSource>>>) {
+    gesture().hover(window, version, target);
 }
 
 pub fn disarm() {
     discard(gesture().disarm());
 }
 
-/// Removes the copies of a payload no drag will use.
+/// Queues the copies of a payload no drag will use for removal; never blocks the event loop.
 fn discard(prepared: Option<Prepared>) {
     if let Some(Ok(stage)) = prepared {
         discard_stage(&stage);
@@ -88,11 +89,11 @@ pub fn install(app: AppHandle) {
                 };
                 let window = real.window(mtm);
                 let id = window.as_ref().map_or(0, |w| Retained::as_ptr(w) as usize);
-                let (press, dropped) = gesture().press(id, (at.x, at.y));
+                let css = window
+                    .and_then(|window| window.contentView())
+                    .and_then(|view| webview_point(&view, at));
+                let dropped = gesture().press(id, (at.x, at.y), css);
                 discard(dropped);
-                if let Some(view) = window.and_then(|window| window.contentView()) {
-                    announce(&view, at, press);
-                }
             }
             // Any key while held (Escape, Cmd+A, arrows) may change the selection: never drag stale.
             NSEventType::LeftMouseUp | NSEventType::KeyDown => disarm(),
@@ -120,25 +121,20 @@ pub fn install(app: AppHandle) {
     std::mem::forget(monitor);
 }
 
-/// Tells the webview under the press its number, ahead of the mouse event itself.
-fn announce(content: &NSView, at: NSPoint, press: u64) {
-    let Some(class) = AnyClass::get(c"WKWebView") else {
-        return;
-    };
+/// The press as a CSS pixel in the viewport of the webview under it, if it hit one.
+fn webview_point(content: &NSView, at: NSPoint) -> Option<(f64, f64)> {
+    let class = AnyClass::get(c"WKWebView")?;
     let mut view = content.hitTest(at);
     while let Some(current) = view {
         if current.isKindOfClass(class) {
-            let script = NSString::from_str(&format!("window.__lootbagPress={press}"));
-            let done: Option<&Block<dyn Fn(*mut AnyObject, *mut AnyObject)>> = None;
-            // SAFETY: `current` is a WKWebView; a nil completion handler is allowed.
-            let () = unsafe {
-                msg_send![&*current, evaluateJavaScript: &*script, completionHandler: done]
-            };
-            return;
+            let local = current.convertPoint_fromView(at, None);
+            let height = current.bounds().size.height;
+            return Some(css_point((local.x, local.y), height, current.isFlipped()));
         }
         // SAFETY: walking up the view tree of a live window on the main thread.
         view = unsafe { current.superview() };
     }
+    None
 }
 
 fn start(app: &AppHandle, event: &NSEvent, prepared: Prepared) {
@@ -171,8 +167,8 @@ fn start(app: &AppHandle, event: &NSEvent, prepared: Prepared) {
         .enumerate()
         .map(|(index, item)| dragging_item(item, at, index))
         .collect();
-    drag_published(&stage);
-    let source = Source::new(app.clone(), stage.problems, stage.batch, mtm);
+    // The batch stays until the next launch: the end callback does not mean the recipient is done.
+    let source = Source::new(app.clone(), stage.problems, mtm);
     let session = view.beginDraggingSessionWithItems_event_source(
         &NSArray::from_retained_slice(&items),
         event,
@@ -207,7 +203,6 @@ fn dragging_item(item: &DragItem, at: NSPoint, index: usize) -> Retained<NSDragg
 struct SourceIvars {
     app: AppHandle,
     problems: Vec<String>,
-    batch: Option<PathBuf>,
 }
 
 define_class!(
@@ -233,7 +228,6 @@ define_class!(
         #[unsafe(method(draggingSession:endedAtPoint:operation:))]
         fn ended(&self, _session: &NSDraggingSession, _at: NSPoint, operation: NSDragOperation) {
             let ivars = self.ivars();
-            drag_ended(ivars.batch.as_deref());
             let _ = ivars.app.emit(
                 "drag-out-ended",
                 DragEnd {
@@ -247,17 +241,8 @@ define_class!(
 );
 
 impl Source {
-    fn new(
-        app: AppHandle,
-        problems: Vec<String>,
-        batch: Option<PathBuf>,
-        mtm: MainThreadMarker,
-    ) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(SourceIvars {
-            app,
-            problems,
-            batch,
-        });
+    fn new(app: AppHandle, problems: Vec<String>, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(SourceIvars { app, problems });
         // SAFETY: plain NSObject init of a freshly allocated instance.
         unsafe { msg_send![super(this), init] }
     }

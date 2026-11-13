@@ -7,10 +7,13 @@ use std::{
     collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    sync::mpsc::{channel, Sender},
 };
 
 const MAX_SOURCES: usize = 10_000;
+/// Total size of staged copies in the drag-out folder; published copies stay until the next launch.
+pub const DRAG_CACHE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
+const CACHE_FULL: &str = "Der Zwischenspeicher für herausgezogene Kopien ist voll; er wird beim nächsten Start von Lootbag geleert";
 
 /// One dragged catalog item: a file, or with `workflow` the whole image group it represents.
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
@@ -46,6 +49,9 @@ struct Staging<'a> {
     seen: HashSet<i64>,
     originals: Vec<(PathBuf, SourceStamp)>,
     stage: DragStage,
+    /// Bytes this drag may still copy; a copy beyond it refuses the whole drag.
+    budget: u64,
+    full: bool,
 }
 
 impl Library {
@@ -54,10 +60,20 @@ impl Library {
     /// prepared on its own; failures and source changes become `problems` instead of aborting.
     /// A failed preparation leaves nothing behind; otherwise `batch` names what was copied.
     pub fn stage_drag(&self, sources: &[DragSource], staging: &Path) -> Result<DragStage> {
+        self.stage_drag_within(sources, staging, DRAG_CACHE_BUDGET)
+    }
+
+    /// `stage_drag` with an explicit cache budget for everything below `staging`.
+    pub fn stage_drag_within(
+        &self,
+        sources: &[DragSource],
+        staging: &Path,
+        budget: u64,
+    ) -> Result<DragStage> {
         if sources.is_empty() || sources.len() > MAX_SOURCES {
             return Err("Bitte 1 bis 10.000 Assets zum Herausziehen auswählen".into());
         }
-        let mut staging = Staging::new(self, staging);
+        let mut staging = Staging::new(self, staging, budget.saturating_sub(dir_size(staging)));
         for source in sources {
             match source.workflow {
                 Some(workflow) => match self.image_group(source.file_id, workflow) {
@@ -81,6 +97,12 @@ impl Library {
         // Originals are handed over as they are, so a change after they were resolved drops them.
         let mut stage = staging.stage;
         stage.batch = staging.batch.is_dir().then_some(staging.batch);
+        if staging.full {
+            if let Some(batch) = &stage.batch {
+                let _ = fs::remove_dir_all(batch);
+            }
+            return Err(CACHE_FULL.into());
+        }
         for (path, stamp) in staging.originals {
             let unchanged = fs::metadata(&path)
                 .ok()
@@ -109,7 +131,7 @@ impl Library {
 }
 
 impl<'a> Staging<'a> {
-    fn new(library: &'a Library, staging: &Path) -> Self {
+    fn new(library: &'a Library, staging: &Path, budget: u64) -> Self {
         Self {
             library,
             batch: staging.join(unique_suffix()),
@@ -117,7 +139,19 @@ impl<'a> Staging<'a> {
             seen: HashSet::new(),
             originals: Vec::new(),
             stage: DragStage::default(),
+            budget,
+            full: false,
         }
+    }
+
+    /// Claims `bytes` of the cache budget for a copy.
+    fn reserve(&mut self, bytes: u64) -> Result<()> {
+        if self.full || bytes > self.budget {
+            self.full = true;
+            return Err(CACHE_FULL.into());
+        }
+        self.budget -= bytes;
+        Ok(())
     }
 
     fn file(&mut self, file_id: i64) {
@@ -180,6 +214,7 @@ impl<'a> Staging<'a> {
         let stem = entry
             .file_stem()
             .map_or("Modell".into(), |stem| stem.to_string_lossy());
+        self.reserve(snapshot.export_size(&extra))?;
         let name = unique_name(&mut self.used, "", &stem, "");
         let destination = self.batch()?.join(name);
         // Rejects incomplete models and re-checks every resource stamp while copying.
@@ -215,6 +250,7 @@ impl<'a> Staging<'a> {
             return Ok(());
         }
         // A repeated name gets a renamed copy, so the recipient never sees two items called the same.
+        self.reserve(input.metadata().map_err(|error| error.to_string())?.len())?;
         let target = self.batch()?.join(name);
         let copied = (|| {
             let mut output = fs::OpenOptions::new()
@@ -244,21 +280,45 @@ impl<'a> Staging<'a> {
 /// Pointer travel before a held press becomes a drag, in points.
 pub const DRAG_THRESHOLD: f64 = 6.0;
 
-/// Ties a drag-out to the mouse press it was requested for. The monitor numbers every press
-/// and tells the pressed webview that number before WebKit sees the event, so the frontend's
-/// request names its own press; a request or payload for any other press or window is refused.
+/// The card under the pointer as the frontend last reported it: what it would drag and where it
+/// is, in CSS pixels relative to the webview's viewport.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct DragTarget<S> {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+    pub sources: S,
+}
+
+impl<S> DragTarget<S> {
+    fn contains(&self, (x, y): (f64, f64)) -> bool {
+        x >= self.left && x < self.left + self.width && y >= self.top && y < self.top + self.height
+    }
+}
+
+/// A point in a view's own coordinates as a CSS pixel in its viewport (top-left origin), given
+/// the view's height and whether it is flipped. Assumes page zoom 1, so one point is one pixel.
+pub fn css_point((x, y): (f64, f64), height: f64, flipped: bool) -> (f64, f64) {
+    (x, if flipped { y } else { height - y })
+}
+
+/// Ties a drag-out to the mouse press it belongs to. The frontend reports the card under the
+/// pointer per window; a native mouse-down binds that card only if the press lies inside the
+/// card's reported rect, so a report that is late, stale or for another card binds nothing.
 /// Nothing is staged on a mere click: staging starts once the held press passes the threshold,
 /// and only a drag event of that same, still held press starts the drag.
 #[derive(Debug)]
 pub struct DragGesture<S, P> {
     press: Option<Press<S, P>>,
     presses: u64,
+    /// Per window: the newest report's version and its target, if the pointer is on a card.
+    targets: Vec<(usize, f64, Option<DragTarget<S>>)>,
 }
 
 #[derive(Debug)]
 struct Press<S, P> {
     id: u64,
-    window: usize,
     origin: (f64, f64),
     state: PressState<S, P>,
 }
@@ -266,7 +326,7 @@ struct Press<S, P> {
 #[derive(Debug)]
 enum PressState<S, P> {
     Pressed,
-    Requested(S),
+    Bound(S),
     Staging,
     Armed(P),
 }
@@ -285,37 +345,46 @@ impl<S, P> Default for DragGesture<S, P> {
         Self {
             press: None,
             presses: 0,
+            targets: Vec::new(),
         }
     }
 }
 
-impl<S, P> DragGesture<S, P> {
-    /// A new mouse-down in `window`; returns its number and whatever an earlier press had armed.
-    pub fn press(&mut self, window: usize, at: (f64, f64)) -> (u64, Option<P>) {
-        self.presses += 1;
-        let dropped = self.disarm();
-        self.press = Some(Press {
-            id: self.presses,
-            window,
-            origin: at,
-            state: PressState::Pressed,
-        });
-        (self.presses, dropped)
-    }
-
-    /// Binds `sources` to `press` if it is the held press of `window` and has none yet.
-    pub fn request(&mut self, window: usize, press: u64, sources: S) -> bool {
-        match &mut self.press {
-            Some(held)
-                if held.id == press
-                    && held.window == window
-                    && matches!(held.state, PressState::Pressed) =>
-            {
-                held.state = PressState::Requested(sources);
+impl<S: Clone, P> DragGesture<S, P> {
+    /// Records `window`'s card under the pointer (`None`: none); an older `version` is ignored.
+    pub fn hover(&mut self, window: usize, version: f64, target: Option<DragTarget<S>>) -> bool {
+        match self.targets.iter_mut().find(|entry| entry.0 == window) {
+            Some(entry) if entry.1 >= version => false,
+            Some(entry) => {
+                *entry = (window, version, target);
                 true
             }
-            _ => false,
+            None => {
+                self.targets.push((window, version, target));
+                true
+            }
         }
+    }
+
+    /// A new mouse-down in `window` at `at` (window points); `css` is the press in the pressed
+    /// webview's viewport, if it hit one. Binds that window's card if the press lies inside it
+    /// and returns whatever an earlier press had armed.
+    pub fn press(&mut self, window: usize, at: (f64, f64), css: Option<(f64, f64)>) -> Option<P> {
+        let dropped = self.disarm();
+        let bound = self
+            .targets
+            .iter()
+            .find(|entry| entry.0 == window)
+            .and_then(|entry| entry.2.as_ref())
+            .filter(|target| css.is_some_and(|css| target.contains(css)))
+            .map(|target| target.sources.clone());
+        self.presses += 1;
+        self.press = Some(Press {
+            id: self.presses,
+            origin: at,
+            state: bound.map_or(PressState::Pressed, PressState::Bound),
+        });
+        dropped
     }
 
     /// Arms `press` with its staged `payload`; hands the payload back once that press ended.
@@ -329,7 +398,7 @@ impl<S, P> DragGesture<S, P> {
         }
     }
 
-    /// A drag event of the held press. Past the threshold a requested press asks for staging
+    /// A drag event of the held press. Past the threshold a bound press asks for staging
     /// once; an armed one hands its payload over once and ends, so it can never start twice.
     pub fn drag(&mut self, at: (f64, f64)) -> DragStep<S, P> {
         let Some(held) = &mut self.press else {
@@ -340,7 +409,7 @@ impl<S, P> DragGesture<S, P> {
             return DragStep::Wait;
         }
         match std::mem::replace(&mut held.state, PressState::Staging) {
-            PressState::Requested(sources) => DragStep::Stage(held.id, sources),
+            PressState::Bound(sources) => DragStep::Stage(held.id, sources),
             PressState::Armed(payload) => {
                 self.press = None;
                 DragStep::Start(payload)
@@ -361,50 +430,72 @@ impl<S, P> DragGesture<S, P> {
     }
 }
 
-/// Published staging batches stay this long after their drag ended, so a recipient that copies
-/// slowly after the drop can still read them.
-pub const BATCH_GRACE: Duration = Duration::from_secs(10 * 60);
-/// The most recent published batches are kept regardless of age.
-pub const KEEP_BATCHES: usize = 3;
+/// Deletes staged batches on a worker thread: AppKit callbacks and the event monitor must never
+/// wait on removing a large folder.
+#[derive(Debug)]
+pub struct Trash(Sender<PathBuf>);
 
-/// Bounds staged drag copies: a batch is deleted once it is not among the `KEEP_BATCHES` newest
-/// and its drag ended `BATCH_GRACE` ago. Library open still clears everything.
-#[derive(Debug, Default)]
-pub struct Retention {
-    batches: Vec<(PathBuf, Option<Instant>)>,
+impl Trash {
+    /// A trash whose removals are handled by `sender`'s receiver.
+    pub fn new(sender: Sender<PathBuf>) -> Self {
+        Self(sender)
+    }
+
+    /// A trash with its own worker that removes each folder it is handed.
+    pub fn spawn() -> Self {
+        let (sender, removals) = channel::<PathBuf>();
+        std::thread::spawn(move || {
+            for path in removals {
+                let _ = fs::remove_dir_all(path);
+            }
+        });
+        Self(sender)
+    }
+
+    /// Queues `stage`'s copies for removal; returns at once.
+    pub fn discard(&self, stage: &DragStage) {
+        if let Some(batch) = &stage.batch {
+            self.remove(batch.clone());
+        }
+    }
+
+    pub fn remove(&self, path: PathBuf) {
+        let _ = self.0.send(path);
+    }
 }
 
-impl Retention {
-    pub const fn new() -> Self {
-        Self {
-            batches: Vec::new(),
-        }
-    }
+/// Launch cleanup: moves the drag-out folder `staging` aside (a rename, so new drags can stage at
+/// once) and returns it with any folders an earlier launch moved aside but did not finish removing.
+/// Published copies live until here, because a recipient may read them long after the drop.
+pub fn retire_drag_cache(staging: &Path) -> Vec<PathBuf> {
+    let (Some(parent), Some(name)) = (staging.parent(), staging.file_name()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{}-old-", name.to_string_lossy());
+    let _ = fs::rename(staging, parent.join(format!("{prefix}{}", unique_suffix())));
+    fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path())
+        .collect()
+}
 
-    /// A batch handed to a running drag.
-    pub fn published(&mut self, batch: PathBuf) {
-        self.batches.push((batch, None));
-    }
-
-    /// Records that `batch`'s drag ended at `now`; returns the batches now safe to delete.
-    pub fn ended(&mut self, batch: Option<&Path>, now: Instant) -> Vec<PathBuf> {
-        for (path, end) in &mut self.batches {
-            if Some(path.as_path()) == batch {
-                end.get_or_insert(now);
+/// Bytes of all regular files below `dir`, not following links.
+fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0;
+    let mut pending = vec![dir.to_owned()];
+    while let Some(next) = pending.pop() {
+        for entry in fs::read_dir(next).into_iter().flatten().flatten() {
+            match entry.metadata() {
+                Ok(metadata) if metadata.is_dir() => pending.push(entry.path()),
+                Ok(metadata) => total += metadata.len(),
+                Err(_) => {}
             }
         }
-        let old = self.batches.len().saturating_sub(KEEP_BATCHES);
-        let (mut expired, mut kept) = (Vec::new(), Vec::new());
-        for (index, (path, end)) in self.batches.drain(..).enumerate() {
-            if index < old && end.is_some_and(|end| now.duration_since(end) >= BATCH_GRACE) {
-                expired.push(path);
-            } else {
-                kept.push((path, end));
-            }
-        }
-        self.batches = kept;
-        expired
     }
+    total
 }
 
 fn file_name(path: &Path) -> String {

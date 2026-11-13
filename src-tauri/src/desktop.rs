@@ -1,17 +1,17 @@
 use crate::library::{
-    AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform, BulkAction, BulkResult,
-    BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DragSource, DragStage, DuplicateCopy,
-    EmbeddedAudioTags, EmptiedTrash, ExportOutcome, ImageGroup, ImageWorkflow, ImportControl,
-    ImportProgress, KindCounts, Library, ModelResources, PackageInfo, PackageInfoDetails,
-    ProjectExportPlan, ProjectFolder, RescanSummary, Result, Retention, SavedSearch, TrashEntry,
-    WatchNotice, ZipEstimate,
+    retire_drag_cache, AssetPackage, AudioCriteria, AudioMetadata, AudioStatus, AudioWaveform,
+    BulkAction, BulkResult, BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DragSource,
+    DragStage, DuplicateCopy, EmbeddedAudioTags, EmptiedTrash, ExportOutcome, ImageGroup,
+    ImageWorkflow, ImportControl, ImportProgress, KindCounts, Library, ModelResources, PackageInfo,
+    PackageInfoDetails, ProjectExportPlan, ProjectFolder, RescanSummary, Result, SavedSearch,
+    Trash, TrashEntry, WatchNotice, ZipEstimate,
 };
 use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
+        Arc, LazyLock, Mutex, MutexGuard, PoisonError, TryLockError,
     },
     time::{Duration, Instant},
 };
@@ -601,12 +601,9 @@ fn activate(app: &AppHandle, library: &Library) -> Result<LibraryInfo> {
     }
     app.state::<Session>().set_root(library.root().to_owned())?;
     crate::library::forget_verified_zip_cache();
+    // Staged copies a recipient may still read survive the switch; only launch clears them.
     #[cfg(target_os = "macos")]
     drag_mac::disarm();
-    // All staged copies go here; while a library stays open only expired batches are removed.
-    if let Ok(staging) = drag_staging(app) {
-        let _ = fs::remove_dir_all(staging);
-    }
     start_backfill(app, library.root().to_owned());
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = fs::create_dir_all(&dir).and_then(|()| {
@@ -1331,44 +1328,25 @@ async fn stage_drag(app: AppHandle, sources: Vec<DragSource>) -> Result<DragStag
     .await
 }
 
-static RETAINED: Mutex<Retention> = Mutex::new(Retention::new());
+static TRASH: LazyLock<Trash> = LazyLock::new(Trash::spawn);
 
-/// Removes the copies of a payload that was never handed to a drag.
+/// Queues the copies of a payload that was never handed to a drag for removal off this thread.
 fn discard_stage(stage: &DragStage) {
-    if let Some(batch) = &stage.batch {
-        let _ = fs::remove_dir_all(batch);
-    }
+    TRASH.discard(stage);
 }
 
-/// A staged payload now belongs to a running drag and is kept for its recipient.
-fn drag_published(stage: &DragStage) {
-    if let Some(batch) = &stage.batch {
-        RETAINED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .published(batch.clone());
-    }
-}
-
-/// A drag ended; removes earlier batches whose grace period is over.
-fn drag_ended(batch: Option<&Path>) {
-    let expired = RETAINED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .ended(batch, Instant::now());
-    for batch in expired {
-        let _ = fs::remove_dir_all(batch);
-    }
-}
-
-/// Binds the cards under the pressed pointer to that press. `press` is the number the native
-/// monitor gave the press in this window before WebKit saw it; nothing is staged until the
-/// press moves past the drag threshold, and a request for any other press is ignored.
+/// The card under the pointer in the invoking window, or `None` once it left the cards. A
+/// native press binds it only if the press lies inside its rect; nothing is staged until the
+/// press moves past the drag threshold.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn prepare_drag(window: tauri::WebviewWindow, press: u64, sources: Vec<DragSource>) {
+fn report_drag_target(
+    window: tauri::WebviewWindow,
+    version: f64,
+    target: Option<crate::library::DragTarget<Vec<DragSource>>>,
+) {
     if let Ok(ns_window) = window.ns_window() {
-        drag_mac::request(ns_window as usize, press, sources);
+        drag_mac::hover(ns_window as usize, version, target);
     }
 }
 
@@ -1409,7 +1387,6 @@ async fn drag_assets(
             discard_stage(&stage);
             format!("Ziehen konnte nicht gestartet werden: {error}")
         })?;
-    drag_published(&stage);
     // All senders drop if the session never starts, so this cannot hang.
     let dropped = background(move || {
         finished
@@ -1417,7 +1394,6 @@ async fn drag_assets(
             .map_err(|_| "Ziehen wurde vom System beendet".to_string())?
     })
     .await;
-    drag_ended(stage.batch.as_deref());
     Ok(DragOutcome {
         dropped: dropped?,
         problems: stage.problems,
@@ -1777,6 +1753,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(Session::default())
         .setup(|app| {
+            // Published drag copies live until the next launch; removed off the main thread.
+            if let Ok(staging) = drag_staging(app.handle()) {
+                retire_drag_cache(&staging)
+                    .into_iter()
+                    .for_each(|old| TRASH.remove(old));
+            }
             #[cfg(target_os = "macos")]
             {
                 let handle = app.handle().clone();
@@ -1839,7 +1821,7 @@ pub fn run() {
             resolve_preview,
             open_file,
             #[cfg(target_os = "macos")]
-            prepare_drag,
+            report_drag_target,
             #[cfg(not(target_os = "macos"))]
             drag_assets,
             analyze_audio,

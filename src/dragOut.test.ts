@@ -1,35 +1,76 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dragOutHandlers, draggingOut, watchNativeDragOut, type DragOutEnd, type DragPlatform } from "./dragOut.ts";
+import { dragOutHandlers, draggingOut, refreshDragTarget, watchNativeDragOut, type DragOutEnd, type DragPlatform } from "./dragOut.ts";
+import type { DragSource } from "./catalogSelection.ts";
 
-function setup(platform: DragPlatform, disabled = false) {
-  const calls: [string, unknown][] = [];
+type Call = [string, Record<string, unknown> | undefined];
+function setup(platform: DragPlatform, disabled = false, sources: () => DragSource[] = () => [{ fileId: 7 }], calls: Call[] = []) {
   const handlers = dragOutHandlers({
-    sources: () => [{ fileId: 7 }], disabled, platform, onEnd: () => {}, onError: () => {},
+    sources, disabled, platform, onEnd: () => {}, onError: () => {},
     call: async <T,>(command: string, args?: Record<string, unknown>) => { calls.push([command, args]); return { dropped: true, problems: [] } as T; },
-    press: () => 3,
   });
   return { calls, handlers };
 }
+function element(left = 10, top = 20) {
+  return { isConnected: true, getBoundingClientRect: () => ({ left, top, width: 100, height: 50 }) };
+}
 const press = { button: 0, clientX: 0, clientY: 0 };
-const move = { buttons: 1, clientX: 20, clientY: 0 };
-
-test("on macOS the press sends its native press number with the cards and moves never start a drag from JS", () => {
-  const { calls, handlers } = setup("mac");
-  handlers.onPointerDown(press);
-  handlers.onPointerMove(move);
-  assert.deepEqual(calls, [["prepare_drag", { press: 3, sources: [{ fileId: 7 }] }]]);
-
-  // No number from the monitor: nothing to bind to, so nothing is sent.
-  const unnumbered: string[] = [];
-  dragOutHandlers({ sources: () => [], disabled: false, platform: "mac", onEnd: () => {}, onError: () => {},
-    call: async <T,>(command: string) => { unnumbered.push(command); return undefined as T; }, press: () => undefined }).onPointerDown(press);
-  assert.deepEqual(unnumbered, []);
+const move = { buttons: 1, clientX: 20, clientY: 0, currentTarget: element() };
+const targets = (calls: Call[]) => calls.map(([command, args]) => {
+  assert.equal(command, "report_drag_target");
+  return args?.target ?? null;
 });
 
-test("secondary buttons, disabled cards and the browser preview prepare nothing", () => {
-  for (const [platform, disabled, button] of [["mac", false, 2], ["mac", true, 0], [null, false, 0]] as const) {
-    const { calls, handlers } = setup(platform, disabled);
+test("on macOS the hovered card is reported with its rect, only on change, and JS never starts a drag", () => {
+  const card = element();
+  const { calls, handlers } = setup("mac");
+  handlers.ref(card);
+  handlers.onPointerEnter({ currentTarget: card });
+  handlers.onPointerMove({ ...move, currentTarget: card });
+  handlers.onPointerDown(press);
+  handlers.onPointerMove({ ...move, clientX: 40, currentTarget: card });
+  handlers.onPointerLeave({ currentTarget: card });
+  assert.deepEqual(targets(calls), [{ left: 10, top: 20, width: 100, height: 50, sources: [{ fileId: 7 }] }, null]);
+  const versions = calls.map(([, args]) => args?.version as number);
+  assert.ok(versions[1] > versions[0], "versions only grow");
+});
+
+test("a selection change or a moved card while hovering is reported again, a removed card clears", () => {
+  const card = element();
+  let selected: DragSource[] = [{ fileId: 7 }];
+  const calls: Call[] = [];
+  const first = setup("mac", false, () => selected, calls);
+  first.handlers.ref(card);
+  first.handlers.onPointerEnter({ currentTarget: card });
+  // The next render's props (new selection) are registered by its ref; the effect refreshes.
+  selected = [{ fileId: 7 }, { fileId: 9 }];
+  setup("mac", false, () => selected, calls).handlers.ref(card);
+  refreshDragTarget();
+  refreshDragTarget();
+  card.getBoundingClientRect = () => ({ left: 10, top: -80, width: 100, height: 50 });
+  refreshDragTarget();
+  card.isConnected = false;
+  refreshDragTarget();
+  assert.deepEqual(targets(calls), [
+    { left: 10, top: 20, width: 100, height: 50, sources: [{ fileId: 7 }] },
+    { left: 10, top: 20, width: 100, height: 50, sources: [{ fileId: 7 }, { fileId: 9 }] },
+    { left: 10, top: -80, width: 100, height: 50, sources: [{ fileId: 7 }, { fileId: 9 }] },
+    null,
+  ]);
+});
+
+test("disabled cards report no target; secondary buttons and the browser preview prepare nothing", () => {
+  const card = element(500, 0);
+  const disabled = setup("mac", true);
+  disabled.handlers.ref(card);
+  disabled.handlers.onPointerEnter({ currentTarget: card });
+  disabled.handlers.onPointerMove({ ...move, currentTarget: card });
+  // Already cleared by the previous test, so a disabled card reports nothing new.
+  assert.deepEqual(disabled.calls, []);
+  for (const [platform, button] of [["other", 2], [null, 0]] as const) {
+    const { calls, handlers } = setup(platform);
+    handlers.ref(element());
+    handlers.onPointerEnter({ currentTarget: element() });
     handlers.onPointerDown({ ...press, button });
     handlers.onPointerMove(move);
     assert.deepEqual(calls, []);

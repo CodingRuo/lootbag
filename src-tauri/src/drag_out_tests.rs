@@ -263,22 +263,39 @@ fn models_without_companions_drag_as_their_plain_file() {
     );
 }
 
-#[test]
-fn a_drag_stages_once_past_the_threshold_and_starts_only_from_the_held_press() {
-    let mut gesture = DragGesture::<&str, &str>::default();
-    // Nothing pressed: neither requests, arming nor dragging do anything.
-    assert!(!gesture.request(1, 1, "early"));
-    assert_eq!(gesture.arm(1, "early"), Err("early"));
-    assert_eq!(gesture.drag((50.0, 50.0)), DragStep::Wait);
+fn card(left: f64, top: f64, sources: &str) -> Option<DragTarget<&str>> {
+    Some(DragTarget {
+        left,
+        top,
+        width: 100.0,
+        height: 50.0,
+        sources,
+    })
+}
 
-    let (press, dropped) = gesture.press(1, (10.0, 10.0));
-    assert_eq!(dropped, None);
-    // Not requested: moving far stages nothing; a click alone never stages.
-    assert_eq!(gesture.drag((40.0, 10.0)), DragStep::Wait);
-    assert!(gesture.request(1, press, "cards"));
-    assert!(!gesture.request(1, press, "again"), "one request per press");
+#[test]
+fn view_points_become_viewport_pixels_from_the_top_left() {
+    // A flipped view (WKWebView) already counts from the top.
+    assert_eq!(css_point((30.0, 40.0), 600.0, true), (30.0, 40.0));
+    // An unflipped view counts from the bottom.
+    assert_eq!(css_point((30.0, 40.0), 600.0, false), (30.0, 560.0));
+}
+
+#[test]
+fn a_press_binds_the_hovered_card_only_inside_its_rect() {
+    let mut gesture = DragGesture::<&str, &str>::default();
+    assert!(gesture.hover(1, 1.0, card(10.0, 20.0, "card A")));
+    // Outside the rect (just past the right edge, or above it): nothing is bound, nothing stages.
+    for css in [Some((110.0, 30.0)), Some((50.0, 19.0)), None] {
+        assert_eq!(gesture.press(1, (0.0, 0.0), css), None);
+        assert_eq!(gesture.drag((40.0, 0.0)), DragStep::Wait);
+    }
+    // Inside: the card is bound; a click alone stages nothing.
+    gesture.press(1, (10.0, 10.0), Some((10.0, 20.0)));
     assert_eq!(gesture.drag((13.0, 14.0)), DragStep::Wait);
-    assert_eq!(gesture.drag((13.0, 16.0)), DragStep::Stage(press, "cards"));
+    let DragStep::Stage(press, "card A") = gesture.drag((13.0, 16.0)) else {
+        panic!("press inside the card stages it");
+    };
     // Staging is asked once; further moves wait for the payload.
     assert_eq!(gesture.drag((30.0, 30.0)), DragStep::Wait);
     assert_eq!(gesture.arm(press, "payload"), Ok(()));
@@ -286,68 +303,121 @@ fn a_drag_stages_once_past_the_threshold_and_starts_only_from_the_held_press() {
     // Handed over once; the press is over.
     assert_eq!(gesture.drag((90.0, 90.0)), DragStep::Wait);
     assert_eq!(gesture.disarm(), None);
+
+    // Pointer left the cards: the next press binds nothing.
+    assert!(gesture.hover(1, 2.0, None));
+    gesture.press(1, (0.0, 0.0), Some((50.0, 30.0)));
+    assert_eq!(gesture.drag((40.0, 0.0)), DragStep::Wait);
 }
 
 #[test]
-fn a_delayed_request_or_payload_never_binds_to_a_later_press_or_another_window() {
+fn stale_or_foreign_reports_and_later_updates_never_change_a_press() {
     let mut gesture = DragGesture::<&str, &str>::default();
-    // Card A is clicked and released; its request is still in flight when B is pressed.
-    let (a, _) = gesture.press(1, (0.0, 0.0));
-    assert_eq!(gesture.disarm(), None);
-    let (b, _) = gesture.press(1, (100.0, 0.0));
-    assert!(
-        !gesture.request(1, a, "card A"),
-        "A's late request names press A"
-    );
-    assert_eq!(gesture.drag((130.0, 0.0)), DragStep::Wait);
-    // B's own request from another window is refused too; from its window it binds.
-    assert!(!gesture.request(2, b, "card B"));
-    assert!(gesture.request(1, b, "card B"));
-    assert_eq!(gesture.drag((130.0, 0.0)), DragStep::Stage(b, "card B"));
+    assert!(gesture.hover(1, 5.0, card(0.0, 0.0, "selection")));
+    // An older report arriving late is ignored.
+    assert!(!gesture.hover(1, 4.0, card(0.0, 0.0, "stale")));
+    // Another window's card never binds a press in window 2, even at the same spot.
+    gesture.press(2, (0.0, 0.0), Some((5.0, 5.0)));
+    assert_eq!(gesture.drag((40.0, 0.0)), DragStep::Wait);
+
+    gesture.press(1, (0.0, 0.0), Some((5.0, 5.0)));
+    // A report after the press (pointer moved onto another card while held) keeps the bound payload.
+    assert!(gesture.hover(1, 6.0, card(200.0, 0.0, "other card")));
+    let DragStep::Stage(press, "selection") = gesture.drag((40.0, 0.0)) else {
+        panic!("the press keeps the card it was bound to");
+    };
 
     // A payload finishing after its press was released or replaced comes back for cleanup.
-    assert_eq!(gesture.arm(a, "stale"), Err("stale"));
-    let (c, _) = gesture.press(1, (0.0, 0.0));
-    assert_eq!(gesture.arm(b, "late"), Err("late"));
-    assert!(gesture.request(1, c, "card C"));
-    assert_eq!(gesture.drag((30.0, 0.0)), DragStep::Stage(c, "card C"));
+    assert_eq!(gesture.disarm(), None);
+    assert_eq!(gesture.arm(press, "late"), Err("late"));
+    gesture.press(1, (200.0, 0.0), Some((210.0, 5.0)));
+    let DragStep::Stage(next, "other card") = gesture.drag((240.0, 0.0)) else {
+        panic!("the newer card binds the next press");
+    };
+    assert_eq!(gesture.arm(press, "stale"), Err("stale"));
     // An armed payload that is never dragged is handed back on release or the next press.
-    assert_eq!(gesture.arm(c, "armed"), Ok(()));
-    assert_eq!(gesture.disarm(), Some("armed"));
-    let (d, _) = gesture.press(1, (0.0, 0.0));
-    assert!(gesture.request(1, d, "card D"));
-    assert_eq!(gesture.drag((30.0, 0.0)), DragStep::Stage(d, "card D"));
-    assert_eq!(gesture.arm(d, "armed"), Ok(()));
-    assert_eq!(gesture.press(1, (0.0, 0.0)).1, Some("armed"));
+    assert_eq!(gesture.arm(next, "armed"), Ok(()));
+    assert_eq!(gesture.press(1, (0.0, 0.0), None), Some("armed"));
 }
 
 #[test]
-fn published_batches_are_removed_only_beyond_the_newest_and_after_their_grace() {
-    let mut retention = Retention::new();
-    let start = Instant::now();
-    let batch = |index: usize| PathBuf::from(format!("batch-{index}"));
-    for index in 0..KEEP_BATCHES + 2 {
-        retention.published(batch(index));
-        assert_eq!(
-            retention.ended(Some(&batch(index)), start),
-            Vec::<PathBuf>::new()
-        );
+fn discarding_a_stage_only_queues_its_batch() {
+    let workspace = Workspace::new();
+    let batch = workspace.path("batch");
+    write(batch.join("Crate/Crate.fbx"), b"fbx");
+    let (sender, removals) = std::sync::mpsc::channel();
+    let trash = Trash::new(sender);
+    trash.discard(&DragStage {
+        batch: Some(batch.clone()),
+        ..DragStage::default()
+    });
+    trash.discard(&DragStage::default());
+    // Nothing is removed on the calling thread; the worker gets exactly the batch.
+    assert!(batch.join("Crate/Crate.fbx").is_file());
+    assert_eq!(
+        removals.try_iter().collect::<Vec<_>>(),
+        std::slice::from_ref(&batch)
+    );
+
+    let worker = Trash::spawn();
+    worker.remove(batch.clone());
+    for _ in 0..200 {
+        if !batch.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // Within the grace period nothing goes, even beyond the newest few.
-    let soon = start + BATCH_GRACE / 2;
-    assert!(retention.ended(None, soon).is_empty());
-    // Afterwards only the oldest go; the newest stay for their recipients.
-    let later = start + BATCH_GRACE;
-    assert_eq!(retention.ended(None, later), [batch(0), batch(1)]);
-    assert!(retention.ended(None, later).is_empty());
-    // A batch whose drag is still running is never removed.
-    retention.published(batch(9));
-    for index in 10..10 + KEEP_BATCHES {
-        retention.published(batch(index));
-        retention.ended(Some(&batch(index)), later);
-    }
-    let removed = retention.ended(None, later + BATCH_GRACE);
-    assert!(!removed.contains(&batch(9)), "{removed:?}");
+    panic!("the worker removes queued batches");
+}
+
+#[test]
+fn launch_retires_published_copies_including_earlier_leftovers() {
+    let workspace = Workspace::new();
+    let staging = workspace.path("cache/drag-out");
+    write(staging.join("1/Hit-2.wav"), b"published");
+    write(workspace.path("cache/drag-out-old-crashed/x"), b"left over");
+    write(workspace.path("cache/other/keep"), b"keep");
+    let mut retired = retire_drag_cache(&staging);
+    retired.sort();
+    // The live folder is free at once for new drags; both old folders are handed to the trash.
+    assert!(!staging.exists());
+    assert_eq!(retired.len(), 2);
+    assert!(retired.contains(&workspace.path("cache/drag-out-old-crashed")));
+    assert!(retired.iter().all(|path| path.is_dir()));
+    assert!(workspace.path("cache/other/keep").is_file());
+    // No cache yet: nothing to retire.
+    let empty = workspace.path("fresh/drag-out");
+    assert!(retire_drag_cache(&empty).is_empty());
+}
+
+#[test]
+fn a_drag_whose_copies_exceed_the_cache_budget_is_refused_but_originals_still_drag() {
+    let workspace = Workspace::new();
+    write(workspace.path("Pack/Hit.wav"), &[0; 600]);
+    write(workspace.path("Other/hit.wav"), &[0; 600]);
+    let mut library = Library::create(&workspace.path("library")).unwrap();
+    library.import_folder(&workspace.path("Pack")).unwrap();
+    library.import_folder(&workspace.path("Other")).unwrap();
+    let staging = workspace.path("staging");
+    let pack = file(&library, "Hit.wav", "Pack");
+    let other = file(&library, "hit.wav", "Other");
+    // Earlier published copies already fill most of the budget.
+    write(staging.join("earlier/Hit-2.wav"), &[0; 500]);
+
+    let refused = library
+        .stage_drag_within(&[plain(pack), plain(other)], &staging, 1000)
+        .unwrap_err();
+    assert!(refused.contains("beim nächsten Start"), "{refused}");
+    assert_eq!(tree(&staging), ["earlier/Hit-2.wav"], "no partial batch");
+    // A single file handed over as its original copies nothing and is unaffected.
+    let original = library
+        .stage_drag_within(&[plain(pack)], &staging, 1000)
+        .unwrap();
+    assert_eq!(original.batch, None);
+    // With room left the same drag stages its renamed copy.
+    assert!(library
+        .stage_drag_within(&[plain(pack), plain(other)], &staging, 1100)
+        .is_ok());
 }
 
 #[test]
@@ -399,8 +469,45 @@ fn a_plain_model_that_changed_since_its_snapshot_is_refused() {
     let path = library.resolve_preview(id).unwrap();
     fs::write(&path, b"mtllib box.mtl\nv 0 0 0\n").unwrap();
     write(path.with_file_name("box.mtl"), b"newmtl a\n");
-    let mut staging = Staging::new(&library, &workspace.path("staging"));
+    let mut staging = Staging::new(&library, &workspace.path("staging"), DRAG_CACHE_BUDGET);
     let error = staging.model(id, &snapshot).unwrap_err();
     assert!(error.contains("geändert"), "{error}");
     assert!(staging.stage.items.is_empty());
+}
+
+#[test]
+fn a_published_batch_survives_switching_to_and_dragging_from_another_library() {
+    let workspace = Workspace::new();
+    write(workspace.path("Pack/Hit.wav"), b"pack");
+    write(workspace.path("Other/hit.wav"), b"other");
+    let mut first = Library::create(&workspace.path("first")).unwrap();
+    first.import_folder(&workspace.path("Pack")).unwrap();
+    first.import_folder(&workspace.path("Other")).unwrap();
+    let staging = workspace.path("staging");
+    let published = first
+        .stage_drag(
+            &[
+                plain(file(&first, "Hit.wav", "Pack")),
+                plain(file(&first, "hit.wav", "Other")),
+            ],
+            &staging,
+        )
+        .unwrap();
+    let copy = published.items[1].path.clone();
+
+    // Switching only opens the other library; its drags stage beside the published batch.
+    let mut second = Library::create(&workspace.path("second")).unwrap();
+    second.import_folder(&workspace.path("Pack")).unwrap();
+    second.import_folder(&workspace.path("Other")).unwrap();
+    let next = second
+        .stage_drag(
+            &[
+                plain(file(&second, "Hit.wav", "Pack")),
+                plain(file(&second, "hit.wav", "Other")),
+            ],
+            &staging,
+        )
+        .unwrap();
+    assert_ne!(next.batch, published.batch);
+    assert_eq!(fs::read(&copy).unwrap(), b"other");
 }

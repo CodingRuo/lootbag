@@ -62,6 +62,20 @@ impl ModelResources {
             .get(&self.entry_path)
             .ok_or_else(|| "Modelldatei fehlt in der Vorschau".into())
     }
+
+    /// Bytes an export of the entry, declared resources and `extra` copies, from the snapshot.
+    pub(super) fn export_size(&self, extra: &[String]) -> u64 {
+        let mut selected: std::collections::BTreeSet<&String> =
+            self.declared_paths.iter().chain(extra).collect();
+        if self.include_entry {
+            selected.insert(&self.entry_path);
+        }
+        selected
+            .into_iter()
+            .filter_map(|path| self.stamps.get(path))
+            .map(|stamp| stamp.size)
+            .sum()
+    }
 }
 
 impl SourceStamp {

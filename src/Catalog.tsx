@@ -12,7 +12,7 @@ import { assetKey } from "./imageWorkflows";
 import { TrashActions } from "./Trash";
 import { folderPath, type ProjectFolder } from "./ProjectFolders";
 import { catalogSelection, dragSources, nextCatalogIndex, storeCatalogView, storedCatalogView, type CatalogSelection, type CatalogView, type SelectionMode } from "./catalogSelection";
-import { dragOutHandlers, watchNativeDragOut, type DragOutEnd, type DragPlatform } from "./dragOut.ts";
+import { dragOutHandlers, refreshDragTarget, watchNativeDragOut, type DragOutEnd, type DragPlatform } from "./dragOut.ts";
 import { createSoundWaveformQueue } from "./soundWaveforms.ts";
 import { createCatalogAudition, formatDuration, stopAuditionOnPagePlay } from "./audioAudition";
 import { errorMessage } from "./errorMessage.ts";
@@ -116,8 +116,13 @@ export default function Catalog({ library, query, audio, selected, setSelected, 
     let stop: (() => void) | undefined;
     let active = true;
     watchNativeDragOut(dragOutEnded).then((unlisten) => { if (active) stop = unlisten; else unlisten(); }).catch(() => {});
-    return () => { active = false; stop?.(); };
+    // A scroll moves cards under a still pointer; the hovered card's new rect is reported.
+    const scrolled = () => refreshDragTarget();
+    document.addEventListener("scroll", scrolled, true);
+    return () => { active = false; stop?.(); document.removeEventListener("scroll", scrolled, true); };
   }, []);
+  // Selection, results, view or disabled state changes re-report the hovered card if it changed.
+  useEffect(() => { if (dragPlatform === "mac") refreshDragTarget(); }, [selection, page, catalogView, actionsDisabled, queryLoading]);
   useEffect(() => { modelThumbnails.reset(thumbnailScope); }, [modelThumbnails, thumbnailScope]);
   useEffect(() => () => modelThumbnails.dispose(), [modelThumbnails]);
   useEffect(() => { soundWaveforms.reset(thumbnailScope); }, [soundWaveforms, thumbnailScope]);
