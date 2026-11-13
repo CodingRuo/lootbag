@@ -291,111 +291,102 @@ impl<'a> Staging<'a> {
 /// Pointer travel before a held press becomes a drag, in points.
 pub const DRAG_THRESHOLD: f64 = 6.0;
 
-/// The card under the pointer as the frontend last reported it: what it would drag and where it
-/// is, in CSS pixels relative to the webview's viewport.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct DragTarget<S> {
-    pub left: f64,
-    pub top: f64,
-    pub width: f64,
-    pub height: f64,
-    pub sources: S,
-}
-
-impl<S> DragTarget<S> {
-    fn contains(&self, (x, y): (f64, f64)) -> bool {
-        x >= self.left && x < self.left + self.width && y >= self.top && y < self.top + self.height
-    }
-}
-
 /// A point in a view's own coordinates as a CSS pixel in its viewport (top-left origin), given
 /// the view's height and whether it is flipped. Assumes page zoom 1, so one point is one pixel.
 pub fn css_point((x, y): (f64, f64), height: f64, flipped: bool) -> (f64, f64) {
     (x, if flipped { y } else { height - y })
 }
 
-/// Ties a drag-out to the mouse press it belongs to. The frontend reports the card under the
-/// pointer per window; a native mouse-down binds that card only if the press lies inside the
-/// card's reported rect, so a report that is late, stale or for another card binds nothing.
-/// Nothing is staged on a mere click: staging starts once the held press passes the threshold,
-/// and only a drag event of that same, still held press starts the drag.
+/// Ties a drag-out to the mouse press it belongs to. Once a held press passes the threshold, the
+/// pressed window's page is asked which card lies under the press point (while the button is
+/// still down, so its DOM is what was pressed); only an answer for that same, still held press in
+/// that window is staged, once. Nothing is staged on a mere click, and only a drag event of the
+/// same held press starts the drag.
 #[derive(Debug)]
-pub struct DragGesture<S, P> {
-    press: Option<Press<S, P>>,
+pub struct DragGesture<P> {
+    press: Option<Press<P>>,
     presses: u64,
-    /// Per window: the newest report's version and its target, if the pointer is on a card.
-    targets: Vec<(usize, f64, Option<DragTarget<S>>)>,
 }
 
 #[derive(Debug)]
-struct Press<S, P> {
+struct Press<P> {
     id: u64,
+    window: usize,
     origin: (f64, f64),
-    state: PressState<S, P>,
+    /// The press in the pressed webview's viewport; `None` if it missed the webview.
+    css: Option<(f64, f64)>,
+    state: PressState<P>,
 }
 
 #[derive(Debug)]
-enum PressState<S, P> {
+enum PressState<P> {
     Pressed,
-    Bound(S),
+    Querying,
     Staging,
+    /// Nothing to drag: the press missed every card, or its payload was handed over.
+    Idle,
     Armed(P),
 }
 
 /// What a drag event asks the caller to do.
-#[derive(Debug, PartialEq, Eq)]
-pub enum DragStep<S, P> {
+#[derive(Debug, PartialEq)]
+pub enum DragStep<P> {
     Wait,
-    /// Stage `S` for press `u64`, then `arm` it; asked once per press.
-    Stage(u64, S),
+    /// Ask `window`'s page which card lies under the press point (viewport CSS pixels); once
+    /// per press.
+    Query {
+        press: u64,
+        window: usize,
+        at: (f64, f64),
+    },
     Start(P),
 }
 
-impl<S, P> Default for DragGesture<S, P> {
+impl<P> Default for DragGesture<P> {
     fn default() -> Self {
         Self {
             press: None,
             presses: 0,
-            targets: Vec::new(),
         }
     }
 }
 
-impl<S: Clone, P> DragGesture<S, P> {
-    /// Records `window`'s card under the pointer (`None`: none); an older `version` is ignored.
-    pub fn hover(&mut self, window: usize, version: f64, target: Option<DragTarget<S>>) -> bool {
-        match self.targets.iter_mut().find(|entry| entry.0 == window) {
-            Some(entry) if entry.1 >= version => false,
-            Some(entry) => {
-                *entry = (window, version, target);
-                true
-            }
-            None => {
-                self.targets.push((window, version, target));
-                true
-            }
-        }
-    }
-
+impl<P> DragGesture<P> {
     /// A new mouse-down in `window` at `at` (window points); `css` is the press in the pressed
-    /// webview's viewport, if it hit one. Binds that window's card if the press lies inside it
-    /// and returns whatever an earlier press had armed.
+    /// webview's viewport, if it hit one. Returns whatever an earlier press had armed.
     pub fn press(&mut self, window: usize, at: (f64, f64), css: Option<(f64, f64)>) -> Option<P> {
         let dropped = self.disarm();
-        let bound = self
-            .targets
-            .iter()
-            .find(|entry| entry.0 == window)
-            .and_then(|entry| entry.2.as_ref())
-            .filter(|target| css.is_some_and(|css| target.contains(css)))
-            .map(|target| target.sources.clone());
         self.presses += 1;
         self.press = Some(Press {
             id: self.presses,
+            window,
             origin: at,
-            state: bound.map_or(PressState::Pressed, PressState::Bound),
+            css,
+            state: if css.is_some() {
+                PressState::Pressed
+            } else {
+                PressState::Idle
+            },
         });
         dropped
+    }
+
+    /// The page's answer for `press` in `window`: true if `files` should now be staged for it.
+    /// A wrong window or press, a released press or a repeated answer is refused.
+    pub fn answer<S>(&mut self, window: usize, press: u64, files: &Option<S>) -> bool {
+        let Some(held) = &mut self.press else {
+            return false;
+        };
+        if held.id != press || held.window != window || !matches!(held.state, PressState::Querying)
+        {
+            return false;
+        }
+        held.state = if files.is_some() {
+            PressState::Staging
+        } else {
+            PressState::Idle
+        };
+        files.is_some()
     }
 
     /// Arms `press` with its staged `payload`; hands the payload back once that press ended.
@@ -409,9 +400,9 @@ impl<S: Clone, P> DragGesture<S, P> {
         }
     }
 
-    /// A drag event of the held press. Past the threshold a bound press asks for staging
-    /// once; an armed one hands its payload over once and ends, so it can never start twice.
-    pub fn drag(&mut self, at: (f64, f64)) -> DragStep<S, P> {
+    /// A drag event of the held press. Past the threshold a fresh press asks its page once;
+    /// an armed one hands its payload over once and ends, so it can never start twice.
+    pub fn drag(&mut self, at: (f64, f64)) -> DragStep<P> {
         let Some(held) = &mut self.press else {
             return DragStep::Wait;
         };
@@ -419,8 +410,18 @@ impl<S: Clone, P> DragGesture<S, P> {
         if dx.hypot(dy) < DRAG_THRESHOLD {
             return DragStep::Wait;
         }
-        match std::mem::replace(&mut held.state, PressState::Staging) {
-            PressState::Bound(sources) => DragStep::Stage(held.id, sources),
+        match std::mem::replace(&mut held.state, PressState::Idle) {
+            PressState::Pressed => {
+                held.state = PressState::Querying;
+                match held.css {
+                    Some(css) => DragStep::Query {
+                        press: held.id,
+                        window: held.window,
+                        at: css,
+                    },
+                    None => DragStep::Wait,
+                }
+            }
             PressState::Armed(payload) => {
                 self.press = None;
                 DragStep::Start(payload)

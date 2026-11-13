@@ -3,16 +3,13 @@
 //! `leftMouseDragged` event of that press, as AppKit requires. A press that ends first never
 //! starts a drag.
 //!
-//! Press identity: the page reports the card under the pointer (payload and rect) per window
-//! before any press can happen on it. On mouse-down the monitor hit-tests the press against the
-//! pressed webview's last report, synchronously on the main thread, and binds that card to the
-//! press only if the press lies inside its rect. No page script runs in between, so a queued
-//! pointer event can never pick up another press's payload.
+//! Press identity: the monitor records each mouse-down with its window and its point in the
+//! pressed webview's viewport. Once the held press passes the threshold, that window's page is
+//! asked (`drag-out-query`) which card lies under the press point; its DOM is still the one the
+//! user pressed. Only the page's answer for that same, still held press is staged.
 
 use super::{discard_stage, stage_drag};
-use crate::library::{
-    css_point, DragGesture, DragItem, DragSource, DragStage, DragStep, DragTarget,
-};
+use crate::library::{css_point, DragGesture, DragItem, DragSource, DragStage, DragStep};
 use block2::RcBlock;
 use objc2::{
     define_class, msg_send,
@@ -32,26 +29,58 @@ use std::{
     ptr::NonNull,
     sync::{LazyLock, Mutex, MutexGuard, PoisonError},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// A staged payload, or the German reason it could not be prepared (shown only if dragged).
 pub type Prepared = Result<DragStage, String>;
 
-static GESTURE: LazyLock<Mutex<DragGesture<Vec<DragSource>, Prepared>>> =
-    LazyLock::new(Mutex::default);
+static GESTURE: LazyLock<Mutex<DragGesture<Prepared>>> = LazyLock::new(Mutex::default);
 
 thread_local! {
     // The running session's source; kept alive here until the next drag replaces it.
     static SOURCE: RefCell<Option<Retained<Source>>> = const { RefCell::new(None) };
 }
 
-fn gesture() -> MutexGuard<'static, DragGesture<Vec<DragSource>, Prepared>> {
+fn gesture() -> MutexGuard<'static, DragGesture<Prepared>> {
     GESTURE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Records the card under the pointer in `window` (an NSWindow pointer).
-pub fn hover(window: usize, version: f64, target: Option<DragTarget<Vec<DragSource>>>) {
-    gesture().hover(window, version, target);
+/// The page's answer for `press` in `window` (an NSWindow pointer); stages it only if it is the
+/// first answer for that window's still held press.
+pub fn answer(app: AppHandle, window: usize, press: u64, files: Option<Vec<DragSource>>) {
+    if !gesture().answer(window, press, &files) {
+        return;
+    }
+    let Some(sources) = files else { return };
+    tauri::async_runtime::spawn(async move {
+        let prepared = stage_drag(app, sources).await;
+        let refused = gesture().arm(press, prepared).err();
+        discard(refused);
+    });
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DragQuery {
+    press_id: u64,
+    x: f64,
+    y: f64,
+}
+
+/// Asks the webview window behind `window` which card lies under `at`.
+fn query(app: &AppHandle, window: usize, press: u64, (x, y): (f64, f64)) {
+    let target = app
+        .webview_windows()
+        .into_values()
+        .find(|webview| webview.ns_window().is_ok_and(|ns| ns as usize == window));
+    if let Some(target) = target {
+        let payload = DragQuery {
+            press_id: press,
+            x,
+            y,
+        };
+        let _ = target.emit_to(target.label(), "drag-out-query", payload);
+    }
 }
 
 pub fn disarm() {
@@ -101,14 +130,7 @@ pub fn install(app: AppHandle) {
                 let step = gesture().drag((at.x, at.y));
                 match step {
                     DragStep::Wait => {}
-                    DragStep::Stage(press, sources) => {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let prepared = stage_drag(app, sources).await;
-                            let refused = gesture().arm(press, prepared).err();
-                            discard(refused);
-                        });
-                    }
+                    DragStep::Query { press, window, at } => query(&app, window, press, at),
                     DragStep::Start(prepared) => start(&app, real, prepared),
                 }
             }

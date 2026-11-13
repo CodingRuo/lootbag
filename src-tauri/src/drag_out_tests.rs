@@ -263,16 +263,6 @@ fn models_without_companions_drag_as_their_plain_file() {
     );
 }
 
-fn card(left: f64, top: f64, sources: &str) -> Option<DragTarget<&str>> {
-    Some(DragTarget {
-        left,
-        top,
-        width: 100.0,
-        height: 50.0,
-        sources,
-    })
-}
-
 #[test]
 fn view_points_become_viewport_pixels_from_the_top_left() {
     // A flipped view (WKWebView) already counts from the top.
@@ -281,62 +271,65 @@ fn view_points_become_viewport_pixels_from_the_top_left() {
     assert_eq!(css_point((30.0, 40.0), 600.0, false), (30.0, 560.0));
 }
 
+fn query(press: u64, window: usize, at: (f64, f64)) -> DragStep<&'static str> {
+    DragStep::Query { press, window, at }
+}
+
 #[test]
-fn a_press_binds_the_hovered_card_only_inside_its_rect() {
-    let mut gesture = DragGesture::<&str, &str>::default();
-    assert!(gesture.hover(1, 1.0, card(10.0, 20.0, "card A")));
-    // Outside the rect (just past the right edge, or above it): nothing is bound, nothing stages.
-    for css in [Some((110.0, 30.0)), Some((50.0, 19.0)), None] {
-        assert_eq!(gesture.press(1, (0.0, 0.0), css), None);
-        assert_eq!(gesture.drag((40.0, 0.0)), DragStep::Wait);
-    }
-    // Inside: the card is bound; a click alone stages nothing.
-    gesture.press(1, (10.0, 10.0), Some((10.0, 20.0)));
+fn a_held_press_asks_its_page_once_and_stages_only_a_card_answer() {
+    let mut gesture = DragGesture::<&str>::default();
+    // A click alone asks nothing; past the threshold the press point is queried once.
+    assert_eq!(gesture.press(1, (10.0, 10.0), Some((10.0, 20.0))), None);
     assert_eq!(gesture.drag((13.0, 14.0)), DragStep::Wait);
-    let DragStep::Stage(press, "card A") = gesture.drag((13.0, 16.0)) else {
-        panic!("press inside the card stages it");
-    };
-    // Staging is asked once; further moves wait for the payload.
+    assert_eq!(gesture.drag((13.0, 16.0)), query(1, 1, (10.0, 20.0)));
     assert_eq!(gesture.drag((30.0, 30.0)), DragStep::Wait);
-    assert_eq!(gesture.arm(press, "payload"), Ok(()));
-    assert_eq!(gesture.drag((31.0, 30.0)), DragStep::Start("payload"));
+    assert!(gesture.answer(1, 1, &Some("card A")));
+    // Staging is asked once; further moves wait for the payload.
+    assert_eq!(gesture.drag((31.0, 30.0)), DragStep::Wait);
+    assert_eq!(gesture.arm(1, "payload"), Ok(()));
+    assert_eq!(gesture.drag((32.0, 30.0)), DragStep::Start("payload"));
     // Handed over once; the press is over.
     assert_eq!(gesture.drag((90.0, 90.0)), DragStep::Wait);
     assert_eq!(gesture.disarm(), None);
 
-    // Pointer left the cards: the next press binds nothing.
-    assert!(gesture.hover(1, 2.0, None));
+    // No card under the press: nothing stages, and no later answer revives it.
     gesture.press(1, (0.0, 0.0), Some((50.0, 30.0)));
+    assert_eq!(gesture.drag((40.0, 0.0)), query(2, 1, (50.0, 30.0)));
+    assert!(!gesture.answer(1, 2, &None::<&str>));
+    assert!(!gesture.answer(1, 2, &Some("late card")));
+    assert_eq!(gesture.drag((80.0, 0.0)), DragStep::Wait);
+    // A press outside the webview asks nothing.
+    gesture.press(1, (0.0, 0.0), None);
     assert_eq!(gesture.drag((40.0, 0.0)), DragStep::Wait);
 }
 
 #[test]
-fn stale_or_foreign_reports_and_later_updates_never_change_a_press() {
-    let mut gesture = DragGesture::<&str, &str>::default();
-    assert!(gesture.hover(1, 5.0, card(0.0, 0.0, "selection")));
-    // An older report arriving late is ignored.
-    assert!(!gesture.hover(1, 4.0, card(0.0, 0.0, "stale")));
-    // Another window's card never binds a press in window 2, even at the same spot.
-    gesture.press(2, (0.0, 0.0), Some((5.0, 5.0)));
-    assert_eq!(gesture.drag((40.0, 0.0)), DragStep::Wait);
-
+fn answers_for_another_press_window_or_a_released_press_never_stage() {
+    let mut gesture = DragGesture::<&str>::default();
+    // Unasked: the press has not passed the threshold yet.
     gesture.press(1, (0.0, 0.0), Some((5.0, 5.0)));
-    // A report after the press (pointer moved onto another card while held) keeps the bound payload.
-    assert!(gesture.hover(1, 6.0, card(200.0, 0.0, "other card")));
-    let DragStep::Stage(press, "selection") = gesture.drag((40.0, 0.0)) else {
-        panic!("the press keeps the card it was bound to");
-    };
+    assert!(!gesture.answer(1, 1, &Some("early")));
+    assert_eq!(gesture.drag((40.0, 0.0)), query(1, 1, (5.0, 5.0)));
+    // Wrong press, other window.
+    assert!(!gesture.answer(1, 7, &Some("wrong press")));
+    assert!(!gesture.answer(2, 1, &Some("other window")));
+    // The right answer stages once; a duplicate is refused.
+    assert!(gesture.answer(1, 1, &Some("card")));
+    assert!(!gesture.answer(1, 1, &Some("card")));
 
-    // A payload finishing after its press was released or replaced comes back for cleanup.
+    // Released before the answer: a late answer stages nothing.
+    gesture.press(1, (0.0, 0.0), Some((5.0, 5.0)));
+    assert_eq!(gesture.drag((40.0, 0.0)), query(2, 1, (5.0, 5.0)));
     assert_eq!(gesture.disarm(), None);
-    assert_eq!(gesture.arm(press, "late"), Err("late"));
-    gesture.press(1, (200.0, 0.0), Some((210.0, 5.0)));
-    let DragStep::Stage(next, "other card") = gesture.drag((240.0, 0.0)) else {
-        panic!("the newer card binds the next press");
-    };
-    assert_eq!(gesture.arm(press, "stale"), Err("stale"));
+    assert!(!gesture.answer(1, 2, &Some("late")));
+    // A payload finishing after its press was released or replaced comes back for cleanup.
+    assert_eq!(gesture.arm(1, "stale"), Err("stale"));
+    gesture.press(1, (0.0, 0.0), Some((5.0, 5.0)));
+    gesture.drag((40.0, 0.0));
+    assert!(!gesture.answer(1, 2, &Some("older press")));
+    assert!(gesture.answer(1, 3, &Some("card")));
     // An armed payload that is never dragged is handed back on release or the next press.
-    assert_eq!(gesture.arm(next, "armed"), Ok(()));
+    assert_eq!(gesture.arm(3, "armed"), Ok(()));
     assert_eq!(gesture.press(1, (0.0, 0.0), None), Some("armed"));
 }
 

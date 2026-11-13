@@ -1335,18 +1335,18 @@ fn discard_stage(stage: &DragStage) {
     TRASH.discard(stage);
 }
 
-/// The card under the pointer in the invoking window, or `None` once it left the cards. A
-/// native press binds it only if the press lies inside its rect; nothing is staged until the
-/// press moves past the drag threshold.
+/// The page's answer to `drag-out-query`: the files of the card under the press, or `None`.
+/// Staged only if `press_id` is still the held press of the invoking window and unanswered.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn report_drag_target(
-    window: tauri::WebviewWindow,
-    version: f64,
-    target: Option<crate::library::DragTarget<Vec<DragSource>>>,
-) {
+fn answer_drag_query(window: tauri::WebviewWindow, press_id: u64, files: Option<Vec<DragSource>>) {
     if let Ok(ns_window) = window.ns_window() {
-        drag_mac::hover(ns_window as usize, version, target);
+        drag_mac::answer(
+            window.app_handle().clone(),
+            ns_window as usize,
+            press_id,
+            files,
+        );
     }
 }
 
@@ -1829,7 +1829,7 @@ pub fn run() {
             resolve_preview,
             open_file,
             #[cfg(target_os = "macos")]
-            report_drag_target,
+            answer_drag_query,
             #[cfg(not(target_os = "macos"))]
             drag_assets,
             analyze_audio,
