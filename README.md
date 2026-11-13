@@ -52,4 +52,6 @@ and the domain terms in [GLOSSARY.md](GLOSSARY.md).
 
 ## License
 
-GPL-3.0-or-later, see [LICENSE](LICENSE).
+Free for everyone, including commercial game projects, under
+GPL-3.0-or-later (see [LICENSE](LICENSE)). Paying is voluntary: if Lootbag
+saves you time, star the repo, report bugs or tell other devs about it.
