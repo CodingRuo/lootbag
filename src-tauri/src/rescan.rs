@@ -1,7 +1,7 @@
 //! Rescanning a package: reconciles a fresh discovery with its catalog and keeps annotations.
 use super::{
     assets, discover_external, file_hashes::file_stamp, file_identity, id_list, insert_variant,
-    path_text, AssetKind, ImportedFile, Library, Result,
+    path_text, zip_sources, AssetKind, ImportedFile, Library, Result,
 };
 use rusqlite::params;
 use std::{
@@ -23,7 +23,7 @@ pub struct RescanSummary {
 
 /// A discovered file; `stamp` has the `file_hashes.stamp` form of its source, so an in-place
 /// change of equal size is still detected once the file was hashed (external files: always,
-/// through their recorded modification time).
+/// through their recorded modification time; ZIP entries: their CRC).
 pub(super) struct ScannedFile {
     pub(super) file: ImportedFile,
     pub(super) stamp: Option<String>,
@@ -52,14 +52,15 @@ impl Library {
     /// Reads a package's files again and applies the result in one transaction; a failed scan
     /// changes nothing. Managed packages read their library storage (never the original import
     /// location); external folders read their registered root after verifying its identity and
-    /// accept the updated files there, so `resolve_external` keeps validating them.
+    /// accept the updated files there, so `resolve_external` keeps validating them. ZIPs read the
+    /// archive at their registered location and accept it as a whole (see `rescan_zip`).
     pub fn rescan_package(&mut self, package_id: i64) -> Result<RescanSummary> {
         let (prefix, external): (String, Option<(String, String)>) = self
             .connection
             .query_row(
                 "SELECT p.relative_path, s.root, s.identity FROM active_packages p
                 LEFT JOIN external_sources s ON s.package_id = p.id
-                WHERE p.id = ?1 AND (s.identity IS NULL OR s.identity NOT LIKE 'zip:%')",
+                WHERE p.id = ?1",
                 [package_id],
                 |row| {
                     Ok((
@@ -69,9 +70,12 @@ impl Library {
                     ))
                 },
             )
-            .map_err(|_| {
-                "Nur aktive Pakete und externe Ordner (keine ZIPs) können neu eingelesen werden"
-            })?;
+            .map_err(|_| "Nur aktive Pakete können neu eingelesen werden")?;
+        if let Some((root, identity)) = &external {
+            if zip_sources::is_zip(identity) {
+                return self.rescan_zip(package_id, &prefix, root);
+            }
+        }
         let mut scanned = Vec::new();
         let mut origins = Vec::new();
         if let Some((root, identity)) = &external {
@@ -116,8 +120,23 @@ impl Library {
         let failed = |e: rusqlite::Error| format!("Paket kann nicht neu eingelesen werden: {e}");
         // Unchecked so the derived image groups below read the uncommitted state.
         let transaction = self.connection.unchecked_transaction().map_err(failed)?;
+        let (summary, _) = self.apply_scan(package_id, &prefix, &scanned, origins)?;
+        transaction.commit().map_err(failed)?;
+        Ok(summary)
+    }
+
+    /// Reconciles inside the caller's transaction and records the origins of external files;
+    /// returns the summary and the file ID of every scanned file in order.
+    fn apply_scan(
+        &self,
+        package_id: i64,
+        prefix: &str,
+        scanned: &[ScannedFile],
+        origins: Vec<(String, String)>,
+    ) -> Result<(RescanSummary, Vec<i64>)> {
+        let failed = |e: rusqlite::Error| format!("Paket kann nicht neu eingelesen werden: {e}");
         let before = self.ambiguous_image_groups(package_id)?;
-        let (mut summary, ids) = self.reconcile(package_id, &prefix, &scanned)?;
+        let (mut summary, ids) = self.reconcile(package_id, prefix, scanned)?;
         // Trashed files keep their old origin, so a restored changed file stays unresolvable until rescanned.
         for (id, (identity, modified)) in ids.iter().zip(origins) {
             self.connection
@@ -133,7 +152,57 @@ impl Library {
             .difference(&before)
             .cloned()
             .collect();
+        Ok((summary, ids))
+    }
+
+    /// Rescans a ZIP in place: the archive now at its registered location is validated whole with
+    /// the ZIP rules, entries are reconciled by path and CRC, and the new archive identity, entry
+    /// CRCs and hash stamps are stored together. An invalid archive, or one that changes before the
+    /// commit, leaves the package as it was. The package's extraction cache is dropped afterwards.
+    fn rescan_zip(&mut self, package_id: i64, prefix: &str, root: &str) -> Result<RescanSummary> {
+        let (identity, files) = zip_sources::read_directory(Path::new(root))
+            .map_err(|e| format!("{e}. Es wurde nichts geändert."))?;
+        let (scanned, origins): (Vec<_>, Vec<_>) = files
+            .into_iter()
+            .map(|file| {
+                (
+                    ScannedFile {
+                        stamp: Some(file.identity.clone()),
+                        file: ImportedFile {
+                            relative: file.relative,
+                            size: file.size,
+                            format: file.format,
+                        },
+                    },
+                    (file.identity, file.modified),
+                )
+            })
+            .unzip();
+        let failed = |e: rusqlite::Error| format!("Paket kann nicht neu eingelesen werden: {e}");
+        let transaction = self.connection.unchecked_transaction().map_err(failed)?;
+        let (summary, ids) = self.apply_scan(package_id, prefix, &scanned, origins)?;
+        // Hashes of unchanged entries stay valid for the new archive (changed ones were dropped).
+        self.connection
+            .execute(
+                "UPDATE file_hashes SET stamp = ?1 || '|' || (SELECT e.identity FROM external_files e WHERE e.file_id = file_hashes.file_id)
+                WHERE file_id IN (SELECT value FROM json_each(?2))
+                AND file_id NOT IN (SELECT file_id FROM trash)",
+                params![identity, id_list(&ids)],
+            )
+            .map_err(failed)?;
+        self.connection
+            .execute(
+                "UPDATE external_sources SET identity = ?1 WHERE package_id = ?2",
+                params![identity, package_id],
+            )
+            .map_err(failed)?;
+        if zip_sources::archive_identity(Path::new(root)).ok() != Some(identity) {
+            return Err(
+                "ZIP-Datei wurde während des Einlesens verändert. Es wurde nichts geändert.".into(),
+            );
+        }
         transaction.commit().map_err(failed)?;
+        self.remove_zip_cache(prefix);
         Ok(summary)
     }
 
@@ -154,7 +223,8 @@ impl Library {
             .prepare(
                 "SELECT f.id, f.asset_id, f.relative_path, f.format, f.size_bytes,
                 EXISTS(SELECT 1 FROM trash t WHERE t.file_id = f.id),
-                COALESCE(h.stamp, e.modified || '|' || f.size_bytes)
+                CASE e.modified WHEN 'zip' THEN e.identity
+                ELSE COALESCE(h.stamp, e.modified || '|' || f.size_bytes) END
                 FROM asset_files f JOIN assets a ON a.id = f.asset_id
                 LEFT JOIN file_hashes h ON h.file_id = f.id
                 LEFT JOIN external_files e ON e.file_id = f.id WHERE a.package_id = ?1",
@@ -586,24 +656,170 @@ mod tests {
         write(&source.join("C.wav"), b"c");
         let external = library.reference_folder(&source).unwrap();
         let zip = workspace.0.join("Pack.zip");
-        {
-            let mut writer = zip::ZipWriter::new(fs::File::create(&zip).unwrap());
-            writer
-                .start_file("D.wav", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            std::io::Write::write_all(&mut writer, b"d").unwrap();
-            writer.finish().unwrap();
-        }
+        write_zip(&zip, &[("D.wav", b"d")]);
         let zip = library.reference_zip(&zip).unwrap();
-        assert!(
-            library.rescan_package(zip.id).is_err(),
-            "ZIPs are not rescanned"
-        );
+        library.trash_package(zip.id).unwrap();
+        assert!(library.rescan_package(zip.id).is_err());
         library.trash_package(external.id).unwrap();
         assert!(library.rescan_package(external.id).is_err());
         library.trash_package(package.id).unwrap();
         assert!(library.rescan_package(package.id).is_err());
         assert_eq!(count(&library, "SELECT COUNT(*) FROM asset_files"), 3);
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut writer = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        for (name, bytes) in entries {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut writer, bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn files_below(path: &Path) -> usize {
+        fs::read_dir(path).map_or(0, |entries| {
+            entries
+                .flatten()
+                .map(|entry| match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => files_below(&entry.path()),
+                    _ => 1,
+                })
+                .sum()
+        })
+    }
+
+    #[test]
+    fn a_rewritten_zip_is_rescanned_in_place_and_drops_its_cache() {
+        let (workspace, mut library, _, _) = setup(&[("Other.png", b"x")]);
+        let archive = workspace.0.join("Fx.zip");
+        write_zip(
+            &archive,
+            &[
+                ("Fx/Hit.wav", b"hit"),
+                ("Fx/Same.wav", b"same"),
+                ("Fx/Gone.wav", b"gone"),
+            ],
+        );
+        let package = library.reference_zip(&archive).unwrap();
+        let (hit, same) = (file_id(&library, "Hit.wav"), file_id(&library, "Same.wav"));
+        let asset = asset_of(&library, hit);
+        library
+            .annotate_asset(asset, "Punch", &["impact".into()])
+            .unwrap();
+        library
+            .connection
+            .execute_batch(&format!(
+                "INSERT INTO audio_metadata(file_id, duration_seconds) VALUES ({hit}, 1.0);
+                INSERT INTO file_hashes(file_id, size, hash, stamp) VALUES ({same}, 4, 'h', 'old');"
+            ))
+            .unwrap();
+        library.resolve_preview(hit).unwrap();
+        library.resolve_preview(same).unwrap();
+        let cache = library.root().join(".cache").join(&package.relative_path);
+        assert_eq!(files_below(&cache), 2);
+
+        // Equal size: only the CRC reveals the change.
+        write_zip(
+            &archive,
+            &[
+                ("Fx/Hit.wav", b"HIT"),
+                ("Fx/Same.wav", b"same"),
+                ("Fx/Hit.ogg", b"ogg"),
+                ("Fx/readme.txt", b"not an asset"),
+            ],
+        );
+        let summary = library.rescan_package(package.id).unwrap();
+        assert_eq!(
+            summary,
+            RescanSummary {
+                added: 1,
+                changed: 1,
+                missing: 1,
+                ambiguous: vec![]
+            }
+        );
+        assert_eq!(files_below(&cache), 0, "the old cache is dropped");
+        assert_eq!(
+            file_id(&library, "Hit.wav"),
+            hit,
+            "same path keeps the file"
+        );
+        assert_eq!(asset_of(&library, file_id(&library, "Hit.ogg")), asset);
+        assert_eq!(
+            count(
+                &library,
+                &format!("SELECT COUNT(*) FROM audio_metadata WHERE file_id = {hit}")
+            ),
+            0
+        );
+        let stamp: String = library
+            .connection
+            .query_row(
+                "SELECT stamp FROM file_hashes WHERE file_id = ?1",
+                [same],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stamp,
+            format!(
+                "{}|{}",
+                zip_sources::archive_identity(&archive).unwrap(),
+                origin(&library, same).0
+            ),
+            "an unchanged entry keeps its hash for the new archive"
+        );
+        let found = library
+            .query(CatalogQuery {
+                text: "punch".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .items;
+        assert_eq!(found[0].tags, vec!["impact".to_string()]);
+        let preview = library.resolve_preview(hit).unwrap();
+        assert_eq!(fs::read(preview).unwrap(), b"HIT");
+        library
+            .resolve_preview(file_id(&library, "Hit.ogg"))
+            .unwrap();
+        assert!(library
+            .resolve_preview(file_id(&library, "Gone.wav"))
+            .is_err());
+        assert!(library.packages().unwrap()[1].available);
+        let again = library.rescan_package(package.id).unwrap();
+        assert_eq!((again.added, again.changed, again.missing), (0, 0, 1));
+    }
+
+    #[test]
+    fn an_invalid_or_missing_zip_leaves_the_package_unchanged() {
+        let (workspace, mut library, _, _) = setup(&[("Other.png", b"x")]);
+        let archive = workspace.0.join("Fx.zip");
+        write_zip(&archive, &[("Hit.wav", b"hit")]);
+        let package = library.reference_zip(&archive).unwrap();
+        let hit = file_id(&library, "Hit.wav");
+        let identity = |library: &Library| -> String {
+            library
+                .connection
+                .query_row(
+                    "SELECT identity FROM external_sources WHERE package_id = ?1",
+                    [package.id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let before = (identity(&library), origin(&library, hit));
+
+        write_zip(&archive, &[("../escape.wav", b"x"), ("New.wav", b"new")]);
+        let error = library.rescan_package(package.id).unwrap_err();
+        assert!(error.contains("Es wurde nichts geändert"), "{error}");
+        fs::write(&archive, b"not a zip").unwrap();
+        assert!(library.rescan_package(package.id).is_err(), "corrupt");
+        fs::remove_file(&archive).unwrap();
+        assert!(library.rescan_package(package.id).is_err(), "missing");
+        assert_eq!(count(&library, "SELECT COUNT(*) FROM asset_files"), 2);
+        assert_eq!((identity(&library), origin(&library, hit)), before);
     }
 
     fn origin(library: &Library, file: i64) -> (String, String) {

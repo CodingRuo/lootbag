@@ -184,6 +184,67 @@ fn remove_cache_dir(root: &Path, target: &Path) {
     }
 }
 
+/// Validates an archive's whole directory with the ZIP rules and lists its candidate entries;
+/// no entry data is read. Fails when the archive changes while it is read.
+pub(super) fn read_directory(source: &Path) -> Result<(String, Vec<ReferencedFile>)> {
+    let identity = archive_identity(source)?;
+    let mut archive = open_zip(source)?;
+    let mut files = Vec::new();
+    let mut names = HashSet::new();
+    let mut dirs = HashSet::new();
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index_raw(index)
+            .map_err(|e| format!("ZIP-Eintrag nicht lesbar: {e}"))?;
+        let path = checked_zip_path(&entry)?;
+        if entry.encrypted() {
+            return Err(format!(
+                "Verschlüsselte ZIP-Einträge werden nicht unterstützt: {}",
+                entry.name()
+            ));
+        }
+        // Such entries would share one cache path on case-insensitive disks, as would a file
+        // named like another entry's folder (`a.wav` and `A.WAV/x.wav`).
+        // shortcut: lowercase only, so NFC/NFD spellings of one name (e.g. "ä") still pass; normalize once a Unicode crate is in the tree.
+        let lower = path_text(&path)?.to_lowercase();
+        let parents: Vec<_> = lower
+            .match_indices('/')
+            .map(|(at, _)| lower[..at].to_owned())
+            .collect();
+        let collides = parents.iter().any(|dir| names.contains(dir))
+            || if entry.is_dir() {
+                names.contains(&lower)
+            } else {
+                dirs.contains(&lower) || !names.insert(lower.clone())
+            };
+        if collides {
+            return Err(format!(
+                "ZIP enthält Pfade, die sich nur in Groß-/Kleinschreibung unterscheiden oder Datei und Ordner zugleich sind: {}",
+                entry.name()
+            ));
+        }
+        dirs.extend(parents);
+        if entry.is_dir() {
+            dirs.insert(lower);
+            continue;
+        }
+        let Some(format) = assets::candidate_format(&path) else {
+            continue;
+        };
+        files.push(ReferencedFile {
+            relative: path,
+            size: i64::try_from(entry.size()).map_err(|_| "Datei ist zu groß für den Katalog")?,
+            identity: crc_text(entry.crc32()),
+            modified: "zip".into(),
+            format: format.into(),
+        });
+    }
+    if archive_identity(source)? != identity {
+        return Err("ZIP-Datei wurde während des Lesens verändert".into());
+    }
+    Ok((identity, files))
+}
+
 /// Archives opened during one backfill batch, by source identity, so each directory is parsed once.
 pub(super) type OpenArchives = HashMap<String, ZipArchive<fs::File>>;
 
@@ -224,62 +285,7 @@ impl Library {
         if source.starts_with(&self.root) {
             return Err("Bitte eine ZIP-Datei außerhalb der Bibliothek auswählen".into());
         }
-        let identity = archive_identity(&source)?;
-        let mut archive = open_zip(&source)?;
-        let mut files = Vec::new();
-        let mut names = HashSet::new();
-        let mut dirs = HashSet::new();
-        for index in 0..archive.len() {
-            let entry = archive
-                .by_index_raw(index)
-                .map_err(|e| format!("ZIP-Eintrag nicht lesbar: {e}"))?;
-            let path = checked_zip_path(&entry)?;
-            if entry.encrypted() {
-                return Err(format!(
-                    "Verschlüsselte ZIP-Einträge werden nicht unterstützt: {}",
-                    entry.name()
-                ));
-            }
-            // Such entries would share one cache path on case-insensitive disks, as would a file
-            // named like another entry's folder (`a.wav` and `A.WAV/x.wav`).
-            // shortcut: lowercase only, so NFC/NFD spellings of one name (e.g. "ä") still pass; normalize once a Unicode crate is in the tree.
-            let lower = path_text(&path)?.to_lowercase();
-            let parents: Vec<_> = lower
-                .match_indices('/')
-                .map(|(at, _)| lower[..at].to_owned())
-                .collect();
-            let collides = parents.iter().any(|dir| names.contains(dir))
-                || if entry.is_dir() {
-                    names.contains(&lower)
-                } else {
-                    dirs.contains(&lower) || !names.insert(lower.clone())
-                };
-            if collides {
-                return Err(format!(
-                    "ZIP enthält Pfade, die sich nur in Groß-/Kleinschreibung unterscheiden oder Datei und Ordner zugleich sind: {}",
-                    entry.name()
-                ));
-            }
-            dirs.extend(parents);
-            if entry.is_dir() {
-                dirs.insert(lower);
-                continue;
-            }
-            let Some(format) = assets::candidate_format(&path) else {
-                continue;
-            };
-            files.push(ReferencedFile {
-                relative: path,
-                size: i64::try_from(entry.size())
-                    .map_err(|_| "Datei ist zu groß für den Katalog")?,
-                identity: crc_text(entry.crc32()),
-                modified: "zip".into(),
-                format: format.into(),
-            });
-        }
-        if archive_identity(&source)? != identity {
-            return Err("ZIP-Datei wurde während des Einbindens verändert".into());
-        }
+        let (identity, files) = read_directory(&source)?;
         let name = path_text(
             source
                 .file_stem()

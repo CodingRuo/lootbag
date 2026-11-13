@@ -97,7 +97,7 @@ ZIP with `Paket importieren`.
 
 New imports and external references discover PNG/JPEG/WebP/TGA/GIF/Aseprite images and
 GLB/glTF 2.0, FBX, OBJ and Blender source models alongside sounds. Existing packages keep their
-catalog entries until rescanned (`Neu einlesen`, managed packages and external folders) or reimported. Search and category filters work
+catalog entries until rescanned (`Neu einlesen`) or reimported. Search and category filters work
 together; identically named assets of different kinds remain separate.
 
 Images show dimensions, transparency, zoom and pixel mode. Open the regular
@@ -380,8 +380,13 @@ aborts the scan and leaves the package unchanged. An external folder is rescanne
 only while it is reachable and still the registered folder: an offline source or
 a different folder at the same path is refused and changes nothing. The rescan
 accepts updated files at that location, so they open again; moving the source
-still needs `Quelle neu verknüpfen` with the original folder. ZIP sources are not
-rescanned yet.
+still needs `Quelle neu verknüpfen` with the original folder. A ZIP source is
+rescanned from the archive now at its registered location, for example after the
+pack was updated there: the whole archive is checked with the same rules as when
+it was added (unsafe, encrypted or colliding paths, unreadable archives), and an
+invalid, missing or meanwhile changed archive is refused and changes nothing.
+Entries are matched by path; changes are detected by size and CRC. The package's
+extracted cache copies are removed, so previews extract the new entries again.
 
 ## Paketinfos und Credits
 
