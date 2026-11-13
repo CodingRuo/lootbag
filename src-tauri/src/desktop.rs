@@ -1173,6 +1173,29 @@ async fn resolve_preview(app: AppHandle, file_id: i64) -> Result<String> {
     .await
 }
 
+/// Opens the file in its default app or reveals it; ZIP entries go through the ZIP cache.
+#[tauri::command]
+async fn open_file(app: AppHandle, file_id: i64, reveal: bool) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let root = active_root(&app)?;
+    background(move || {
+        let file = Library::writable(&root)?.resolve_preview(file_id)?;
+        if active_root(&app)? != root {
+            return Err("Die aktive Bibliothek wurde geändert".into());
+        }
+        if reveal {
+            app.opener()
+                .reveal_item_in_dir(&file)
+                .map_err(|e| format!("Datei kann nicht im Dateimanager gezeigt werden: {e}"))
+        } else {
+            app.opener()
+                .open_path(file.to_string_lossy(), None::<&str>)
+                .map_err(|e| format!("Keine Standard-App für diese Datei gefunden: {e}"))
+        }
+    })
+    .await
+}
+
 #[tauri::command]
 async fn model_resources(app: AppHandle, file_id: i64) -> Result<ModelResources> {
     let (root, request) = app.state::<Session>().begin_preview()?;
@@ -1523,6 +1546,7 @@ async fn export_asset(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(Session::default())
         .setup(|app| {
             let remembered = app
@@ -1576,6 +1600,7 @@ pub fn run() {
             split_variant,
             assign_variant,
             resolve_preview,
+            open_file,
             analyze_audio,
             prepare_audio_analysis,
             run_audio_analysis,

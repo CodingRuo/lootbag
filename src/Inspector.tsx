@@ -25,7 +25,7 @@ type ExportResult =
   | { status: "exported"; path: string; sizeBytes: number };
 
 // Detail aside for the selected asset: variants, preview/properties/origin tabs and export.
-export default function Inspector({ library, query, selected, setSelected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, refreshCatalog, setNotice, trashItem, relinkSource, editPackageInfo }: {
+export default function Inspector({ library, query, selected, setSelected, file, selectedPackage, projectFolders, modelSelection, setModelSelection, setSelectedFileId, actionsDisabled, act, setLibrary, setRevision, refreshCatalog, setNotice, trashItem, openFile, relinkSource, editPackageInfo }: {
   library: LibraryInfo;
   query: CatalogQuery;
   selected: Asset | null;
@@ -44,6 +44,7 @@ export default function Inspector({ library, query, selected, setSelected, file,
   refreshCatalog: () => void;
   setNotice: Setter<Notice | null>;
   trashItem: (kind: "package" | "file", id: number, name: string) => void;
+  openFile: (file: AssetFile, packageId: number, reveal: boolean) => void;
   relinkSource: (sourcePackage: AssetPackage) => void;
   editPackageInfo: (id: number) => void;
 }) {
@@ -196,7 +197,8 @@ export default function Inspector({ library, query, selected, setSelected, file,
         <>
           <div className="detail-heading">
             <TrashActions className="detail-file-actions" label={`Datei ${file.originalFilename}`} disabled={actionsDisabled}
-              onTrash={() => trashItem("file", file.id, file.originalFilename)}>
+              onTrash={() => trashItem("file", file.id, file.originalFilename)}
+              onOpenFile={(reveal) => openFile(file, selected.packageId, reveal)}>
               <div className="detail-title">
                 <h2>{selected.imageGroup?.name ?? selected.name}</h2>
                 <p>{file.originalFilename}</p>

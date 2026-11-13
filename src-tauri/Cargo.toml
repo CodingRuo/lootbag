@@ -14,7 +14,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri-plugin-opener"]
 
 [build-dependencies]
 tauri-build = { version = "2.7.1", optional = true, features = [] }
@@ -30,3 +30,4 @@ symphonia = { version = "0.6.1", default-features = false, features = ["wav", "p
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tauri = { version = "2.12.1", features = ["protocol-asset"], optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }

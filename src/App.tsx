@@ -9,7 +9,7 @@ import { PackageInfoDialog } from "./PackageInfoDialog";
 import { savePackageInfo, type PackageInfo } from "./packageInfo.ts";
 import type { CatalogSelection } from "./catalogSelection";
 import { errorMessage } from "./errorMessage.ts";
-import { ZIP_FILTER, native, number, type Asset, type AssetPackage, type LibraryInfo, type Notice } from "./ui.tsx";
+import { ZIP_FILTER, native, number, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice } from "./ui.tsx";
 import { useCatalogQuery } from "./useCatalogQuery.ts";
 import { useAudioAnalysis } from "./useAudioAnalysis.ts";
 import { useImportQueue } from "./useImportQueue.ts";
@@ -248,6 +248,15 @@ export default function App() {
     });
   }
 
+  function openFile(file: AssetFile, packageId: number, reveal: boolean) {
+    void act(reveal ? "Datei wird gezeigt …" : "Datei wird geöffnet …", async () => {
+      await invoke("open_file", { fileId: file.id, reveal });
+      if (library?.packages.find((item) => item.id === packageId)?.zip) {
+        setNotice({ tone: "success", message: `${file.originalFilename} ist eine Cache-Kopie aus dem ZIP. Änderungen daran werden nicht ins ZIP zurückgeschrieben.` });
+      }
+    });
+  }
+
   function trashItem(kind: "package" | "file", id: number, name: string) {
     void act("Eintrag wird in den Papierkorb verschoben …", async () => {
       await invoke(kind === "package" ? "trash_package" : "trash_file", kind === "package" ? { packageId: id } : { fileId: id });
@@ -339,10 +348,10 @@ export default function App() {
           <Catalog library={library} query={query} audio={audio} selected={selected} setSelected={setSelected} selection={selection} setSelection={setSelection}
             setSelectedFileId={setSelectedFileId} setModelSelection={setModelSelection} filteredPackage={filteredPackage} filteredFolderPath={filteredFolderPath}
             projectFolders={projectFolders} actionsDisabled={actionsDisabled} act={act} setLibrary={setLibrary} setRevision={setRevision} setNotice={setNotice}
-            trashItem={trashItem} relinkSource={relinkSource} importPackage={imports.importPackage} />
+            trashItem={trashItem} openFile={openFile} relinkSource={relinkSource} importPackage={imports.importPackage} />
           <Inspector library={library} query={query} selected={selected} setSelected={setSelected} file={file} selectedPackage={selectedPackage} projectFolders={projectFolders}
             modelSelection={modelSelection} setModelSelection={setModelSelection} setSelectedFileId={setSelectedFileId} actionsDisabled={actionsDisabled}
-            act={act} setLibrary={setLibrary} setRevision={setRevision} refreshCatalog={refreshCatalog} setNotice={setNotice} trashItem={trashItem} relinkSource={relinkSource} editPackageInfo={editPackageInfo} />
+            act={act} setLibrary={setLibrary} setRevision={setRevision} refreshCatalog={refreshCatalog} setNotice={setNotice} trashItem={trashItem} openFile={openFile} relinkSource={relinkSource} editPackageInfo={editPackageInfo} />
         </div>
       )}
       {library && showFolderDialog && (
