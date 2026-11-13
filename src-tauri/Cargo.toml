@@ -14,7 +14,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:drag", "dep:block2", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri-plugin-opener"]
+desktop = ["dep:drag", "dep:block2", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri-plugin-opener", "dep:tauri-plugin-single-instance"]
 
 [build-dependencies]
 tauri-build = { version = "2.7.1", optional = true, features = [] }
@@ -33,6 +33,7 @@ tar = { version = "0.4", default-features = false }
 tauri = { version = "2.12.1", features = ["protocol-asset"], optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
 
 # macOS drags natively from the real mouse events (src/drag_mac.rs); the crate serves the rest.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
