@@ -1,7 +1,7 @@
 //! Rescanning a package: reconciles a fresh discovery with its catalog and keeps annotations.
 use super::{
-    assets, file_hashes::file_stamp, id_list, insert_variant, path_text, AssetKind, ImportedFile,
-    Library, Result,
+    assets, discover_external, file_hashes::file_stamp, file_identity, id_list, insert_variant,
+    path_text, AssetKind, ImportedFile, Library, Result,
 };
 use rusqlite::params;
 use std::{
@@ -22,7 +22,8 @@ pub struct RescanSummary {
 }
 
 /// A discovered file; `stamp` has the `file_hashes.stamp` form of its source, so an in-place
-/// change of equal size is still detected once the file was hashed.
+/// change of equal size is still detected once the file was hashed (external files: always,
+/// through their recorded modification time).
 pub(super) struct ScannedFile {
     pub(super) file: ImportedFile,
     pub(super) stamp: Option<String>,
@@ -48,31 +49,85 @@ fn group_key(relative: &Path, format: &str) -> Option<GroupKey> {
 }
 
 impl Library {
-    /// Reads a managed package's library storage again (never its original import location)
-    /// and applies the result in one transaction; a failed scan changes nothing.
+    /// Reads a package's files again and applies the result in one transaction; a failed scan
+    /// changes nothing. Managed packages read their library storage (never the original import
+    /// location); external folders read their registered root after verifying its identity and
+    /// accept the updated files there, so `resolve_external` keeps validating them.
     pub fn rescan_package(&mut self, package_id: i64) -> Result<RescanSummary> {
-        let prefix: String = self
+        let (prefix, external): (String, Option<(String, String)>) = self
             .connection
             .query_row(
-                "SELECT relative_path FROM active_packages p WHERE id = ?1
-                AND NOT EXISTS (SELECT 1 FROM external_sources s WHERE s.package_id = p.id)",
+                "SELECT p.relative_path, s.root, s.identity FROM active_packages p
+                LEFT JOIN external_sources s ON s.package_id = p.id
+                WHERE p.id = ?1 AND (s.identity IS NULL OR s.identity NOT LIKE 'zip:%')",
                 [package_id],
-                |row| row.get(0),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get::<_, Option<String>>(1)?
+                            .zip(row.get::<_, Option<String>>(2)?),
+                    ))
+                },
             )
-            .map_err(|_| "Nur aktive verwaltete Pakete können neu eingelesen werden")?;
-        let storage = self.root.join(&prefix);
-        if !fs::symlink_metadata(&storage).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
-        {
-            return Err("Paketordner in der Bibliothek fehlt. Es wurde nichts geändert.".into());
-        }
+            .map_err(|_| {
+                "Nur aktive Pakete und externe Ordner (keine ZIPs) können neu eingelesen werden"
+            })?;
         let mut scanned = Vec::new();
-        scan_managed(&storage, Path::new(""), &mut scanned)?;
-        scanned.sort_by(|a, b| a.file.relative.cmp(&b.file.relative));
+        let mut origins = Vec::new();
+        if let Some((root, identity)) = &external {
+            let root = Path::new(root);
+            if !fs::symlink_metadata(root).is_ok_and(|m| {
+                m.is_dir()
+                    && !m.file_type().is_symlink()
+                    && file_identity(root, &m).ok().as_deref() == Some(identity)
+            }) {
+                return Err(
+                    "Externe Quelle ist offline oder wurde ersetzt. Es wurde nichts geändert."
+                        .into(),
+                );
+            }
+            let mut found = Vec::new();
+            discover_external(root, Path::new(""), &mut found)
+                .map_err(|e| format!("{e}. Es wurde nichts geändert."))?;
+            found.sort_by(|a, b| a.relative.cmp(&b.relative));
+            for file in found {
+                scanned.push(ScannedFile {
+                    stamp: Some(format!("{}|{}", file.modified, file.size)),
+                    file: ImportedFile {
+                        relative: file.relative,
+                        size: file.size,
+                        format: file.format,
+                    },
+                });
+                origins.push((file.identity, file.modified));
+            }
+        } else {
+            let storage = self.root.join(&prefix);
+            if !fs::symlink_metadata(&storage)
+                .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+            {
+                return Err(
+                    "Paketordner in der Bibliothek fehlt. Es wurde nichts geändert.".into(),
+                );
+            }
+            scan_managed(&storage, Path::new(""), &mut scanned)?;
+            scanned.sort_by(|a, b| a.file.relative.cmp(&b.file.relative));
+        }
         let failed = |e: rusqlite::Error| format!("Paket kann nicht neu eingelesen werden: {e}");
         // Unchecked so the derived image groups below read the uncommitted state.
         let transaction = self.connection.unchecked_transaction().map_err(failed)?;
         let before = self.ambiguous_image_groups(package_id)?;
-        let (mut summary, _) = self.reconcile(package_id, &prefix, &scanned)?;
+        let (mut summary, ids) = self.reconcile(package_id, &prefix, &scanned)?;
+        // Trashed files keep their old origin, so a restored changed file stays unresolvable until rescanned.
+        for (id, (identity, modified)) in ids.iter().zip(origins) {
+            self.connection
+                .execute(
+                    "INSERT OR REPLACE INTO external_files(file_id, identity, modified)
+                    SELECT ?1, ?2, ?3 WHERE NOT EXISTS (SELECT 1 FROM trash WHERE file_id = ?1)",
+                    params![id, identity, modified],
+                )
+                .map_err(failed)?;
+        }
         summary.ambiguous = self
             .ambiguous_image_groups(package_id)?
             .difference(&before)
@@ -98,9 +153,11 @@ impl Library {
             .connection
             .prepare(
                 "SELECT f.id, f.asset_id, f.relative_path, f.format, f.size_bytes,
-                EXISTS(SELECT 1 FROM trash t WHERE t.file_id = f.id), h.stamp
+                EXISTS(SELECT 1 FROM trash t WHERE t.file_id = f.id),
+                COALESCE(h.stamp, e.modified || '|' || f.size_bytes)
                 FROM asset_files f JOIN assets a ON a.id = f.asset_id
-                LEFT JOIN file_hashes h ON h.file_id = f.id WHERE a.package_id = ?1",
+                LEFT JOIN file_hashes h ON h.file_id = f.id
+                LEFT JOIN external_files e ON e.file_id = f.id WHERE a.package_id = ?1",
             )
             .map_err(failed)?
             .query_map([package_id], |row| {
@@ -528,9 +585,148 @@ mod tests {
         let source = workspace.0.join("External");
         write(&source.join("C.wav"), b"c");
         let external = library.reference_folder(&source).unwrap();
+        let zip = workspace.0.join("Pack.zip");
+        {
+            let mut writer = zip::ZipWriter::new(fs::File::create(&zip).unwrap());
+            writer
+                .start_file("D.wav", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut writer, b"d").unwrap();
+            writer.finish().unwrap();
+        }
+        let zip = library.reference_zip(&zip).unwrap();
+        assert!(
+            library.rescan_package(zip.id).is_err(),
+            "ZIPs are not rescanned"
+        );
+        library.trash_package(external.id).unwrap();
         assert!(library.rescan_package(external.id).is_err());
         library.trash_package(package.id).unwrap();
         assert!(library.rescan_package(package.id).is_err());
+        assert_eq!(count(&library, "SELECT COUNT(*) FROM asset_files"), 3);
+    }
+
+    fn origin(library: &Library, file: i64) -> (String, String) {
+        library
+            .connection
+            .query_row(
+                "SELECT identity, modified FROM external_files WHERE file_id = ?1",
+                [file],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn external_folders_accept_updated_files_at_their_registered_root() {
+        let (workspace, mut library, _, _) = setup(&[("Other.png", b"x")]);
+        let source = workspace.0.join("External");
+        write(&source.join("Fx/Hit.wav"), b"hit");
+        write(&source.join("Fx/Same.wav"), b"same");
+        write(&source.join("Fx/Gone.wav"), b"gone");
+        let package = library.reference_folder(&source).unwrap();
+        let hit = file_id(&library, "Hit.wav");
+        let asset = asset_of(&library, hit);
+        library
+            .annotate_asset(asset, "Punch", &["impact".into()])
+            .unwrap();
+        library
+            .connection
+            .execute_batch(&format!(
+                "INSERT INTO audio_metadata(file_id, duration_seconds) VALUES ({hit}, 1.0);"
+            ))
+            .unwrap();
+        let before = origin(&library, hit);
+
+        // Equal size: only the recorded modification time reveals the change.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write(&source.join("Fx/Hit.wav"), b"HIT");
+        fs::remove_file(source.join("Fx/Gone.wav")).unwrap();
+        write(&source.join("Fx/Hit.ogg"), b"ogg");
+        let summary = library.rescan_package(package.id).unwrap();
+        assert_eq!(
+            summary,
+            RescanSummary {
+                added: 1,
+                changed: 1,
+                missing: 1,
+                ambiguous: vec![]
+            }
+        );
+        assert_eq!(
+            file_id(&library, "Hit.wav"),
+            hit,
+            "same path keeps the file"
+        );
+        assert_eq!(asset_of(&library, file_id(&library, "Hit.ogg")), asset);
+        assert_ne!(
+            origin(&library, hit),
+            before,
+            "the updated file is accepted"
+        );
+        assert_eq!(
+            count(
+                &library,
+                &format!("SELECT COUNT(*) FROM audio_metadata WHERE file_id = {hit}")
+            ),
+            0
+        );
+        assert_eq!(
+            count(&library, "SELECT COUNT(*) FROM external_files"),
+            4,
+            "the new file has an origin; the missing one keeps its record"
+        );
+        let found = library
+            .query(CatalogQuery {
+                text: "punch".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .items;
+        assert_eq!(found[0].tags, vec!["impact".to_string()]);
+        for name in ["Hit.wav", "Hit.ogg", "Same.wav"] {
+            library
+                .resolve_preview(file_id(&library, name))
+                .unwrap_or_else(|e| panic!("{name} resolves: {e}"));
+        }
+        assert!(library
+            .resolve_preview(file_id(&library, "Gone.wav"))
+            .is_err());
+        let again = library.rescan_package(package.id).unwrap();
+        assert_eq!((again.added, again.changed, again.missing), (0, 0, 1));
+    }
+
+    #[test]
+    fn offline_or_replaced_external_roots_leave_the_catalog_unchanged() {
+        let (workspace, mut library, _, _) = setup(&[("Other.png", b"x")]);
+        let source = workspace.0.join("External");
+        write(&source.join("A.wav"), b"a");
+        let package = library.reference_folder(&source).unwrap();
+        let a = file_id(&library, "A.wav");
+        let before = origin(&library, a);
+
+        fs::rename(&source, workspace.0.join("Moved")).unwrap();
+        assert!(library.rescan_package(package.id).is_err(), "offline");
+
+        // A different folder at the registered path, even with a matching file.
+        write(&source.join("A.wav"), b"b");
+        write(&source.join("New.wav"), b"new");
+        assert!(library.rescan_package(package.id).is_err(), "replaced");
         assert_eq!(count(&library, "SELECT COUNT(*) FROM asset_files"), 2);
+        assert_eq!(origin(&library, a), before);
+
+        #[cfg(unix)]
+        {
+            fs::remove_dir_all(&source).unwrap();
+            fs::rename(workspace.0.join("Moved"), &source).unwrap();
+            write(&source.join("Sub/B.wav"), b"b");
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(source.join("Sub"), fs::Permissions::from_mode(0o000)).unwrap();
+            let unreadable = library.rescan_package(package.id);
+            fs::set_permissions(source.join("Sub"), fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(unreadable.is_err(), "incomplete traversal");
+            assert_eq!(count(&library, "SELECT COUNT(*) FROM asset_files"), 2);
+            assert_eq!(library.rescan_package(package.id).unwrap().added, 1);
+        }
     }
 }

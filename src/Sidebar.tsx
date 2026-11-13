@@ -87,7 +87,7 @@ export default function Sidebar({ savedSearches, searchJson, applySavedSearch, d
             library.packages.map((item) => (
               <TrashActions key={item.id} className="package-row" label={`Paket ${item.name}`} disabled={actionsDisabled}
                 onTrash={() => trashItem("package", item.id, item.name)} onEditInfo={() => editPackageInfo(item.id)}
-                onRescan={item.sourceKind === "managed" ? () => rescanPackage(item.id, item.name) : undefined}>
+                onRescan={!item.zip ? () => rescanPackage(item.id, item.name) : undefined}>
                 <button
                   className={`package-item ${packageId === item.id ? "active" : ""}`}
                   aria-pressed={packageId === item.id}

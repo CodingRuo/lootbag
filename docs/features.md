@@ -97,7 +97,7 @@ ZIP with `Paket importieren`.
 
 New imports and external references discover PNG/JPEG/WebP/TGA/GIF/Aseprite images and
 GLB/glTF 2.0, FBX, OBJ and Blender source models alongside sounds. Existing packages keep their
-catalog entries until rescanned (`Neu einlesen`, managed packages) or reimported. Search and category filters work
+catalog entries until rescanned (`Neu einlesen`, managed packages and external folders) or reimported. Search and category filters work
 together; identically named assets of different kinds remain separate.
 
 Images show dimensions, transparency, zoom and pixel mode. Open the regular
@@ -198,8 +198,8 @@ native decoder work. Proxies stay temporary and exports retain original bytes.
 External GIF model textures and explicit glTF GIF URI/data/bufferView previews
 use the guarded route; GIF is outside glTF 2.0's core PNG/JPEG image formats and
 this adds no portability conversion. Embedded FBX GIF images are unsupported.
-Managed packages discover GIF files with `Neu einlesen`; external and ZIP
-sources require reimport.
+Managed packages and external folders discover GIF files with `Neu einlesen`;
+ZIP sources require reimport.
 
 Aseprite `.ase` and `.aseprite` files use complete canvas composites from flat
 normal 32-bit RGBA layers, including raw/compressed cels, backward linked images,
@@ -216,8 +216,8 @@ shares the existing queue/deadline. Browser-standard zlib decompression is
 required; these application limits are not an OS heap quota. Indexed/grayscale,
 groups, tilemaps, non-normal/special layers, scaled cels and unsupported profiles
 fail explicitly, including hidden content. No Aseprite process runs in the app.
-Managed packages discover these sources with `Neu einlesen`; external and ZIP
-sources require reimport.
+Managed packages and external folders discover these sources with `Neu einlesen`;
+ZIP sources require reimport.
 
 Blender source files show their embedded saved thumbnail in cards and a static
 inspector with fit, 100 percent zoom and pixel mode. That image can be older than
@@ -232,8 +232,8 @@ little-endian/64-bit, with a leading saved TEST image. Limits: 64 MiB input,
 (4 Mi pixels). Legacy, gzip/Zstd, other layouts and missing/malformed thumbnails
 report explicit errors. A bounded same-origin worker shares the existing serial
 preview lifecycle; no Blender process is run by the app. Managed packages
-discover previously ignored `.blend` files with `Neu einlesen`; external and ZIP
-sources require reimport.
+and external folders discover previously ignored `.blend` files with `Neu einlesen`;
+ZIP sources require reimport.
 
 GLB/glTF, FBX and OBJ cards generate actual
 static thumbnails serially with one renderer and a bounded session cache;
@@ -242,7 +242,7 @@ PSD files are recognized as image assets by new folder, ZIP and external
 imports, and retain their original bytes on export. PSD image decoding is
 pending approval of the decoder dependency. Existing packages are deliberately
 not rescanned on reopen; `Neu einlesen` discovers previously ignored PSD files in
-managed packages, external and ZIP sources require reimport.
+managed packages and external folders, ZIP sources require reimport.
 The tested Synty Town prop now renders with its supplied PNG; the City Biker
 retains its regular preview and export. Geometry and source files are preserved.
 
@@ -361,13 +361,13 @@ step without progress or cancellation. Game-project profiles are not built yet.
 
 ## Neu einlesen
 
-`Neu einlesen` in a managed package's `⋯` menu scans the package's folder in the
-library storage again (never the original import location) with the current
-discovery rules and reports "n neu, n geändert, n fehlen". A file at the same
+`Neu einlesen` in a package's `⋯` menu scans the package's files again with the
+current discovery rules: a managed package's folder in the library storage (never
+the original import location), an external folder at its registered location. It reports "n neu, n geändert, n fehlen". A file at the same
 package path keeps its asset and file identity, so names, tags, package info,
 project memberships, roles and chosen variants stay, also when its content
-changed. Changes are detected by size, and for already hashed files also by
-modification time; analysed audio properties, model traits and hashes of changed
+changed. Changes are detected by size, and for already hashed files and files
+of external folders also by modification time; analysed audio properties, model traits and hashes of changed
 files are dropped and recomputed, auto-tags and duplicates follow in the
 background. A renamed or moved file counts as missing plus new. Missing files keep
 their catalog entry and annotations and show as unavailable until they return or
@@ -376,8 +376,12 @@ existing asset only when exactly one asset of the same folder, name and kind is
 still an unchanged automatic group, so split or reassigned variants stay as they
 are. Material sets and sprite sequences follow automatically; groups that become
 ambiguous are named in the result. A link, special file or unreadable folder
-aborts the scan and leaves the package unchanged. External folders and ZIP
-sources are not rescanned yet.
+aborts the scan and leaves the package unchanged. An external folder is rescanned
+only while it is reachable and still the registered folder: an offline source or
+a different folder at the same path is refused and changes nothing. The rescan
+accepts updated files at that location, so they open again; moving the source
+still needs `Quelle neu verknüpfen` with the original folder. ZIP sources are not
+rescanned yet.
 
 ## Paketinfos und Credits
 
