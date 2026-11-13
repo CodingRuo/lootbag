@@ -2177,6 +2177,22 @@ fn insert_variant(
     Ok(transaction.last_insert_rowid())
 }
 
+/// `root/relative` when it and every folder between it and the library root is a real folder,
+/// not a link, so reads below a managed package cannot leave the library.
+fn managed_dir(root: &Path, relative: &str) -> Option<PathBuf> {
+    let mut path = root.to_owned();
+    for part in Path::new(relative).components() {
+        let Component::Normal(part) = part else {
+            return None;
+        };
+        path.push(part);
+        if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) {
+            return None;
+        }
+    }
+    Some(path)
+}
+
 /// Removes a managed `packages/...` path below `root`; refuses symlinks anywhere on the way.
 fn remove_managed(root: &Path, relative: &str) -> Result<()> {
     let relative = Path::new(relative);

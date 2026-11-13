@@ -1,7 +1,7 @@
 //! Rescanning a package: reconciles a fresh discovery with its catalog and keeps annotations.
 use super::{
     assets, discover_external, file_hashes::file_stamp, file_identity, id_list, insert_variant,
-    path_text, zip_sources, AssetKind, ImportedFile, Library, Result,
+    managed_dir, path_text, zip_sources, AssetKind, ImportedFile, Library, Result,
 };
 use rusqlite::params;
 use std::{
@@ -109,14 +109,11 @@ impl Library {
                 origins.push((file.identity, file.modified));
             }
         } else {
-            let storage = self.root.join(&prefix);
-            if !fs::symlink_metadata(&storage)
-                .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
-            {
+            let Some(storage) = managed_dir(&self.root, &prefix) else {
                 return Err(
                     "Paketordner in der Bibliothek fehlt. Es wurde nichts geändert.".into(),
                 );
-            }
+            };
             scan_managed(&storage, Path::new(""), &mut scanned)?;
             scanned.sort_by(|a, b| a.file.relative.cmp(&b.file.relative));
         }
@@ -748,6 +745,43 @@ mod tests {
         library.save_hashes(&hashes(new_hit), &go).unwrap();
         assert_eq!(derived(&library, model), 1, "current results are kept");
         assert_eq!(count(&library, "SELECT COUNT(*) FROM file_hashes"), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_managed_package_folders_are_neither_rescanned_nor_read_for_licences() {
+        let (workspace, mut library, package, storage) = setup(&[("Hit.wav", b"hit")]);
+        let outside = workspace.0.join("Outside");
+        write(&outside.join("Hit.wav"), b"hit");
+        write(&outside.join("New.wav"), b"new");
+        write(&outside.join("LICENSE.txt"), b"Released under CC0 1.0.");
+        let real = workspace.0.join("Real");
+        fs::rename(&storage, &real).unwrap();
+        std::os::unix::fs::symlink(&outside, &storage).unwrap();
+        let details = library.get_package_info(package.id).unwrap();
+        assert!(details.license_files.is_empty(), "the link is not followed");
+        assert!(details.license_suggestions.is_empty());
+        assert!(library.rescan_package(package.id).is_err());
+
+        // A linked ancestor (`packages`) is refused the same way.
+        fs::remove_file(&storage).unwrap();
+        fs::rename(&real, &storage).unwrap();
+        write(&storage.join("LICENSE.txt"), b"Released under CC0 1.0.");
+        assert_eq!(
+            library.get_package_info(package.id).unwrap().license_files,
+            vec!["LICENSE.txt".to_string()]
+        );
+        let packages = library.root().join("packages");
+        let moved = workspace.0.join("Packages");
+        fs::rename(&packages, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &packages).unwrap();
+        assert!(library
+            .get_package_info(package.id)
+            .unwrap()
+            .license_files
+            .is_empty());
+        assert!(library.rescan_package(package.id).is_err());
+        assert_eq!(count(&library, "SELECT COUNT(*) FROM asset_files"), 1);
     }
 
     #[test]

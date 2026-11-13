@@ -504,7 +504,9 @@ shows shop, link (selectable, with `Link kopieren`), licence and author, or
 "Keine Lizenz hinterlegt". The dialog lists licence and readme files found in
 the package root and its direct subfolders (`LICENSE*`, `*license*.txt/md/pdf`,
 `README*`) for imported packages, external folders and ZIPs (only while the
-source is still the catalogued one; links are not followed). Plain-text ones
+source is still the catalogued one; links are not followed, and an imported
+package's folder is read, or rescanned, only while it and every folder up to the
+library root are real folders, not links). Plain-text ones
 (`.txt`, `.md`, no extension; first 64 KB) are read for licence names: CC0,
 CC BY 3.0/4.0, CC BY-SA 3.0/4.0 and MIT, by explicit name with version or the
 canonical licence URL. Each match is shown as a suggestion with its file and

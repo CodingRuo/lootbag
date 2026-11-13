@@ -1,4 +1,4 @@
-use super::{file_identity, zip_sources, Library, Result};
+use super::{file_identity, managed_dir, zip_sources, Library, Result};
 use rusqlite::{params, OptionalExtension};
 use std::{fs, path::Path};
 #[path = "license_detection.rs"]
@@ -74,7 +74,9 @@ impl Library {
         };
         // External roots are read only while they are still the catalogued folder or archive.
         let (license_files, texts) = match source {
-            Some((relative, None, _)) => folder(&self.root.join(relative)),
+            Some((relative, None, _)) => managed_dir(&self.root, &relative)
+                .map(|base| folder(&base))
+                .unwrap_or_default(),
             Some((_, Some(root), Some(identity))) if zip_sources::is_zip(&identity) => {
                 let root = Path::new(&root);
                 if zip_sources::archive_identity(root).ok() == Some(identity) {
