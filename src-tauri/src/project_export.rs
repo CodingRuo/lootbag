@@ -388,7 +388,7 @@ fn credits_text(
 // "." appears in the model (or a matched .mtl), case-insensitively. A reference with a folder part
 // prefers files under that folder path; otherwise same-named files in other folders are included too,
 // and PSD references also take same-stem PNG replacements.
-fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String>)> {
+pub(super) fn companion_paths(snapshot: &ModelResources) -> Result<(Vec<String>, Vec<String>)> {
     if matches!(snapshot.format.as_str(), "GLTF" | "GLB") {
         return Ok(Default::default());
     }
@@ -622,7 +622,12 @@ fn mentioned(text: &[u8], separators: &[u8]) -> HashSet<Vec<u8>> {
 }
 
 /// `stem.ext`, then `stem-2.ext`, … unique per export path, case-insensitively.
-fn unique_name(used: &mut HashSet<String>, dir: &str, stem: &str, extension: &str) -> String {
+pub(super) fn unique_name(
+    used: &mut HashSet<String>,
+    dir: &str,
+    stem: &str,
+    extension: &str,
+) -> String {
     (1..)
         .map(|n| match n {
             1 => format!("{stem}{extension}"),

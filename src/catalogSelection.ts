@@ -1,3 +1,5 @@
+import { assetKey, type ImageGroupSummary, type ImageWorkflow } from "./imageWorkflows.ts";
+
 export type CatalogSelection = { keys: string[]; anchor: string | null };
 export type SelectionMode = "single" | "toggle" | "range" | "addRange";
 
@@ -33,4 +35,14 @@ export function storedCatalogView(type: string, storage?: Pick<Storage, "getItem
 
 export function storeCatalogView(type: string, view: CatalogView, storage?: Pick<Storage, "setItem">) {
   try { (storage ?? globalThis.localStorage)?.setItem(catalogViewKey(type), view); } catch { /* the in-memory choice still applies */ }
+}
+
+export type DragSource = { fileId: number; workflow?: ImageWorkflow };
+type DragAsset = { id: number; imageGroup?: ImageGroupSummary | null; files: { id: number }[] };
+
+/** A card inside the selection drags every selected asset with all variants; any other card only its default file. */
+export function dragSources(asset: DragAsset, selected: DragAsset[]): DragSource[] {
+  const group = (item: DragAsset) => item.imageGroup ? [{ fileId: item.imageGroup.fileId, workflow: item.imageGroup.workflow }] : null;
+  if (!selected.some((item) => assetKey(item) === assetKey(asset))) return group(asset) ?? [{ fileId: asset.files[0].id }];
+  return selected.flatMap((item) => group(item) ?? item.files.map((file) => ({ fileId: file.id })));
 }
