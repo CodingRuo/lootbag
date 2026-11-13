@@ -489,7 +489,7 @@ impl Cursor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use flate2::{write::GzEncoder, Compression};
     use std::{

@@ -27,8 +27,10 @@ pub struct WatchNotice {
     pub summary: Option<RescanSummary>,
 }
 
+/// External folders only: ZIP and Unity package sources are archives (see `zip_sources`).
 const ACTIVE_FOLDER: &str = "FROM watched_sources w JOIN active_packages p ON p.id = w.package_id
-    JOIN external_sources s ON s.package_id = p.id WHERE s.identity NOT LIKE 'zip:%'";
+    JOIN external_sources s ON s.package_id = p.id
+    WHERE s.identity NOT LIKE 'zip:%' AND s.identity NOT LIKE 'unitypackage:%'";
 
 /// Order-independent fingerprint of a folder's discovered files.
 fn inventory(root: &Path) -> Result<String> {
@@ -64,13 +66,15 @@ impl Library {
             .connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM active_packages p JOIN external_sources s ON s.package_id = p.id
-                WHERE p.id = ?1 AND s.identity NOT LIKE 'zip:%')",
+                WHERE p.id = ?1 AND s.identity NOT LIKE 'zip:%' AND s.identity NOT LIKE 'unitypackage:%')",
                 [package_id],
                 |row| row.get(0),
             )
             .map_err(failed)?;
         if !folder {
-            return Err("Nur externe Ordner (keine ZIPs) können beobachtet werden".into());
+            return Err(
+                "Nur externe Ordner (keine ZIPs oder Unity-Pakete) können beobachtet werden".into(),
+            );
         }
         self.connection
             .execute(
@@ -300,6 +304,22 @@ mod tests {
         let mut library = library;
         let managed = library.import_folder(&managed).unwrap().id;
         assert!(library.set_watched(managed, true).is_err());
+        let unity = workspace.0.join("Pack.unitypackage");
+        crate::library::unity_packages::tests::write_package(
+            &unity,
+            &[("Assets/a.wav", Some(b"a"))],
+        );
+        let unity = library.reference_zip(&unity).unwrap().id;
+        assert!(library.set_watched(unity, true).is_err());
+        // A row written by an older version is not enumerated either.
+        library
+            .connection
+            .execute(
+                "INSERT INTO watched_sources(package_id) VALUES (?1)",
+                [unity],
+            )
+            .unwrap();
+        assert_eq!(library.watched_sources().unwrap(), vec![package]);
         library.trash_package(package).unwrap();
         assert!(library.watched_sources().unwrap().is_empty());
         library.restore_trash(trash_id(&library)).unwrap();

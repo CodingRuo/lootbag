@@ -490,7 +490,7 @@ geändert, n fehlen". The same state is never reported twice. An offline
 folder is skipped silently; a different folder at the registered path or an
 incomplete listing (for example missing permissions) is reported once and
 changes nothing. Switching the library cancels a running check. ZIP sources
-are not watched yet.
+and Unity packages are not watched yet.
 
 ## Paketinfos und Credits
 
