@@ -1,5 +1,5 @@
 use super::{
-    model_resources::SourceStamp,
+    model_resources::{ModelResources, SourceStamp},
     project_export::{companion_paths, unique_name},
     unique_suffix, AssetKind, ImageWorkflow, Library, Result,
 };
@@ -7,6 +7,7 @@ use std::{
     collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 const MAX_SOURCES: usize = 10_000;
@@ -32,6 +33,8 @@ pub struct DragItem {
 pub struct DragStage {
     pub items: Vec<DragItem>,
     pub problems: Vec<String>,
+    /// This drag's own staging folder, if anything was copied; the caller removes it once unused.
+    pub batch: Option<PathBuf>,
 }
 
 struct Staging<'a> {
@@ -49,19 +52,12 @@ impl Library {
     /// Prepares a drag-out: originals where their names are unique, copies under `staging` for
     /// repeated names, and one bundle folder per model with companions, built by the model export. Each item is
     /// prepared on its own; failures and source changes become `problems` instead of aborting.
-    /// Staged files stay until the caller clears `staging` (next launch or library open).
+    /// A failed preparation leaves nothing behind; otherwise `batch` names what was copied.
     pub fn stage_drag(&self, sources: &[DragSource], staging: &Path) -> Result<DragStage> {
         if sources.is_empty() || sources.len() > MAX_SOURCES {
             return Err("Bitte 1 bis 10.000 Assets zum Herausziehen auswählen".into());
         }
-        let mut staging = Staging {
-            library: self,
-            batch: staging.join(unique_suffix()),
-            used: HashSet::new(),
-            seen: HashSet::new(),
-            originals: Vec::new(),
-            stage: DragStage::default(),
-        };
+        let mut staging = Staging::new(self, staging);
         for source in sources {
             match source.workflow {
                 Some(workflow) => match self.image_group(source.file_id, workflow) {
@@ -84,6 +80,7 @@ impl Library {
         }
         // Originals are handed over as they are, so a change after they were resolved drops them.
         let mut stage = staging.stage;
+        stage.batch = staging.batch.is_dir().then_some(staging.batch);
         for (path, stamp) in staging.originals {
             let unchanged = fs::metadata(&path)
                 .ok()
@@ -98,6 +95,9 @@ impl Library {
             }
         }
         if stage.items.is_empty() {
+            if let Some(batch) = &stage.batch {
+                let _ = fs::remove_dir_all(batch);
+            }
             return Err(if stage.problems.is_empty() {
                 "Nichts zum Herausziehen vorbereitet".into()
             } else {
@@ -108,7 +108,18 @@ impl Library {
     }
 }
 
-impl Staging<'_> {
+impl<'a> Staging<'a> {
+    fn new(library: &'a Library, staging: &Path) -> Self {
+        Self {
+            library,
+            batch: staging.join(unique_suffix()),
+            used: HashSet::new(),
+            seen: HashSet::new(),
+            originals: Vec::new(),
+            stage: DragStage::default(),
+        }
+    }
+
     fn file(&mut self, file_id: i64) {
         if !self.seen.insert(file_id) {
             return;
@@ -126,9 +137,11 @@ impl Staging<'_> {
                 let model =
                     AssetKind::for_format(&format) == Some(AssetKind::Model) && format != "BLEND";
                 if model {
-                    self.model(file_id)
+                    self.library
+                        .model_resources(file_id)
+                        .and_then(|snapshot| self.model(file_id, &snapshot))
                 } else {
-                    self.plain(file_id)
+                    self.plain(file_id, None)
                 }
                 .map_err(|error| format!("{filename}: {error}"))
             });
@@ -143,9 +156,8 @@ impl Staging<'_> {
         Ok(&self.batch)
     }
 
-    fn model(&mut self, file_id: i64) -> Result<()> {
-        let snapshot = self.library.model_resources(file_id)?;
-        let (extra, notes) = companion_paths(&snapshot)?;
+    fn model(&mut self, file_id: i64, snapshot: &ModelResources) -> Result<()> {
+        let (extra, notes) = companion_paths(snapshot)?;
         let entry = Path::new(&snapshot.entry_path);
         let entry_name = file_name(entry);
         self.stage.problems.extend(
@@ -161,8 +173,9 @@ impl Staging<'_> {
             .any(|path| *path != snapshot.entry_path);
         if !bundled {
             // Without a destination the export only validates (missing resources, stamps).
-            self.library.export_model(&snapshot, &extra, None)?;
-            return self.plain(file_id);
+            self.library.export_model(snapshot, &extra, None)?;
+            // The handed-over file must still be the one whose companions were checked.
+            return self.plain(file_id, Some(snapshot.entry_stamp()?));
         }
         let stem = entry
             .file_stem()
@@ -171,7 +184,7 @@ impl Staging<'_> {
         let destination = self.batch()?.join(name);
         // Rejects incomplete models and re-checks every resource stamp while copying.
         self.library
-            .export_model(&snapshot, &extra, Some(&destination))?;
+            .export_model(snapshot, &extra, Some(&destination))?;
         self.stage.items.push(DragItem {
             path: destination,
             directory: true,
@@ -179,11 +192,14 @@ impl Staging<'_> {
         Ok(())
     }
 
-    fn plain(&mut self, file_id: i64) -> Result<()> {
+    fn plain(&mut self, file_id: i64, expected: Option<&SourceStamp>) -> Result<()> {
         let path = self.library.resolve_preview(file_id)?;
         let mut input =
             fs::File::open(&path).map_err(|error| format!("Datei nicht lesbar: {error}"))?;
         let stamp = SourceStamp::read(&input.metadata().map_err(|error| error.to_string())?)?;
+        if expected.is_some_and(|expected| *expected != stamp) {
+            return Err("wurde während der Vorbereitung geändert".into());
+        }
         let original = file_name(&path);
         let (stem, extension) = match original.rsplit_once('.') {
             Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
@@ -228,22 +244,43 @@ impl Staging<'_> {
 /// Pointer travel before a held press becomes a drag, in points.
 pub const DRAG_THRESHOLD: f64 = 6.0;
 
-/// Ties a prepared drag payload to the mouse press it was prepared for. A drag starts only from
-/// a drag event of that same, still held press; release, Escape or any invalidation disarms it.
+/// Ties a drag-out to the mouse press it was requested for. The monitor numbers every press
+/// and tells the pressed webview that number before WebKit sees the event, so the frontend's
+/// request names its own press; a request or payload for any other press or window is refused.
+/// Nothing is staged on a mere click: staging starts once the held press passes the threshold,
+/// and only a drag event of that same, still held press starts the drag.
 #[derive(Debug)]
-pub struct DragGesture<P> {
-    press: Option<Press<P>>,
+pub struct DragGesture<S, P> {
+    press: Option<Press<S, P>>,
     presses: u64,
 }
 
 #[derive(Debug)]
-struct Press<P> {
+struct Press<S, P> {
     id: u64,
+    window: usize,
     origin: (f64, f64),
-    payload: Option<P>,
+    state: PressState<S, P>,
 }
 
-impl<P> Default for DragGesture<P> {
+#[derive(Debug)]
+enum PressState<S, P> {
+    Pressed,
+    Requested(S),
+    Staging,
+    Armed(P),
+}
+
+/// What a drag event asks the caller to do.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DragStep<S, P> {
+    Wait,
+    /// Stage `S` for press `u64`, then `arm` it; asked once per press.
+    Stage(u64, S),
+    Start(P),
+}
+
+impl<S, P> Default for DragGesture<S, P> {
     fn default() -> Self {
         Self {
             press: None,
@@ -252,47 +289,121 @@ impl<P> Default for DragGesture<P> {
     }
 }
 
-impl<P> DragGesture<P> {
-    /// A new mouse-down; whatever an earlier press had armed is dropped.
-    pub fn press(&mut self, at: (f64, f64)) {
+impl<S, P> DragGesture<S, P> {
+    /// A new mouse-down in `window`; returns its number and whatever an earlier press had armed.
+    pub fn press(&mut self, window: usize, at: (f64, f64)) -> (u64, Option<P>) {
         self.presses += 1;
+        let dropped = self.disarm();
         self.press = Some(Press {
             id: self.presses,
+            window,
             origin: at,
-            payload: None,
+            state: PressState::Pressed,
         });
+        (self.presses, dropped)
     }
 
-    /// The press still held, so a preparation can be bound to it.
-    pub fn held(&self) -> Option<u64> {
-        self.press.as_ref().map(|press| press.id)
-    }
-
-    /// Arms `press` with `payload`; false once that press ended or was replaced.
-    pub fn arm(&mut self, press: u64, payload: P) -> bool {
+    /// Binds `sources` to `press` if it is the held press of `window` and has none yet.
+    pub fn request(&mut self, window: usize, press: u64, sources: S) -> bool {
         match &mut self.press {
-            Some(held) if held.id == press => {
-                held.payload = Some(payload);
+            Some(held)
+                if held.id == press
+                    && held.window == window
+                    && matches!(held.state, PressState::Pressed) =>
+            {
+                held.state = PressState::Requested(sources);
                 true
             }
             _ => false,
         }
     }
 
-    /// A drag event of the held press: past the threshold and armed, the payload is handed over
-    /// once and the press ends, so it can never start twice.
-    pub fn drag(&mut self, at: (f64, f64)) -> Option<P> {
-        let press = self.press.as_ref()?;
-        let (dx, dy) = (at.0 - press.origin.0, at.1 - press.origin.1);
-        if press.payload.is_none() || dx.hypot(dy) < DRAG_THRESHOLD {
-            return None;
+    /// Arms `press` with its staged `payload`; hands the payload back once that press ended.
+    pub fn arm(&mut self, press: u64, payload: P) -> std::result::Result<(), P> {
+        match &mut self.press {
+            Some(held) if held.id == press && matches!(held.state, PressState::Staging) => {
+                held.state = PressState::Armed(payload);
+                Ok(())
+            }
+            _ => Err(payload),
         }
-        self.press.take()?.payload
     }
 
-    /// Mouse-up, Escape, selection or library change.
-    pub fn disarm(&mut self) {
-        self.press = None;
+    /// A drag event of the held press. Past the threshold a requested press asks for staging
+    /// once; an armed one hands its payload over once and ends, so it can never start twice.
+    pub fn drag(&mut self, at: (f64, f64)) -> DragStep<S, P> {
+        let Some(held) = &mut self.press else {
+            return DragStep::Wait;
+        };
+        let (dx, dy) = (at.0 - held.origin.0, at.1 - held.origin.1);
+        if dx.hypot(dy) < DRAG_THRESHOLD {
+            return DragStep::Wait;
+        }
+        match std::mem::replace(&mut held.state, PressState::Staging) {
+            PressState::Requested(sources) => DragStep::Stage(held.id, sources),
+            PressState::Armed(payload) => {
+                self.press = None;
+                DragStep::Start(payload)
+            }
+            other => {
+                held.state = other;
+                DragStep::Wait
+            }
+        }
+    }
+
+    /// Mouse-up, Escape, selection or library change; returns a payload that was never used.
+    pub fn disarm(&mut self) -> Option<P> {
+        match self.press.take()?.state {
+            PressState::Armed(payload) => Some(payload),
+            _ => None,
+        }
+    }
+}
+
+/// Published staging batches stay this long after their drag ended, so a recipient that copies
+/// slowly after the drop can still read them.
+pub const BATCH_GRACE: Duration = Duration::from_secs(10 * 60);
+/// The most recent published batches are kept regardless of age.
+pub const KEEP_BATCHES: usize = 3;
+
+/// Bounds staged drag copies: a batch is deleted once it is not among the `KEEP_BATCHES` newest
+/// and its drag ended `BATCH_GRACE` ago. Library open still clears everything.
+#[derive(Debug, Default)]
+pub struct Retention {
+    batches: Vec<(PathBuf, Option<Instant>)>,
+}
+
+impl Retention {
+    pub const fn new() -> Self {
+        Self {
+            batches: Vec::new(),
+        }
+    }
+
+    /// A batch handed to a running drag.
+    pub fn published(&mut self, batch: PathBuf) {
+        self.batches.push((batch, None));
+    }
+
+    /// Records that `batch`'s drag ended at `now`; returns the batches now safe to delete.
+    pub fn ended(&mut self, batch: Option<&Path>, now: Instant) -> Vec<PathBuf> {
+        for (path, end) in &mut self.batches {
+            if Some(path.as_path()) == batch {
+                end.get_or_insert(now);
+            }
+        }
+        let old = self.batches.len().saturating_sub(KEEP_BATCHES);
+        let (mut expired, mut kept) = (Vec::new(), Vec::new());
+        for (index, (path, end)) in self.batches.drain(..).enumerate() {
+            if index < old && end.is_some_and(|end| now.duration_since(end) >= BATCH_GRACE) {
+                expired.push(path);
+            } else {
+                kept.push((path, end));
+            }
+        }
+        self.batches = kept;
+        expired
     }
 }
 

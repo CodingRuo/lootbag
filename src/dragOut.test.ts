@@ -7,17 +7,24 @@ function setup(platform: DragPlatform, disabled = false) {
   const handlers = dragOutHandlers({
     sources: () => [{ fileId: 7 }], disabled, platform, onEnd: () => {}, onError: () => {},
     call: async <T,>(command: string, args?: Record<string, unknown>) => { calls.push([command, args]); return { dropped: true, problems: [] } as T; },
+    press: () => 3,
   });
   return { calls, handlers };
 }
 const press = { button: 0, clientX: 0, clientY: 0 };
 const move = { buttons: 1, clientX: 20, clientY: 0 };
 
-test("on macOS the press prepares the payload and moves never start a drag from JS", () => {
+test("on macOS the press sends its native press number with the cards and moves never start a drag from JS", () => {
   const { calls, handlers } = setup("mac");
   handlers.onPointerDown(press);
   handlers.onPointerMove(move);
-  assert.deepEqual(calls, [["prepare_drag", { sources: [{ fileId: 7 }] }]]);
+  assert.deepEqual(calls, [["prepare_drag", { press: 3, sources: [{ fileId: 7 }] }]]);
+
+  // No number from the monitor: nothing to bind to, so nothing is sent.
+  const unnumbered: string[] = [];
+  dragOutHandlers({ sources: () => [], disabled: false, platform: "mac", onEnd: () => {}, onError: () => {},
+    call: async <T,>(command: string) => { unnumbered.push(command); return undefined as T; }, press: () => undefined }).onPointerDown(press);
+  assert.deepEqual(unnumbered, []);
 });
 
 test("secondary buttons, disabled cards and the browser preview prepare nothing", () => {

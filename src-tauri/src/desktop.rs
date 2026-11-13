@@ -3,8 +3,8 @@ use crate::library::{
     BulkSelection, CatalogFilters, CatalogPage, CatalogQuery, DragSource, DragStage, DuplicateCopy,
     EmbeddedAudioTags, EmptiedTrash, ExportOutcome, ImageGroup, ImageWorkflow, ImportControl,
     ImportProgress, KindCounts, Library, ModelResources, PackageInfo, PackageInfoDetails,
-    ProjectExportPlan, ProjectFolder, RescanSummary, Result, SavedSearch, TrashEntry, WatchNotice,
-    ZipEstimate,
+    ProjectExportPlan, ProjectFolder, RescanSummary, Result, Retention, SavedSearch, TrashEntry,
+    WatchNotice, ZipEstimate,
 };
 use std::{
     fs,
@@ -603,7 +603,7 @@ fn activate(app: &AppHandle, library: &Library) -> Result<LibraryInfo> {
     crate::library::forget_verified_zip_cache();
     #[cfg(target_os = "macos")]
     drag_mac::disarm();
-    // Earlier drags' staged copies are only removed here, never while a recipient may still read them.
+    // All staged copies go here; while a library stays open only expired batches are removed.
     if let Ok(staging) = drag_staging(app) {
         let _ = fs::remove_dir_all(staging);
     }
@@ -1323,6 +1323,7 @@ async fn stage_drag(app: AppHandle, sources: Vec<DragSource>) -> Result<DragStag
         let _gate = file_gate(&state.import_gate)?;
         let stage = Library::writable(&root)?.stage_drag(&sources, &staging)?;
         if active_root(&app)? != root {
+            discard_stage(&stage);
             return Err("Die aktive Bibliothek wurde geändert".into());
         }
         Ok(stage)
@@ -1330,15 +1331,45 @@ async fn stage_drag(app: AppHandle, sources: Vec<DragSource>) -> Result<DragStag
     .await
 }
 
-/// Prepares the pressed card's payload while the button is still held. The native monitor
-/// starts the drag from that same press once it moves; after a release nothing happens.
+static RETAINED: Mutex<Retention> = Mutex::new(Retention::new());
+
+/// Removes the copies of a payload that was never handed to a drag.
+fn discard_stage(stage: &DragStage) {
+    if let Some(batch) = &stage.batch {
+        let _ = fs::remove_dir_all(batch);
+    }
+}
+
+/// A staged payload now belongs to a running drag and is kept for its recipient.
+fn drag_published(stage: &DragStage) {
+    if let Some(batch) = &stage.batch {
+        RETAINED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .published(batch.clone());
+    }
+}
+
+/// A drag ended; removes earlier batches whose grace period is over.
+fn drag_ended(batch: Option<&Path>) {
+    let expired = RETAINED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .ended(batch, Instant::now());
+    for batch in expired {
+        let _ = fs::remove_dir_all(batch);
+    }
+}
+
+/// Binds the cards under the pressed pointer to that press. `press` is the number the native
+/// monitor gave the press in this window before WebKit saw it; nothing is staged until the
+/// press moves past the drag threshold, and a request for any other press is ignored.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-async fn prepare_drag(app: AppHandle, sources: Vec<DragSource>) {
-    let Some(press) = drag_mac::held() else {
-        return;
-    };
-    drag_mac::arm(press, stage_drag(app, sources).await);
+fn prepare_drag(window: tauri::WebviewWindow, press: u64, sources: Vec<DragSource>) {
+    if let Ok(ns_window) = window.ns_window() {
+        drag_mac::request(ns_window as usize, press, sources);
+    }
 }
 
 /// Drags the given items out of the window as copies; `dropped` is false when cancelled.
@@ -1348,8 +1379,8 @@ async fn drag_assets(
     window: tauri::WebviewWindow,
     sources: Vec<DragSource>,
 ) -> Result<DragOutcome> {
-    let DragStage { items, problems } = stage_drag(window.app_handle().clone(), sources).await?;
-    let paths = items.into_iter().map(|item| item.path).collect();
+    let stage = stage_drag(window.app_handle().clone(), sources).await?;
+    let paths = stage.items.iter().map(|item| item.path.clone()).collect();
     let (done, finished) = std::sync::mpsc::channel();
     let failed = done.clone();
     let target = window.clone();
@@ -1374,15 +1405,23 @@ async fn drag_assets(
                 )));
             }
         })
-        .map_err(|error| format!("Ziehen konnte nicht gestartet werden: {error}"))?;
+        .map_err(|error| {
+            discard_stage(&stage);
+            format!("Ziehen konnte nicht gestartet werden: {error}")
+        })?;
+    drag_published(&stage);
     // All senders drop if the session never starts, so this cannot hang.
     let dropped = background(move || {
         finished
             .recv()
             .map_err(|_| "Ziehen wurde vom System beendet".to_string())?
     })
-    .await?;
-    Ok(DragOutcome { dropped, problems })
+    .await;
+    drag_ended(stage.batch.as_deref());
+    Ok(DragOutcome {
+        dropped: dropped?,
+        problems: stage.problems,
+    })
 }
 
 #[tauri::command]

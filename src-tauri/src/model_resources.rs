@@ -55,6 +55,15 @@ pub(super) struct SourceStamp {
     modified: String,
     size: u64,
 }
+impl ModelResources {
+    /// The entry file's stamp when this snapshot was taken.
+    pub(super) fn entry_stamp(&self) -> Result<&SourceStamp> {
+        self.stamps
+            .get(&self.entry_path)
+            .ok_or_else(|| "Modelldatei fehlt in der Vorschau".into())
+    }
+}
+
 impl SourceStamp {
     pub(super) fn read(metadata: &fs::Metadata) -> Result<Self> {
         #[cfg(unix)]

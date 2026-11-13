@@ -264,40 +264,143 @@ fn models_without_companions_drag_as_their_plain_file() {
 }
 
 #[test]
-fn a_drag_starts_only_from_the_armed_press_while_it_is_held() {
-    let mut gesture = DragGesture::default();
-    // Nothing pressed: neither arming nor dragging does anything.
-    assert!(!gesture.arm(1, "early"));
-    assert_eq!(gesture.drag((50.0, 50.0)), None);
+fn a_drag_stages_once_past_the_threshold_and_starts_only_from_the_held_press() {
+    let mut gesture = DragGesture::<&str, &str>::default();
+    // Nothing pressed: neither requests, arming nor dragging do anything.
+    assert!(!gesture.request(1, 1, "early"));
+    assert_eq!(gesture.arm(1, "early"), Err("early"));
+    assert_eq!(gesture.drag((50.0, 50.0)), DragStep::Wait);
 
-    gesture.press((10.0, 10.0));
-    let press = gesture.held().unwrap();
-    // Unarmed: moving far does not start; below the threshold an armed press waits.
-    assert_eq!(gesture.drag((40.0, 10.0)), None);
-    assert!(gesture.arm(press, "payload"));
-    assert_eq!(gesture.drag((13.0, 14.0)), None);
-    assert_eq!(gesture.drag((13.0, 16.0)), Some("payload"));
+    let (press, dropped) = gesture.press(1, (10.0, 10.0));
+    assert_eq!(dropped, None);
+    // Not requested: moving far stages nothing; a click alone never stages.
+    assert_eq!(gesture.drag((40.0, 10.0)), DragStep::Wait);
+    assert!(gesture.request(1, press, "cards"));
+    assert!(!gesture.request(1, press, "again"), "one request per press");
+    assert_eq!(gesture.drag((13.0, 14.0)), DragStep::Wait);
+    assert_eq!(gesture.drag((13.0, 16.0)), DragStep::Stage(press, "cards"));
+    // Staging is asked once; further moves wait for the payload.
+    assert_eq!(gesture.drag((30.0, 30.0)), DragStep::Wait);
+    assert_eq!(gesture.arm(press, "payload"), Ok(()));
+    assert_eq!(gesture.drag((31.0, 30.0)), DragStep::Start("payload"));
     // Handed over once; the press is over.
-    assert_eq!(gesture.drag((90.0, 90.0)), None);
-    assert_eq!(gesture.held(), None);
+    assert_eq!(gesture.drag((90.0, 90.0)), DragStep::Wait);
+    assert_eq!(gesture.disarm(), None);
+}
 
-    // Released before the preparation finished: the late payload is refused.
-    gesture.press((0.0, 0.0));
-    let released = gesture.held().unwrap();
-    gesture.disarm();
-    assert!(!gesture.arm(released, "late"));
-    assert_eq!(gesture.drag((30.0, 0.0)), None);
+#[test]
+fn a_delayed_request_or_payload_never_binds_to_a_later_press_or_another_window() {
+    let mut gesture = DragGesture::<&str, &str>::default();
+    // Card A is clicked and released; its request is still in flight when B is pressed.
+    let (a, _) = gesture.press(1, (0.0, 0.0));
+    assert_eq!(gesture.disarm(), None);
+    let (b, _) = gesture.press(1, (100.0, 0.0));
+    assert!(
+        !gesture.request(1, a, "card A"),
+        "A's late request names press A"
+    );
+    assert_eq!(gesture.drag((130.0, 0.0)), DragStep::Wait);
+    // B's own request from another window is refused too; from its window it binds.
+    assert!(!gesture.request(2, b, "card B"));
+    assert!(gesture.request(1, b, "card B"));
+    assert_eq!(gesture.drag((130.0, 0.0)), DragStep::Stage(b, "card B"));
 
-    // A preparation for an earlier press never arms the next one.
-    gesture.press((0.0, 0.0));
-    let first = gesture.held().unwrap();
-    gesture.press((0.0, 0.0));
-    assert!(!gesture.arm(first, "stale"));
-    assert_eq!(gesture.drag((30.0, 0.0)), None);
+    // A payload finishing after its press was released or replaced comes back for cleanup.
+    assert_eq!(gesture.arm(a, "stale"), Err("stale"));
+    let (c, _) = gesture.press(1, (0.0, 0.0));
+    assert_eq!(gesture.arm(b, "late"), Err("late"));
+    assert!(gesture.request(1, c, "card C"));
+    assert_eq!(gesture.drag((30.0, 0.0)), DragStep::Stage(c, "card C"));
+    // An armed payload that is never dragged is handed back on release or the next press.
+    assert_eq!(gesture.arm(c, "armed"), Ok(()));
+    assert_eq!(gesture.disarm(), Some("armed"));
+    let (d, _) = gesture.press(1, (0.0, 0.0));
+    assert!(gesture.request(1, d, "card D"));
+    assert_eq!(gesture.drag((30.0, 0.0)), DragStep::Stage(d, "card D"));
+    assert_eq!(gesture.arm(d, "armed"), Ok(()));
+    assert_eq!(gesture.press(1, (0.0, 0.0)).1, Some("armed"));
+}
 
-    // Escape or invalidation after arming disarms it.
-    let second = gesture.held().unwrap();
-    assert!(gesture.arm(second, "armed"));
-    gesture.disarm();
-    assert_eq!(gesture.drag((30.0, 0.0)), None);
+#[test]
+fn published_batches_are_removed_only_beyond_the_newest_and_after_their_grace() {
+    let mut retention = Retention::new();
+    let start = Instant::now();
+    let batch = |index: usize| PathBuf::from(format!("batch-{index}"));
+    for index in 0..KEEP_BATCHES + 2 {
+        retention.published(batch(index));
+        assert_eq!(
+            retention.ended(Some(&batch(index)), start),
+            Vec::<PathBuf>::new()
+        );
+    }
+    // Within the grace period nothing goes, even beyond the newest few.
+    let soon = start + BATCH_GRACE / 2;
+    assert!(retention.ended(None, soon).is_empty());
+    // Afterwards only the oldest go; the newest stay for their recipients.
+    let later = start + BATCH_GRACE;
+    assert_eq!(retention.ended(None, later), [batch(0), batch(1)]);
+    assert!(retention.ended(None, later).is_empty());
+    // A batch whose drag is still running is never removed.
+    retention.published(batch(9));
+    for index in 10..10 + KEEP_BATCHES {
+        retention.published(batch(index));
+        retention.ended(Some(&batch(index)), later);
+    }
+    let removed = retention.ended(None, later + BATCH_GRACE);
+    assert!(!removed.contains(&batch(9)), "{removed:?}");
+}
+
+#[test]
+fn a_failed_preparation_leaves_no_copies_and_a_successful_one_names_its_batch() {
+    let workspace = Workspace::new();
+    write(workspace.path("Pack/Hit.wav"), b"pack");
+    write(workspace.path("Other/hit.wav"), b"other");
+    let mut library = Library::create(&workspace.path("library")).unwrap();
+    library.import_folder(&workspace.path("Pack")).unwrap();
+    library.import_folder(&workspace.path("Other")).unwrap();
+    let staging = workspace.path("staging");
+    let pack = file(&library, "Hit.wav", "Pack");
+    let other = file(&library, "hit.wav", "Other");
+
+    let stage = library
+        .stage_drag(&[plain(pack), plain(other)], &staging)
+        .unwrap();
+    let batch = stage.batch.clone().unwrap();
+    assert!(stage.items[1].path.starts_with(&batch));
+    let only_originals = library.stage_drag(&[plain(pack)], &staging).unwrap();
+    assert_eq!(only_originals.batch, None);
+
+    // A refused model bundle had already created its batch folder: nothing is left behind.
+    write(
+        workspace.path("Tree/tree.gltf"),
+        br#"{"asset":{"version":"2.0"},"buffers":[{"uri":"missing.bin","byteLength":4}]}"#,
+    );
+    library.import_folder(&workspace.path("Tree")).unwrap();
+    fs::remove_dir_all(&staging).unwrap();
+    fs::create_dir_all(&staging).unwrap();
+    let tree = file(&library, "tree.gltf", "Tree");
+    assert!(library.stage_drag(&[plain(tree)], &staging).is_err());
+    assert_eq!(
+        fs::read_dir(&staging).unwrap().count(),
+        0,
+        "no batch left behind"
+    );
+}
+
+#[test]
+fn a_plain_model_that_changed_since_its_snapshot_is_refused() {
+    let workspace = Workspace::new();
+    write(workspace.path("Pack/Box.obj"), b"v 0 0 0\n");
+    let mut library = Library::create(&workspace.path("library")).unwrap();
+    library.import_folder(&workspace.path("Pack")).unwrap();
+    let id = file(&library, "Box.obj", "Pack");
+    let snapshot = library.model_resources(id).unwrap();
+    // Between snapshot and hand-over the model gains a material it now depends on.
+    let path = library.resolve_preview(id).unwrap();
+    fs::write(&path, b"mtllib box.mtl\nv 0 0 0\n").unwrap();
+    write(path.with_file_name("box.mtl"), b"newmtl a\n");
+    let mut staging = Staging::new(&library, &workspace.path("staging"));
+    let error = staging.model(id, &snapshot).unwrap_err();
+    assert!(error.contains("geändert"), "{error}");
+    assert!(staging.stage.items.is_empty());
 }

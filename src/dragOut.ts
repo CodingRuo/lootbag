@@ -17,19 +17,25 @@ let outgoing = false;
 /** True while a card is being dragged out, so the import drop zone ignores Lootbag's own file. */
 export const draggingOut = () => outgoing;
 
-// WKWebView ignores HTML drag data. On macOS the press prepares the payload in Rust right away,
-// and Rust's event monitor starts the native drag from that same held press; skipped items come back as `problems`.
-export function dragOutHandlers({ sources, disabled, platform, onEnd, onError, call = invoke }: {
+/** The number Rust's event monitor gave the current mouse press, set before this page sees it. */
+const nativePress = () => (globalThis as { __lootbagPress?: number }).__lootbagPress;
+
+// WKWebView ignores HTML drag data. On macOS the press tells Rust which cards it holds, tagged with
+// the monitor's press number; Rust stages them once that press moves and starts the native drag
+// from it; skipped items come back as `problems`.
+export function dragOutHandlers({ sources, disabled, platform, onEnd, onError, call = invoke, press = nativePress }: {
   sources: () => DragSource[]; disabled: boolean; platform: DragPlatform;
-  onEnd: (end: DragOutEnd) => void; onError: (error: unknown) => void; call?: Invoke;
+  onEnd: (end: DragOutEnd) => void; onError: (error: unknown) => void; call?: Invoke; press?: () => number | undefined;
 }) {
   return {
     onDragStart: (event: { preventDefault(): void }) => event.preventDefault(),
     onPointerDown: (event: Pick<PointerEvent, "button" | "clientX" | "clientY">) => {
       origin = null;
       if (!platform || disabled || event.button !== 0) return;
-      if (platform === "mac") call("prepare_drag", { sources: sources() }).catch(onError);
-      else origin = { x: event.clientX, y: event.clientY };
+      if (platform === "mac") {
+        const id = press();
+        if (id !== undefined) call("prepare_drag", { press: id, sources: sources() }).catch(onError);
+      } else origin = { x: event.clientX, y: event.clientY };
     },
     onPointerUp: () => { origin = null; },
     onPointerMove: (event: Pick<PointerEvent, "buttons" | "clientX" | "clientY">) => {
