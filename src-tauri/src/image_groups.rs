@@ -95,6 +95,7 @@ pub struct KindCounts {
     pub sound: i64,
     pub image: i64,
     pub model: i64,
+    pub font: i64,
     pub animation: i64,
     pub material: i64,
     pub sprite_sequence: i64,
@@ -102,9 +103,15 @@ pub struct KindCounts {
 
 impl Library {
     pub fn kind_counts(&self) -> Result<KindCounts> {
-        let kinds = [AssetKind::Sound, AssetKind::Image, AssetKind::Model];
+        let kinds = [
+            AssetKind::Sound,
+            AssetKind::Image,
+            AssetKind::Model,
+            AssetKind::Font,
+        ];
+        // Animation-only models get their own bucket after the plain kinds; it is checked first.
         let animation = format!(
-            "WHEN f.format IN ('{}') AND {} THEN 3",
+            "WHEN f.format IN ('{}') AND {} THEN 4",
             AssetKind::Animation.formats().join("','"),
             super::model_traits::animation_asset("f.asset_id")
         );
@@ -140,7 +147,8 @@ impl Library {
                 (Some(0), count) => counts.sound = count,
                 (Some(1), count) => counts.image = count,
                 (Some(2), count) => counts.model = count,
-                (Some(3), count) => counts.animation = count,
+                (Some(3), count) => counts.font = count,
+                (Some(4), count) => counts.animation = count,
                 _ => {}
             }
         }

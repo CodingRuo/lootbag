@@ -180,7 +180,7 @@ export function useCatalogQuery({ library, revision, refreshCatalog, setSelected
       return;
     }
     const audio = isRecord(value.audioFilters) ? value.audioFilters : {};
-    setText(str(value.text) ?? ""); setKind(oneOf(value.kind, ["sound", "image", "model", "animation"] as const));
+    setText(str(value.text) ?? ""); setKind(oneOf(value.kind, ["sound", "image", "model", "font", "animation"] as const));
     setWorkflow(oneOf(value.workflow, ["material", "spriteSequence"] as const));
     setPackageId(id(value.packageId)); setFolderId(id(value.folderId)); setOriginalFolder(str(value.originalFolder));
     setFormat(str(value.format)); setTag(str(value.tag)); setDuplicates(value.duplicates === true);

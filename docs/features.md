@@ -230,6 +230,18 @@ not rescanned on reopen; previously ignored PSD files require reimport.
 The tested Synty Town prop now renders with its supplied PNG; the City Biker
 retains its regular preview and export. Geometry and source files are preserved.
 
+## Schriften
+
+TTF, OTF, WOFF and WOFF2 files are the asset kind **Schriften**, found by new
+folder, external-folder and ZIP imports. Font format variants with the same name
+group into one asset; a sound with the same name stays a separate asset. Cards
+render "Aa Bb 123" in the font, loaded only while the card is visible and
+unloaded when it scrolls away; the inspector shows an editable sample text at
+12–72 px. Fonts over 32 MiB or unreadable fonts show "Keine Vorschau" on their
+own card. Metadata is the filename only (no family/style parsing). Export and
+project export copy the original bytes. Existing packages are not rescanned;
+previously ignored fonts need a reimport.
+
 ## Embedded sound tags
 
 The sound inspector reads title, artist, album and genre from guarded originals

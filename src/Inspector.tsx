@@ -14,6 +14,7 @@ import { TrashActions } from "./Trash";
 import { FolderMembershipEditor, type ProjectFolder } from "./ProjectFolders";
 import { saveFolderMember, type FolderMember } from "./projectExport.ts";
 import { originFacts } from "./packageInfo.ts";
+import FontPreview from "./FontPreview.tsx";
 import { nextInspectorTab, type InspectorTab } from "./inspectorTabs";
 import type { CatalogQuery } from "./useCatalogQuery.ts";
 import { Icon, bytes, isAnimationOnly, zipEntryPath, type Act, type Asset, type AssetFile, type AssetPackage, type LibraryInfo, type Notice, type Setter } from "./ui.tsx";
@@ -236,7 +237,7 @@ export default function Inspector({ library, query, selected, setSelected, file,
           <div className="inspector-scroll">
             <section id="preview-panel" className="inspector-panel preview" role="tabpanel" aria-labelledby="preview-tab" hidden={inspectorTab !== "preview"} tabIndex={0}>
               <div className="section-heading">
-                <h3>{selected.imageGroup ? selected.imageGroup.workflow === "material" ? "Material-Vorschau" : "Sprite-Animation" : file.kind === "sound" ? "Anhören" : file.kind === "image" ? file.format === "ASEPRITE" ? "Aseprite-Animation" : "Bild & Spritesheet" : file.format === "BLEND" ? "Gespeichertes Blender-Bild" : isAnimationOnly(file) ? "Animation" : "3D-Vorschau"}</h3>
+                <h3>{selected.imageGroup ? selected.imageGroup.workflow === "material" ? "Material-Vorschau" : "Sprite-Animation" : file.kind === "font" ? "Schriftprobe" : file.kind === "sound" ? "Anhören" : file.kind === "image" ? file.format === "ASEPRITE" ? "Aseprite-Animation" : "Bild & Spritesheet" : file.format === "BLEND" ? "Gespeichertes Blender-Bild" : isAnimationOnly(file) ? "Animation" : "3D-Vorschau"}</h3>
                 <span>{selected.imageGroup ? `${selected.imageGroup.fileCount} Originaldateien` : file.format === "BLEND" ? "Eingebettetes Bild" : "Originaldatei"}</span>
               </div>
               {selected.imageGroup ? <ImageGroupPreview
@@ -250,6 +251,8 @@ export default function Inspector({ library, query, selected, setSelected, file,
               /> : inspectorTab === "preview" && (file.kind === "sound" ? <AudioPreview
                 key={`${library.root}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
                 onAnalysisComplete={() => { if (audioFilterCount > 0) setAudioResultsStale(true); }}
+              /> : file.kind === "font" ? <FontPreview
+                key={`${library.root}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
               /> : <ImagePreview
                 key={`${library.root}:${file.id}:${file.available}:${selectedPackage?.externalRoot}`} file={file}
               />)}
